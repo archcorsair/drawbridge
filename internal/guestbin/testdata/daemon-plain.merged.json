@@ -1,0 +1,12 @@
+{
+  "default-runtime": "drawbridge",
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m"
+  },
+  "runtimes": {
+    "drawbridge": {
+      "path": "/usr/local/bin/drawbridge-runc"
+    }
+  }
+}

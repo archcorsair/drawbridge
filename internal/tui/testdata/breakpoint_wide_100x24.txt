@@ -1,0 +1,24 @@
+ drawbridge tui · CLI v0.1.0                               daemon 1/1 · refreshed <1s ago ·  ? help
+ ┌ colima:colima ─ user socket · pid 71234 · daemon v0.1.0 · up 2h14m ────────────────────────────┐
+ │ endpoint   tcp://192.168.64.5:4777    source vznat-direct    resolved 2h14m ago                │
+ │ auth       static-hmac-v1 ok   ·   mirror up · event 12s ago   ·   sync up · pool 4 parked     │
+ └────────────────────────────────────────────────────────────────────────────────────────────────┘
+  MIRROR — guest listeners on Mac localhost (5) · skip: 22  │ SYNC — Mac ports advertised (3)
+  PROTO  PORT   STATE         SINCE                         │ PROTO  PORT
+  tcp    5000   bind-failed   40s                           │ tcp    5432
+  tcp    3000   bound         2m                            │ tcp    6379
+  tcp    8080   bound         2m                            │ udp    5353
+  udp    5353   bound         1m                            │
+  tcp    22     skipped       2h                            │
+
+
+
+
+
+
+
+
+
+
+
+  tab next daemon · r refusals · d doctor · ? help · q quit

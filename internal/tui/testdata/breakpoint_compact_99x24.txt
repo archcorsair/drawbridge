@@ -1,0 +1,24 @@
+ drawbridge tui · v0.1.0                                                daemon 1/1 · <1s ·  ? help
+ colima:colima · user · pid 71234 · v0.1.0 · up 2h14m
+ endpoint tcp://192.168.64.5:4777 (vznat-direct)
+ auth static-hmac-v1 ok
+ mirror up · event 12s ago   sync up · adv 3 · parked 4
+ MIRROR (5)                                                                               skip: 22
+ PROTO  PORT   STATE         SINCE
+ tcp    5000   bind-failed   40s
+ tcp    3000   bound         2m
+ tcp    8080   bound         2m
+ udp    5353   bound         1m
+ tcp    22     skipped       2h
+
+
+
+
+
+
+
+
+
+
+
+ tab next daemon · r refusals · d doctor · ? help · q quit

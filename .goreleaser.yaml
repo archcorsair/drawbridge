@@ -1,0 +1,196 @@
+# goreleaser — the release half of docs/ergonomics.md §2 (artifact matrix
+# §2.1, embed ordering §2.2, homebrew §2.3, versioning §2.4).
+#
+# Local use is snapshot-only: `just release-check` validates this file and
+# `just release-snapshot` builds everything into dist/ without touching
+# GitHub or the tap. Real releases run from .github/workflows/release.yml on
+# a pushed vX.Y.Z tag.
+#
+# Tooling comes from mise (goreleaser is pinned in mise.toml), never brew.
+version: 2
+
+project_name: drawbridge
+
+# The build order below is a dependency, not tidiness (§2.2, AGENTS.md):
+# cmd/drawbridge `//go:embed all:bin`s the four guest binaries out of
+# internal/guestbin/bin/, so those have to exist — and be *current* — before
+# any Mac binary is linked. goreleaser runs `before.hooks` once, before every
+# build, which is exactly the justfile `build` recipe's ordering.
+#
+# All four guest binaries carry the same version stamp as the Mac pair: the
+# §6 skew checks (`up` compares the guest's /run/drawbridge-agent.version to
+# the CLI's, doctor compares the daemon's) are string equality, so an
+# unstamped guest binary would make every install look skewed.
+# Global before-hooks are plain command strings (no per-hook `env:` map), and
+# they are shellword-split rather than run through a shell — hence the
+# explicit `env` prefix for GOOS/GOARCH/CGO_ENABLED.
+before:
+  hooks:
+    - go mod download
+
+    - mkdir -p bin internal/guestbin/bin
+
+    - env GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}" -o bin/drawbridge-agent-linux-arm64 ./cmd/drawbridge-agent
+    - env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}" -o bin/drawbridge-agent-linux-amd64 ./cmd/drawbridge-agent
+    - env GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}" -o bin/drawbridge-runc-linux-arm64 ./cmd/drawbridge-runc
+    - env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}" -o bin/drawbridge-runc-linux-amd64 ./cmd/drawbridge-runc
+
+    # …into the embed directory under the names embed_darwin.go expects.
+    - cp bin/drawbridge-agent-linux-arm64 internal/guestbin/bin/agent_linux_arm64
+    - cp bin/drawbridge-agent-linux-amd64 internal/guestbin/bin/agent_linux_amd64
+    - cp bin/drawbridge-runc-linux-arm64 internal/guestbin/bin/runc_linux_arm64
+    - cp bin/drawbridge-runc-linux-amd64 internal/guestbin/bin/runc_linux_amd64
+
+# darwin only, both arches, lipo'd into universal binaries below (§2.1).
+# CGO off: the Mac side is pure Go plus golang.org/x/sys syscalls, so a
+# cgo-less build is both possible and the one that cross-compiles cleanly.
+builds:
+  - id: drawbridge
+    binary: drawbridge
+    main: ./cmd/drawbridge
+    env: [CGO_ENABLED=0]
+    goos: [darwin]
+    goarch: [arm64, amd64]
+    ldflags:
+      - -X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: drawbridged
+    binary: drawbridged
+    main: ./cmd/drawbridged
+    env: [CGO_ENABLED=0]
+    goos: [darwin]
+    goarch: [arm64, amd64]
+    ldflags:
+      - -X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+# Intel Macs stay in (§2.1): one lipo'd artifact per binary, and
+# `replace: true` drops the per-arch copies so the release carries exactly
+# one macOS archive.
+universal_binaries:
+  - id: drawbridge-universal
+    ids: [drawbridge]
+    name_template: drawbridge
+    replace: true
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  - id: drawbridged-universal
+    ids: [drawbridged]
+    name_template: drawbridged
+    replace: true
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+# One archive with both binaries. `sudo drawbridge install` copies
+# `drawbridged` from *beside the invoking binary* (§2.3), so the two must
+# never be split across archives or install directories.
+archives:
+  - id: darwin
+    ids: [drawbridge-universal, drawbridged-universal]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_darwin_universal"
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+  # The standalone guest binaries are an escape hatch people run as root in
+  # their VM; they get checksummed like everything else.
+  extra_files:
+    - glob: bin/drawbridge-agent-linux-arm64
+    - glob: bin/drawbridge-agent-linux-amd64
+    - glob: bin/drawbridge-runc-linux-arm64
+    - glob: bin/drawbridge-runc-linux-amd64
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  # §2.1's escape hatch: the four guest binaries also ship as standalone
+  # release assets, for manual provisioning and non-brew users (they pair
+  # with `drawbridge up -agent-bin PATH`). They are left in bin/ by the
+  # before-hooks; a glob that matches nothing fails the release, which is
+  # the guard we want if the hooks ever stop running.
+  extra_files:
+    - glob: bin/drawbridge-agent-linux-arm64
+    - glob: bin/drawbridge-agent-linux-amd64
+    - glob: bin/drawbridge-runc-linux-arm64
+    - glob: bin/drawbridge-runc-linux-amd64
+
+# §2.3: the tap at github.com/archcorsair/homebrew-drawbridge, whose contents
+# goreleaser owns from the first release onward. `brew install
+# archcorsair/drawbridge/drawbridge` is the published command.
+#
+# DEVIATION from §2.3's letter: the plan says `brews:` (a formula in
+# `Formula/`). goreleaser deprecated `brews` in favour of `homebrew_casks`
+# (Homebrew's own guidance is that third-party taps shipping *prebuilt*
+# binaries are casks, not formulae), and `goreleaser check` now fails on it —
+# so `just release-check` and `brews` cannot both hold. §2.3's substance is
+# unaffected: still one tap, still both binaries in brew's `bin/`, still no
+# `brew services` and no launchd management by brew — `sudo drawbridge
+# install` remains the only root-daemon path. The `service` cask stanza
+# exists and is deliberately unused.
+#
+# Publishing needs a HOMEBREW_TAP_TOKEN secret in this repo: a fine-grained
+# PAT with `contents: write` on archcorsair/homebrew-drawbridge only. The
+# release workflow passes it through; GITHUB_TOKEN cannot reach another repo.
+homebrew_casks:
+  - name: drawbridge
+    ids: [darwin]
+    repository:
+      owner: archcorsair
+      name: homebrew-drawbridge
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/archcorsair/drawbridge"
+    description: "Real --network host semantics for containers in a macOS VM"
+    license: "Apache-2.0"
+    # Both binaries, from one archive into one bin/: `drawbridge install`
+    # resolves `drawbridged` beside its own (symlink-resolved) path, so they
+    # must stay co-located (§2.3).
+    binaries:
+      - drawbridge
+      - drawbridged
+    # These binaries are ad-hoc (linker-)signed, not Developer-ID signed or
+    # notarized — we have no Apple developer identity. Homebrew quarantines
+    # everything a cask downloads, and Gatekeeper kills a quarantined ad-hoc
+    # binary on first exec, so without this the very first command after
+    # `brew install` fails. Strip the attribute at install time, the way
+    # goreleaser's own cask documentation prescribes.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/drawbridge"]
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/drawbridged"]
+          end
+    # Snapshots never touch the tap.
+    skip_upload: auto
+    commit_author:
+      name: goreleaser
+      email: noreply@github.com
+    commit_msg_template: "drawbridge {{ .Tag }}"
+    # §6 version-skew policy: lockstep by construction, healed by re-running
+    # the two commands that push the other two copies of this build.
+    caveats: |
+      drawbridge ships three parts that must be the same version: this CLI,
+      the agent inside your VM, and the privileged daemon on this Mac.
+
+      After every install or upgrade, run:
+
+        drawbridge up <vm>        # re-pushes the matching guest agent
+        sudo drawbridge install   # re-installs the matching root daemon
+
+      `drawbridge doctor` reports any remaining skew. Before removing this
+      cask, run `sudo drawbridge uninstall` — brew does not manage the root
+      daemon or its launchd job.

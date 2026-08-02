@@ -1,0 +1,40 @@
+ drawbridge tui · CLI v0.1.0                                                   daemon 1/1 · refreshed <1s ago ·  ? help
+ ┌ doctor could not gather ───────────────────────────────────────────────────────────────────────┐
+ │ no running vz instance: lima reported 0 and colima reported 0 — start one, or name it with -vm │
+ │                                                                                                │
+ │ press R to retry                                                                               │
+ │ attempted 18:30:59 · 2s · 3s ago                                                               │
+ └────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  enter expand · R re-run · p probe (~20s+) · esc back · ? help

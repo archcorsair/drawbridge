@@ -1,0 +1,19 @@
+/bin/
+# goreleaser's output tree (`just release-snapshot`, and the tagged release
+# builds on CI). Build products, never committed.
+/dist/
+# The guest binaries `just build` copies in for //go:embed. Build products,
+# never committed — but the directory itself has to exist with its .keep, or
+# the embed pattern matches nothing and the CLI stops compiling on a fresh
+# checkout (internal/guestbin/embed_darwin.go).
+/internal/guestbin/bin/*
+!/internal/guestbin/bin/.keep
+*.test
+*.swp
+.DS_Store
+.claude/
+# NOTE: internal/bpf/*_bpfel.go and *_bpfel.o are GENERATED but COMMITTED
+# (embedded bytecode; keeps the Mac side buildable without clang).
+# A CLI built at the repo root (go build -o drawbridge ./cmd/drawbridge)
+/drawbridge
+/drawbridged

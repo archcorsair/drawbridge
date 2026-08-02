@@ -1,0 +1,101 @@
+name: CI
+
+# Triggers are deliberately narrow while the repo is private during
+# development (Actions bills there, macOS at 10x): main pushes and manual
+# dispatch only. workflow_dispatch preserves the scratch-branch
+# verification protocol — run it on the branch under test, eyes open about
+# the cost — and `pull_request` on main covers fork PRs, which produce no
+# push event here. When the repo goes public for release (Phase 6), widen
+# push back to ['**'] so every branch verifies for free.
+# Manual-only while the repo is private: every push/PR run bills real macOS
+# minutes. When the repo goes public (free minutes), widen to
+#   push: { branches: ['**'] } and pull_request: { branches: [main] }
+# per docs/ergonomics.md §8 Phase 1.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes the older run; a scratch-branch
+# loop otherwise queues behind itself.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The Mac half of the product: the CLI, the privileged daemon, and every
+  # host-side package. The Go matrix is what settles the go.mod floor —
+  # 1.25.0 has never been proven on anything but the author's toolchain.
+  macos:
+    name: macOS (go ${{ matrix.go }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.25.x', '1.26.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: go.sum
+
+      - run: go build ./...
+      - run: go vet ./...
+
+      # ./... rather than ./internal/...: cmd/drawbridged carries flag-parsing
+      # tests that nothing else covers. The environment-dependent suites gate
+      # themselves — e2e and bench on DRAWBRIDGE_E2E / DRAWBRIDGE_BENCH plus a
+      # reachable VM, install's mutating verbs on euid, limaaddr's live leg on
+      # a real lease db — so a bare runner exercises the pure logic and skips
+      # the rest out loud.
+      - run: go test -count=1 ./...
+
+  # The guest half. GitHub's ubuntu-24.04 runners ship BTF
+  # (/sys/kernel/btf/vmlinux) and a unified cgroup v2 hierarchy, so the
+  # harness gets real verifier + attach + seccomp-notify coverage on a
+  # kernel that is not the dev VM's — the point of this job.
+  linux:
+    name: Linux (go ${{ matrix.go }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.25.x', '1.26.x']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache-dependency-path: go.sum
+
+      # The two guest binaries, both arches, static — the shape `drawbridge`
+      # embeds. CGO off is not an optimization: they run in a guest whose
+      # libc we do not choose. The BPF objects are bpf2go output committed to
+      # the tree, so this needs no clang and must never run `just gen`.
+      - name: Cross-compile guest binaries
+        run: |
+          mkdir -p bin
+          for arch in arm64 amd64; do
+            for cmd in drawbridge-agent drawbridge-runc; do
+              GOOS=linux GOARCH=$arch CGO_ENABLED=0 \
+                go build -o "bin/$cmd-linux-$arch" "./cmd/$cmd"
+            done
+          done
+
+      - run: go vet ./...
+
+      # Unprivileged first: the pure suites, and proof that the root-gated
+      # packages degrade to a skip rather than an error when they cannot run.
+      - run: go test -count=1 ./...
+
+      # The suites `just test-guest` runs in the dev VM, here on the runner
+      # kernel. sudo needs the explicit PATH because Ubuntu's secure_path
+      # drops setup-go's toolchain dir (same reason `just e2e-root` does it);
+      # -E keeps HOME so root reuses the module cache the step above filled.
+      # -v so the capability-probe skips are visible rather than implied.
+      - name: Root + BPF suites
+        run: |
+          sudo -E env "PATH=$PATH" \
+            go test -count=1 -v -timeout 10m ./internal/harness/ ./internal/agent/

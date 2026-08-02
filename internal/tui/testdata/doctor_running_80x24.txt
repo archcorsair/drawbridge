@@ -1,0 +1,24 @@
+ drawbridge tui · v0.1.0                             daemon 1/1 · <1s ·  ? help
+ doctor — gathering… 7s   ⠸                                          esc cancel
+ (checks are read-only; nothing is mutated, sudo is never spawned)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ enter expand · R re-run · p probe (~20s+) · esc cancel · ? help

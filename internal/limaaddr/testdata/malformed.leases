@@ -1,0 +1,21 @@
+# not a real comment syntax, but the parser must survive junk
+garbage line outside any record
+{
+	name=lima-drawbridge
+	hw_address=1,52:55:55:00:00:01
+	lease=0x6a6c4200
+}
+{
+	ip_address=192.168.64.30
+	lease=0x6a6c4201
+}
+{
+	name=lima-drawbridge
+	ip_address=192.168.64.31
+	lease=not-a-number
+	unknown_future_key=whatever=with=equals
+}
+{
+	name=lima-drawbridge
+	ip_address=192.168.64.32
+	lease=0x6a6c4202

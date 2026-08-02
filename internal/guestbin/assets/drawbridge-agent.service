@@ -1,0 +1,23 @@
+[Unit]
+Description=drawbridge guest agent (host networking for macOS container VMs)
+Documentation=https://github.com/archcorsair/drawbridge
+# The agent binds its transport on the guest's vzNAT address, which does not
+# exist until the interface is configured.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{.ExecStart}}
+# The agent loads BPF programs and reads /proc; it is root by necessity, not
+# by convenience. No sandboxing directives here for the same reason: they
+# would have to be undone one by one for the BPF, netlink and netns access
+# the agent's whole job consists of.
+Restart=on-failure
+RestartSec=2
+# The BPF collections are pinned per-process; a hard kill leaves the guest
+# clean because the kernel drops the last reference with the process.
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

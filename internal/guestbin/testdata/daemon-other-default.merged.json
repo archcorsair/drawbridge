@@ -1,0 +1,11 @@
+{
+  "default-runtime": "drawbridge",
+  "runtimes": {
+    "crun": {
+      "path": "/usr/bin/crun"
+    },
+    "drawbridge": {
+      "path": "/usr/local/bin/drawbridge-runc"
+    }
+  }
+}

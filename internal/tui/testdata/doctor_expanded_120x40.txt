@@ -1,0 +1,40 @@
+ drawbridge tui · CLI v0.1.0                                                   daemon 1/1 · refreshed <1s ago ·  ? help
+  doctor — colima:colima · ran 18:30:42 · 14s · 20s ago
+  [ok]   VM providers
+  [ok]   guest prerequisites
+  [ok]   guest agent
+  [warn] endpoint resolution            ◂
+           endpoint tcp://127.0.0.1:4777 (ssh-forwarder)
+           vzNAT dial was refused (Local Network permission); fell back to the SSH forwarder
+         → grant Local Network permission to the app running drawbridge, then restart the daemon
+  [ok]   vzNAT route
+  [fail] Local Network permission
+  [ok]   network content filters
+  [skip] half-close delivery
+  [ok]   Mac daemon
+  [ok]   provider forwarder coexistence
+  [info] default skip list
+  [ok]   transport authentication
+  12 checks: 8 ok, 1 warn, 1 fail, 1 skip, 1 info
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  enter expand · R re-run · p probe (~20s+) · esc back · ? help

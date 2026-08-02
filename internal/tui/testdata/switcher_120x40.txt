@@ -1,0 +1,40 @@
+ drawbridge tui · CLI v0.1.0                                                   daemon 1/2 · refreshed <1s ago ·  ? help
+ ┌ schema skew ───────────────────────────────────────────────────────────────────────────────┐
+ │ daemon at /Users/x/Library/Application Support/drawbridge/run/introspect-lima-scratch.sock │
+ │ speaks introspection schema 2; this build knows 1 (daemon v0.2.0, CLI v0.1.0)              │
+ └────────────────────────────────────────────────────────────────────────────────────────────┘
+ ! a socket answered with something that is not a snapshot: introspect: unreadable snapshot: /tmp/introspect-bad.sock:…
+
+ ┌ daemons ────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ ▸ 1  lima:dev       root  pid 4242   v0.1.0  2 mirrors                                              │
+ │   2  colima:colima  user  pid 71234  v0.1.0  5 mirrors                                              │
+ │      lima:scratch   —     schema 2 (daemon v0.2.0)                                                  │
+ │      [unreadable]   —     introspect: unreadable snapshot: /tmp/introspect-bad.sock: unexpected EOF │
+ │ enter select · esc close                                                                            │
+ └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  tab next daemon · r refusals · d doctor · ? help · q quit

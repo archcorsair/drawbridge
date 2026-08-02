@@ -1,0 +1,81 @@
+# drawbridge Phase 1 dev VM: Ubuntu 24.04 (kernel 6.8+, BTF, cgroup v2)
+# with the BPF toolchain. The repo is mounted read-write at the same path
+# as on the host, so `go generate` output lands directly in the worktree.
+minimumLimaVersion: "1.0.0"
+vmType: "vz"
+cpus: 4
+memory: "4GiB"
+disk: "30GiB"
+
+images:
+- location: "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img"
+  arch: "aarch64"
+- location: "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img"
+  arch: "x86_64"
+
+mounts:
+- location: "~/ghq/github.com/archcorsair/drawbridge"
+  writable: true
+
+# vzNAT gives the guest a host-reachable IP: the drawbridge transport dials
+# it directly. Lima's port-forward tunnel is NOT a plain TCP pipe — it drops
+# TCP half-close (verified 2026-07-30: FIN across the forward kills the
+# whole stream), which breaks upload-then-ack flows through 'S'/'D'.
+networks:
+- vzNAT: true
+
+# Lima's automatic port forwarding would duplicate exactly what drawbridge
+# provides — disable it, except the drawbridge agent control/stream port
+# (kept as a fallback path; the transport prefers the vzNAT address).
+#
+# The ignore rule needs all three of guestIP/guestIPMustBeZero/proto spelled
+# out on lima 2.x (lima#4403): a rule's guestIP defaults to 127.0.0.1, and the
+# hostagent skips ignore rules whose guestIP is non-zero when the guest bind
+# is wildcard — so a bare `ignore: true` still forwarded every guest 0.0.0.0
+# listener onto Mac loopback (docs/ergonomics.md §8, Phase 2 results). Setting
+# guestIP: 0.0.0.0 alone is the other half of the trap: lima then derives
+# guestIPMustBeZero: true and the rule stops matching loopback binds.
+portForwards:
+- guestPort: 4777
+  hostIP: "127.0.0.1"
+  hostPort: 4777
+- guestIP: "0.0.0.0"
+  guestIPMustBeZero: false
+  proto: any
+  guestPortRange: [1, 65535]
+  hostPortRange: [1, 65535]
+  ignore: true
+
+containerd:
+  system: false
+  user: false
+
+provision:
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y clang llvm make gcc libbpf-dev
+    if [ ! -x /usr/local/go/bin/go ]; then
+      ARCH=$(dpkg --print-architecture)
+      curl -fsSL "https://go.dev/dl/go1.26.5.linux-${ARCH}.tar.gz" -o /tmp/go.tgz
+      rm -rf /usr/local/go
+      tar -C /usr/local -xzf /tmp/go.tgz
+      rm /tmp/go.tgz
+    fi
+    # v6 gateway address for ::1 interception (idempotent)
+    ip addr add fd77::2/128 dev lo 2>/dev/null || true
+
+probes:
+- description: "go toolchain installed"
+  script: |
+    #!/bin/bash
+    set -eu
+    until [ -x /usr/local/go/bin/go ]; do sleep 3; done
+- description: "clang installed"
+  script: |
+    #!/bin/bash
+    set -eu
+    until command -v clang >/dev/null 2>&1; do sleep 3; done

@@ -1,0 +1,40 @@
+ drawbridge tui · CLI v0.1.0                                                   daemon 1/2 · refreshed <1s ago ·  ? help
+
+ ┌ keys ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │ Global                                                                                                           │
+ │   q, ctrl+c           quit (terminal restored)                                                                   │
+ │   ?                   toggle this help overlay                                                                   │
+ │   esc                 close the topmost overlay, else the refusals pane; doctor view: cancel a gather, else back │
+ │   tab, l, right       next daemon                                                                                │
+ │   shift+tab, h, left  previous daemon                                                                            │
+ │   1-9                 select daemon N (switcher order)                                                           │
+ │   v                   toggle the daemon switcher overlay                                                         │
+ │   r                   toggle the refusals pane (the footer counts what it has not shown yet)                     │
+ │   d                   open the doctor view (runs a gather on first entry)                                        │
+ │   x                   dashboard: expand / collapse the folded ephemeral SYNC rows                                │
+ │                                                                                                                  │
+ │ Scrolling                                                                                                        │
+ │   j, down             line down (doctor view: move the cursor)                                                   │
+ │   k, up               line up (doctor view: move the cursor)                                                     │
+ │   pgdn, space         page down                                                                                  │
+ │   pgup, b             page up                                                                                    │
+ │   g                   top                                                                                        │
+ │   G                   bottom (re-engages follow in the refusals pane)                                            │
+ │                                                                                                                  │
+ │ Doctor view                                                                                                      │
+ │   enter               expand / collapse the selected finding                                                     │
+ │   R                   re-run the gather                                                                          │
+ │   p                   re-run with the half-close probe (~20s+)                                                   │
+ │                                                                                                                  │
+ │ Switcher overlay                                                                                                 │
+ │   j/k, up/down        move                                                                                       │
+ │   enter               select daemon and close                                                                    │
+ │   esc, v              close without changing selection                                                           │
+ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+  tab next daemon · r refusals · d doctor · ? help · q quit

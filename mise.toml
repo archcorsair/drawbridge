@@ -1,0 +1,13 @@
+[tools]
+go = "1.26.5"
+just = "1.57.0"
+lima = "2.2.0"
+# Release engineering (docs/ergonomics.md §2, §8 Phase 6). Pinned exactly so a
+# snapshot built here and a tagged release built on the runner come out of the
+# same schema — .goreleaser.yaml is `version: 2`.
+"aqua:goreleaser/goreleaser" = "2.17.1"
+# Colima is Lima under colima's own config dir. It is not part of any task —
+# CI never has a Colima VM — but the manual provider-support recipe in
+# docs/verify-colima.md is the verification artifact for every Colima claim,
+# and it has to be runnable without reaching for brew.
+"aqua:abiosoft/colima" = "0.10.3"

@@ -1,0 +1,24 @@
+ drawbridge tui · v0.1.0                             daemon 1/2 · <1s ·  ? help
+ colima:colima · user · pid 71234 · v0.1.0 · up 2h14m
+ endpoint tcp://192.168.64.5:4777 (vznat-direct)
+ auth static-hmac-v1 ok
+ mirror up · event 12s ago   sync up · adv 3 · parked 4
+ MIRROR (5)                                                            skip: 22
+ PROTO  PORT   STATE         SINCE
+ tcp    5000   bind-failed   40s
+ tcp    3000   bound         2m
+ tcp    8080   bound         2m
+ udp    5353   bound         1m
+ tcp    22     skipped       2h
+
+
+ ─ refusals · 15 kept (ring carries last 32 per refresh) ──────────────────────
+ 18:30:54  mirror-skip              guest tcp :9004 not mirrored (skip list)
+ 18:30:55  mirror-skip              guest tcp :9005 not mirrored (skip list)
+ 18:30:56  mirror-skip              guest tcp :9006 not mirrored (skip list)
+ 18:30:57  mirror-skip              guest tcp :9007 not mirrored (skip list)
+ 18:30:58  mirror-skip              guest tcp :9008 not mirrored (skip list)
+ 18:30:59  mirror-skip              guest tcp :9009 not mirrored (skip list)
+ 18:31:00  mirror-skip              guest tcp :9010 not mirrored (skip list)
+ 18:31:01  mirror-skip              guest tcp :9011 not mirrored (skip list)
+ tab next daemon · r refusals · d doctor · ? help · q quit

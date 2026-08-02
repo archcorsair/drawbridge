@@ -1,0 +1,28 @@
+{
+	name=lima-drawbridge
+	ip_address=192.168.64.2
+	hw_address=1,52:55:55:a5:de:d2
+	identifier=1,52:55:55:a5:de:d2
+	lease=0x6a6c420d
+}
+{
+	name=colima
+	ip_address=192.168.64.20
+	hw_address=1,52:55:55:a:de:2
+	identifier=1,52:55:55:a:de:2
+	lease=0x6a6c4300
+}
+{
+	name=colima-work
+	ip_address=192.168.64.21
+	hw_address=1,52:55:55:a:de:3
+	identifier=1,52:55:55:a:de:3
+	lease=0x6a6c4301
+}
+{
+	name=lima-colima
+	ip_address=192.168.64.22
+	hw_address=1,52:55:55:a:de:4
+	identifier=1,52:55:55:a:de:4
+	lease=0x6a6c4302
+}

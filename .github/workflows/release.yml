@@ -1,0 +1,54 @@
+name: Release
+
+# DORMANT: GitHub Actions are disabled repo-wide while drawbridge is private.
+# This workflow does nothing until the user re-enables Actions and pushes a
+# vX.Y.Z tag (docs/ergonomics.md §8 Phase 6).
+#
+# There is no test job here on purpose — CI is ci.yml's job, and the release
+# protocol is that the user runs the full suite (`just test-guest`, `just
+# e2e`, `go test ./...`) before tagging. A tag push means "this commit was
+# already verified"; this workflow only builds and publishes it.
+#
+# Secrets it needs:
+#   GITHUB_TOKEN         — provided automatically; contents:write below lets
+#                          goreleaser create the release in THIS repo.
+#   HOMEBREW_TAP_TOKEN   — a fine-grained PAT with contents:write on
+#                          archcorsair/homebrew-drawbridge only. GITHUB_TOKEN
+#                          cannot write to another repository.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: goreleaser
+    # macOS runner: the release builds darwin universal binaries, and
+    # `lipo` is macOS-only. The guest binaries are plain Go cross-builds
+    # (CGO_ENABLED=0), so they need nothing beyond the toolchain.
+    runs-on: macos-latest
+    steps:
+      # fetch-depth: 0 — goreleaser needs the full history and tags to
+      # compute the version and the changelog.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # Pinned to the exact version mise.toml pins, so a snapshot built by
+      # `just release-snapshot` and the tagged release built here come out of
+      # the same goreleaser. Bump both together.
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: '2.17.1'
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

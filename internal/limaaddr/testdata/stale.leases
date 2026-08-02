@@ -1,0 +1,26 @@
+{
+	name=lima-drawbridge
+	ip_address=192.168.64.2
+	hw_address=1,52:55:55:a5:de:d2
+	identifier=1,52:55:55:a5:de:d2
+	lease=0x6a6c420d
+}
+{
+	name=lima-drawbridge
+	ip_address=192.168.64.8
+	hw_address=1,52:55:55:de:ad:01
+	identifier=1,52:55:55:de:ad:01
+	lease=0x6a6c9999
+}
+{
+	name=lima-drawbridge
+	ip_address=192.168.5.15
+	hw_address=1,52:55:55:de:ad:02
+	lease=0x6a6cffff
+}
+{
+	name=lima-drawbridge
+	ip_address=17.253.144.10
+	hw_address=1,52:55:55:de:ad:03
+	lease=0x6a6cfffe
+}

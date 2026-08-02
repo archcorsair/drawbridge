@@ -1,0 +1,8 @@
+{
+    "default-runtime": "drawbridge",
+    "runtimes": {
+        "drawbridge": {
+            "path": "/usr/local/bin/drawbridge-runc"
+        }
+    }
+}

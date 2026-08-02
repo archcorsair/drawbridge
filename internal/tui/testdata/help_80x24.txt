@@ -1,0 +1,24 @@
+ drawbridge tui · v0.1.0                             daemon 1/1 · <1s ·  ? help
+
+ ┌ keys ──────────────────────────────────────────────────────────────────────┐
+ │ Global                                                                     │
+ │   q, ctrl+c           quit (terminal restored)                             │
+ │   ?                   toggle this help overlay                             │
+ │   esc                 close the topmost overlay, else the refusals pane; … │
+ │   tab, l, right       next daemon                                          │
+ │   shift+tab, h, left  previous daemon                                      │
+ │   1-9                 select daemon N (switcher order)                     │
+ │   v                   toggle the daemon switcher overlay                   │
+ │   r                   toggle the refusals pane (the footer counts what it… │
+ │   d                   open the doctor view (runs a gather on first entry)  │
+ │   x                   dashboard: expand / collapse the folded ephemeral S… │
+ │                                                                            │
+ │ Scrolling                                                                  │
+ │   j, down             line down (doctor view: move the cursor)             │
+ │   k, up               line up (doctor view: move the cursor)               │
+ │   pgdn, space         page down                                            │
+ │   pgup, b             page up                                              │
+ │   g                   top                                                  │
+ │ … +11 more                                                                 │
+ └────────────────────────────────────────────────────────────────────────────┘
+ tab next daemon · r refusals · d doctor · ? help · q quit

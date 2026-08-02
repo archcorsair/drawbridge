@@ -1,0 +1,40 @@
+ drawbridge tui · CLI v0.1.0                                                    no daemon · refreshed <1s ago ·  ? help
+ ┌ no daemon ────────────────────────────────────────────────────────────┐
+ │ no drawbridge daemon is answering                                     │
+ │                                                                       │
+ │ checked                                                               │
+ │   /var/run/drawbridge/introspect.sock                                 │
+ │   ~/Library/Application Support/drawbridge/run/                       │
+ │                                                                       │
+ │ start one                                                             │
+ │   drawbridged                  foreground; mirrors ports ≥1024        │
+ │   sudo drawbridge install      the root LaunchDaemon, for ports <1024 │
+ │                                                                       │
+ │ re-checking every second — this screen heals itself                   │
+ └───────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  tab next daemon · r refusals · d doctor · ? help · q quit
