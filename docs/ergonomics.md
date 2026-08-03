@@ -125,6 +125,8 @@ Consequences to design around, not discover:
 
 ### 2.3 Homebrew
 
+*(Superseded in execution: goreleaser 2.17 deprecated `brews:`; the tap ships a cask instead — see the §8 "Release engineering" amendment. The paragraph below stands as the ratified intent.)*
+
 goreleaser's `brews` publisher maintains a formula in
 `github.com/archcorsair/homebrew-drawbridge` (user creates the repo alongside the
 main push). Formula installs `drawbridge` and `drawbridged` into brew's
