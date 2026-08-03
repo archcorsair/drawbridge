@@ -321,14 +321,35 @@ discriminates." The ssh-forwarder wrong-VM hazard (Phase 3 addendum: colima
 target silently attaching to the dev VM's loopback :4777) is named whenever
 `source=ssh-forwarder` and more than one VM is running.
 
-**5. `vznat-route` — route and ARP present.** Inputs: `netstat -rn -f inet`
-and `arp -n <candidate IP>` output (live), parsed pure. Route for the vmnet
-subnet missing → `fail` naming the finding-1 pathology (route deleted while
+**5. `vznat-route` — route *type* and ARP present.** Inputs:
+`netstat -rn -f inet`, `arp -n <candidate IP>`, the whole `arp -an` table
+(live), and check 6's dial classification, parsed pure. "A route is
+present" is not one state — finding 1's 2026-08-02 recurrence had a present
+route and dead routing — so the classifier reads the covering route's
+*type*. A connected/on-link route (gateway `link#N`, no `G` flag) →
+healthy. A `UGSc` gateway static via the subnet's own gateway with **no
+connected route underneath** → `fail` (softened to `warn` only when check
+6's probe connected anyway): the static's gateway is only resolvable
+through the connected route it stands in for, so the table says "present"
+while connects return ENETUNREACH and the gateway itself EHOSTUNREACH.
+Evidence carries the route line verbatim, check 6's errno class, and —
+when the guest is up — the subnet-wide ARP emptiness (`arp -an` with no
+resolved entry in the subnet; a single candidate line can age out
+innocently, the whole subnet going quiet cannot). Remedy:
+`sudo route -n delete -net <subnet>` then the address bounce. Route missing
+entirely → `fail` naming the finding-1 pathology (route deleted while
 `bridge100` still holds the gateway address; Tailscale / LS-uninstall
-suspects) and the exact remediation:
-`sudo route -n add -net 192.168.64.0/24 192.168.64.1` (substituting a
-non-default `-vm-subnet`). Route present, ARP absent, guest running → `warn`
-(first traffic populates it; only meaningful with probes also failing).
+suspects) and the remediation that actually reinstalls the connected route
+— the address bounce
+`sudo ifconfig bridge100 -alias 192.168.64.1 && sudo ifconfig bridge100
+alias 192.168.64.1 netmask 255.255.255.0` (substituting a non-default
+`-vm-subnet`; configuring the address is what installs the connected
+route). Never the former `route -n add` static remediation: the recurrence
+proved it a crutch that dies as soon as its gateway needs the missing
+connected route to resolve, and `route add -interface` gets EINVAL on this
+macOS. Route present and connected, ARP absent, guest running → `warn`
+carrying check 6's errno class (first traffic populates it; only
+meaningful with probes also failing).
 
 **6. `local-network` — the sudo discriminator, both branches spelled out.**
 Inputs: doctor's own unprivileged TCP dial to the resolved vzNAT candidate

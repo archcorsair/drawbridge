@@ -7,6 +7,7 @@ package doctor
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -673,11 +674,22 @@ type RouteInput struct {
 	CandidateIP string
 	GuestUp     bool
 
+	// ARPTableOut is the whole `arp -an` table. A subnet with no resolved
+	// entry at all while the guest is up corroborates the crutch verdict —
+	// the single-candidate ARPOut can't distinguish "one line aged out" from
+	// "nothing moves on this link".
+	ARPTableOut string
+
 	// ProbeOK is check 6's dial result. A missing ARP entry is only
 	// meaningful alongside a failing probe (§4): traffic populates the cache,
 	// and a connection that just succeeded is better evidence than a cache
 	// line that has since aged out.
 	ProbeOK bool
+
+	// ProbeNote is check 6's dial classification (errno class). Route
+	// "present" + ENETUNREACH/EHOSTUNREACH is the crutch signature, so the
+	// errno belongs in check 5's evidence, not only check 6's.
+	ProbeNote string
 }
 
 // CheckVZNATRoute classifies the route-deletion pathology (finding 1) and
@@ -696,7 +708,9 @@ func CheckVZNATRoute(in RouteInput) Finding {
 	}
 
 	gw := gatewayOf(subnet)
-	if !RoutePresent(in.NetstatOut, subnet) {
+	class, routeLine := classifyRoute(in.NetstatOut, subnet)
+
+	if class == routeAbsent {
 		f.Status = StatusFail
 		f.Title = fmt.Sprintf("vzNAT route — no route for %s", subnet)
 		f.Evidence = append(f.Evidence,
@@ -704,9 +718,42 @@ func CheckVZNATRoute(in RouteInput) Finding {
 			"the connected route can be deleted while the interface still holds the gateway address — unscoped lookups then fall "+
 				"through to the LAN default and are black-holed, for every app including root. Observed suspects: Tailscale route "+
 				"management, and a Little Snitch uninstall queued across a reboot.")
-		f.Remedy = fmt.Sprintf("sudo route -n add -net %s %s", subnet, gw)
+		f.Remedy = bounceRemedy("bridge100", subnet, gw)
 		return f
 	}
+
+	// The 2026-08-02 recurrence of finding 1: a `route -n add` static via the
+	// subnet's own gateway survives the connected route's deletion, so the
+	// table says "present" while the static's gateway has nothing to resolve
+	// through — ENETUNREACH everywhere, EHOSTUNREACH to the gateway itself.
+	if class == routeStaticOnly {
+		netif := netifOf(routeLine, "bridge100")
+		f.Evidence = append(f.Evidence,
+			"route table: "+routeLine,
+			fmt.Sprintf("a gateway static via %s with no connected route underneath: the static's gateway is only resolvable "+
+				"through the connected route it stands in for — the 2026-08-02 incident shape, where the table said a route "+
+				"was present while every connect returned ENETUNREACH and %s itself EHOSTUNREACH", gw, gw))
+		if !in.ProbeOK && in.ProbeNote != "" {
+			f.Evidence = append(f.Evidence, "candidate probe: "+in.ProbeNote)
+		}
+		if in.GuestUp && ARPSubnetEmpty(in.ARPTableOut, subnet) {
+			f.Evidence = append(f.Evidence,
+				fmt.Sprintf("`arp -an` has no resolved entry in %s at all while the guest is up — nothing is moving on the link", subnet))
+		}
+		f.Remedy = fmt.Sprintf("sudo route -n delete -net %s; then %s", subnet, bounceRemedy(netif, subnet, gw))
+		if in.ProbeOK {
+			f.Status = StatusWarn
+			f.Title = fmt.Sprintf("vzNAT route — %s reachable, but only via a gateway static", subnet)
+			f.Evidence = append(f.Evidence,
+				"the host reached the guest anyway (check 6), so the static is carrying traffic today — it is still one route flap "+
+					"from the incident shape; replace it with the connected route")
+			return f
+		}
+		f.Status = StatusFail
+		f.Title = fmt.Sprintf("vzNAT route — %s has a static route but no connected route", subnet)
+		return f
+	}
+
 	f.Evidence = append(f.Evidence, fmt.Sprintf("route for %s present", subnet))
 
 	if in.CandidateIP == "" {
@@ -729,10 +776,25 @@ func CheckVZNATRoute(in RouteInput) Finding {
 		f.Title = fmt.Sprintf("vzNAT route — %s present", subnet)
 		return f
 	}
+	if in.ProbeNote != "" {
+		f.Evidence = append(f.Evidence, "candidate probe: "+in.ProbeNote)
+	}
 	f.Status = StatusWarn
 	f.Title = fmt.Sprintf("vzNAT route — %s present, no ARP entry for %s", subnet, in.CandidateIP)
 	f.Remedy = "first traffic populates the cache; this is only meaningful alongside a failing probe (check 6)"
 	return f
+}
+
+// bounceRemedy is the repair that actually reinstalls the connected route:
+// configuring the interface address is what installs it. A `route -n add`
+// static via the gateway is the finding-1 crutch — it dies as soon as its
+// gateway needs the missing connected route to resolve — and the
+// `-interface` route add form gets EINVAL on this macOS.
+func bounceRemedy(netif string, subnet netip.Prefix, gw netip.Addr) string {
+	return fmt.Sprintf("sudo ifconfig %s -alias %s && sudo ifconfig %s alias %s netmask %s — re-adding the interface "+
+		"address installs the connected route (a `route -n add` static via %s is a crutch that dies without it; "+
+		"`route add -interface` gets EINVAL on this macOS)",
+		netif, gw, netif, gw, netmaskOf(subnet), gw)
 }
 
 // gatewayOf is the vmnet gateway: the subnet's first host, which is the
@@ -742,10 +804,42 @@ func gatewayOf(p netip.Prefix) netip.Addr { return p.Masked().Addr().Next() }
 // RoutePresent looks for a destination covering the subnet in `netstat -rn`
 // output. macOS abbreviates a classful destination — a /24 prints as
 // "192.168.64" — so a plain string compare against the CIDR finds nothing.
+// "Present" deliberately includes the crutch static: CheckVZNATRoute's
+// classification is what tells the two apart.
 func RoutePresent(netstat string, subnet netip.Prefix) bool {
+	class, _ := classifyRoute(netstat, subnet)
+	return class != routeAbsent
+}
+
+// routeClass is what kind of route covers the subnet. "A route is present"
+// is not one state — the 2026-08-02 recurrence of finding 1 had a present
+// route and dead routing.
+type routeClass int
+
+const (
+	routeAbsent routeClass = iota
+	// routeConnected is the healthy shape: the on-link route vmnet installs
+	// when the bridge holds the gateway address (gateway `link#N`, no G
+	// flag) — the kernel delivers without resolving a gateway.
+	routeConnected
+	// routeStaticOnly is the crutch: a G-flagged static via an address
+	// inside the subnet itself, with no connected route underneath. The
+	// gateway can only be resolved *through* the missing connected route.
+	routeStaticOnly
+	// routeOther is a covering route the classifier cannot place (no flags
+	// column, gateway outside the subnet). Treated as present: doctor does
+	// not manufacture fail verdicts from rows it cannot read.
+	routeOther
+)
+
+// classifyRoute reads every route-table line covering the subnet and returns
+// the classification plus the line that earned it. A connected route
+// anywhere wins — the crutch verdict is specifically about its absence.
+func classifyRoute(netstat string, subnet netip.Prefix) (routeClass, string) {
 	want := subnet.Masked()
-	for _, line := range strings.Split(netstat, "\n") {
-		fields := strings.Fields(line)
+	var staticLine, otherLine string
+	for _, l := range strings.Split(netstat, "\n") {
+		fields := strings.Fields(l)
 		if len(fields) < 2 {
 			continue
 		}
@@ -753,21 +847,52 @@ func RoutePresent(netstat string, subnet netip.Prefix) bool {
 		if !ok {
 			continue
 		}
-		if got == want || (got.Bits() <= want.Bits() && got.Contains(want.Addr()) && got.Bits() > 0) {
-			return true
+		if got != want && !(got.Bits() > 0 && got.Bits() <= want.Bits() && got.Contains(want.Addr())) {
+			continue
+		}
+		gw := fields[1]
+		flags := ""
+		if len(fields) >= 3 {
+			flags = fields[2]
+		}
+		gwAddr, gwErr := netip.ParseAddr(gw)
+		switch {
+		case strings.HasPrefix(gw, "link#") || (flags != "" && !strings.Contains(flags, "G")):
+			return routeConnected, strings.TrimSpace(l)
+		case strings.Contains(flags, "G") && gwErr == nil && subnet.Contains(gwAddr):
+			staticLine = strings.TrimSpace(l)
+		default:
+			otherLine = strings.TrimSpace(l)
 		}
 	}
-	return false
+	switch {
+	case staticLine != "":
+		return routeStaticOnly, staticLine
+	case otherLine != "":
+		return routeOther, otherLine
+	}
+	return routeAbsent, ""
 }
 
 // parseRouteDest reads a netstat destination column: "192.168.64",
-// "192.168.64.0/24", "192.168.64.2". A bare dotted form with fewer than four
-// octets is macOS's abbreviation and is zero-filled to its implied prefix.
+// "192.168.64.0/24", "192.168.64.2", "10.11.12/24". A dotted form with fewer
+// than four octets is macOS's abbreviation and is zero-filled — bare to its
+// implied classful prefix, masked (the non-classful print) to its stated one.
 func parseRouteDest(s string) (netip.Prefix, bool) {
 	if s == "" || s == "default" {
 		return netip.Prefix{}, false
 	}
-	if p, err := netip.ParsePrefix(s); err == nil {
+	if addrPart, bitsPart, ok := strings.Cut(s, "/"); ok {
+		if octets := strings.Split(addrPart, "."); len(octets) > 0 && len(octets) < 4 {
+			for len(octets) < 4 {
+				octets = append(octets, "0")
+			}
+			s = strings.Join(octets, ".") + "/" + bitsPart
+		}
+		p, err := netip.ParsePrefix(s)
+		if err != nil || !p.Addr().Is4() {
+			return netip.Prefix{}, false
+		}
 		return p.Masked(), true
 	}
 	octets := strings.Split(s, ".")
@@ -785,6 +910,21 @@ func parseRouteDest(s string) (netip.Prefix, bool) {
 	return netip.PrefixFrom(addr, bits).Masked(), true
 }
 
+// netifOf reads the Netif column (Destination Gateway Flags Netif) of a
+// route-table line, for naming the interface in a remedy.
+func netifOf(line, fallback string) string {
+	if fields := strings.Fields(line); len(fields) >= 4 {
+		return fields[3]
+	}
+	return fallback
+}
+
+// netmaskOf prints the dotted-quad mask ifconfig wants for the subnet.
+func netmaskOf(p netip.Prefix) string {
+	m := net.CIDRMask(p.Bits(), 32)
+	return net.IP(m).String()
+}
+
 // ARPPresent reads `arp -n <ip>` output. A resolved entry names a hardware
 // address; "no entry" is the miss.
 func ARPPresent(out string) bool {
@@ -793,6 +933,30 @@ func ARPPresent(out string) bool {
 		return false
 	}
 	return strings.Contains(s, " at ") && !strings.Contains(s, "(incomplete)")
+}
+
+// ARPSubnetEmpty reads a whole `arp -an` table and reports whether the
+// subnet has no resolved entry at all. In the 2026-08-02 incident the
+// subnet's table was completely empty while the guest was up — a single
+// candidate line can age out innocently; the whole subnet going quiet
+// cannot. (incomplete) entries count as empty: L2 delivery is failing.
+func ARPSubnetEmpty(table string, subnet netip.Prefix) bool {
+	for _, line := range strings.Split(table, "\n") {
+		o := strings.IndexByte(line, '(')
+		c := strings.IndexByte(line, ')')
+		if o < 0 || c <= o {
+			continue
+		}
+		addr, err := netip.ParseAddr(line[o+1 : c])
+		if err != nil || !subnet.Contains(addr) {
+			continue
+		}
+		low := strings.ToLower(line)
+		if strings.Contains(low, " at ") && !strings.Contains(low, "(incomplete)") {
+			return false
+		}
+	}
+	return true
 }
 
 // ---------------------------------------------------------------------------

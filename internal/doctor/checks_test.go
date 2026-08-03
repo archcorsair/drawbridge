@@ -383,6 +383,40 @@ default            192.168.1.1        UGScg                 en0
 127                127.0.0.1          UCS                   lo0
 `
 
+// The 2026-08-02 recurrence of finding 1, live shape: the connected route
+// deleted (Tailscale route management suspected) while the manually added
+// static — `route -n add -net 192.168.64.0/24 192.168.64.1` — survived in
+// the table. "Present", and dead: ENETUNREACH on every connect,
+// EHOSTUNREACH to the gateway itself, empty subnet ARP.
+const netstatStaticCrutchFixture = `Routing tables
+
+Internet:
+Destination        Gateway            Flags               Netif Expire
+default            192.168.1.1        UGScg                 en0
+127                127.0.0.1          UCS                   lo0
+192.168.64         192.168.64.1       UGSc            bridge100
+`
+
+// Both routes at once — a leftover static under an intact connected route
+// is untidy, not the pathology.
+const netstatStaticPlusConnectedFixture = `Routing tables
+
+Internet:
+Destination        Gateway            Flags               Netif Expire
+192.168.64         link#20            UC              bridge100
+192.168.64         192.168.64.1       UGSc            bridge100
+`
+
+// `arp -an` during the incident: the LAN populated, the vmnet subnet
+// completely absent.
+const arpTableEmptyFixture = `? (192.168.1.1) at a0:b1:c2:d3:e4:f5 on en0 ifscope [ethernet]
+? (192.168.1.77) at 11:22:33:44:55:66 on en0 ifscope [ethernet]
+`
+
+const arpTableLiveFixture = `? (192.168.1.1) at a0:b1:c2:d3:e4:f5 on en0 ifscope [ethernet]
+? (192.168.64.2) at 52:55:55:a5:de:d2 on bridge100 ifscope [bridge]
+`
+
 // Both verbatim from macOS: a miss exits non-zero and prints on stdout, so
 // the classifier reads output rather than an exit status.
 const arpHit = "? (192.168.64.2) at 52:55:55:a5:de:d2 on bridge100 ifscope [bridge]\n"
@@ -404,6 +438,8 @@ func TestRoutePresent(t *testing.T) {
 		{"a wider route covers it", "192.168 link#20 UC bridge100\n", "192.168.64.0/24", true},
 		{"default never counts", "default 192.168.1.1 UGScg en0\n", "192.168.64.0/24", false},
 		{"a non-default subnet", "10.0.5 link#20 UC bridge100\n", "10.0.5.0/24", true},
+		{"the abbreviated-with-mask non-classful print", "10.11.12/24 link#20 UC bridge100\n", "10.11.12.0/24", true},
+		{"the crutch static still counts as present", netstatStaticCrutchFixture, "192.168.64.0/24", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -425,6 +461,27 @@ func TestARPPresent(t *testing.T) {
 	}
 }
 
+func TestARPSubnetEmpty(t *testing.T) {
+	subnet := mustPrefix("192.168.64.0/24")
+	tests := []struct {
+		name  string
+		table string
+		want  bool
+	}{
+		{"the incident shape: LAN populated, subnet absent", arpTableEmptyFixture, true},
+		{"an entirely empty table", "", true},
+		{"a resolved subnet entry", arpTableLiveFixture, false},
+		{"an incomplete entry is still empty", "? (192.168.64.2) at (incomplete) on bridge100 ifscope [bridge]\n", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ARPSubnetEmpty(tc.table, subnet); got != tc.want {
+				t.Fatalf("ARPSubnetEmpty = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCheckVZNATRoute(t *testing.T) {
 	base := RouteInput{Subnet: mustPrefix("192.168.64.0/24"), CandidateIP: "192.168.64.2", GuestUp: true}
 
@@ -439,9 +496,12 @@ func TestCheckVZNATRoute(t *testing.T) {
 		in.NetstatOut, in.ARPOut = netstatNoRouteFixture, arpMiss
 		f := CheckVZNATRoute(in)
 		wantStatus(t, f, StatusFail)
-		if f.Remedy != "sudo route -n add -net 192.168.64.0/24 192.168.64.1" {
-			t.Fatalf("remedy = %q", f.Remedy)
-		}
+		// The repair is the address bounce that reinstalls the connected
+		// route — never the `route -n add` static, which the 2026-08-02
+		// recurrence proved to be a crutch.
+		wantContains(t, f, "sudo ifconfig bridge100 -alias 192.168.64.1")
+		wantContains(t, f, "netmask 255.255.255.0")
+		wantNotContains(t, f, "sudo route -n add")
 		wantContains(t, f, "Tailscale")
 	})
 
@@ -453,17 +513,69 @@ func TestCheckVZNATRoute(t *testing.T) {
 		in.CandidateIP = "10.11.12.5"
 		in.NetstatOut = netstatNoRouteFixture
 		f := CheckVZNATRoute(in)
-		if f.Remedy != "sudo route -n add -net 10.11.12.0/24 10.11.12.1" {
-			t.Fatalf("remedy = %q", f.Remedy)
-		}
+		wantContains(t, f, "-alias 10.11.12.1")
+		wantNotContains(t, f, "192.168.64")
+	})
+
+	// The 2026-08-02 recurrence: the table says "present" but the only
+	// covering route is the UGSc static via the subnet's own gateway. That
+	// is fail-grade — the static's gateway has nothing to resolve through.
+	t.Run("static crutch without connected route", func(t *testing.T) {
+		in := base
+		in.NetstatOut = netstatStaticCrutchFixture
+		in.ARPOut, in.ARPTableOut = arpMiss, arpTableEmptyFixture
+		in.ProbeNote = "dial: ENETUNREACH (the route table cannot carry a packet there)"
+		f := CheckVZNATRoute(in)
+		wantStatus(t, f, StatusFail)
+		wantContains(t, f, "route table: 192.168.64")
+		wantContains(t, f, "UGSc")
+		wantContains(t, f, "ENETUNREACH")
+		wantContains(t, f, "no resolved entry in 192.168.64.0/24")
+		wantContains(t, f, "sudo route -n delete -net 192.168.64.0/24")
+		wantContains(t, f, "sudo ifconfig bridge100 -alias 192.168.64.1")
+		wantContains(t, f, "netmask 255.255.255.0")
+	})
+
+	// A live subnet ARP weakens nothing else, but the empty-table line must
+	// not appear when the cache has a resolved entry for the subnet.
+	t.Run("static crutch with a populated subnet ARP", func(t *testing.T) {
+		in := base
+		in.NetstatOut = netstatStaticCrutchFixture
+		in.ARPOut, in.ARPTableOut = arpHit, arpTableLiveFixture
+		f := CheckVZNATRoute(in)
+		wantStatus(t, f, StatusFail)
+		wantNotContains(t, f, "no resolved entry")
+	})
+
+	// A probe that connected demonstrates the static is carrying traffic —
+	// that softens the verdict to warn, but the repair is still named.
+	t.Run("static crutch but the probe succeeded", func(t *testing.T) {
+		in := base
+		in.NetstatOut, in.ProbeOK = netstatStaticCrutchFixture, true
+		in.ARPTableOut = arpTableLiveFixture
+		f := CheckVZNATRoute(in)
+		wantStatus(t, f, StatusWarn)
+		wantContains(t, f, "one route flap")
+		wantContains(t, f, "sudo route -n delete -net 192.168.64.0/24")
+	})
+
+	// A leftover static under an intact connected route is not the
+	// pathology — the connected route wins the classification.
+	t.Run("static plus connected is healthy", func(t *testing.T) {
+		in := base
+		in.NetstatOut, in.ARPOut = netstatStaticPlusConnectedFixture, arpHit
+		wantStatus(t, CheckVZNATRoute(in), StatusOK)
 	})
 
 	t.Run("route present, no arp", func(t *testing.T) {
 		in := base
 		in.NetstatOut, in.ARPOut = netstatFixture, arpMiss
+		in.ProbeNote = "dial: EHOSTUNREACH (no route, or the host-side gate refused it)"
 		f := CheckVZNATRoute(in)
 		wantStatus(t, f, StatusWarn)
 		wantContains(t, f, "first traffic populates")
+		// The errno class travels with the warn so check 6 cross-reads.
+		wantContains(t, f, "EHOSTUNREACH")
 	})
 
 	// A cache line that aged out while the host demonstrably reaches the

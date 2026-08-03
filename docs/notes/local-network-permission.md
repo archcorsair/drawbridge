@@ -118,6 +118,29 @@ Two stacked problems, diagnosed in sequence:
    Restored with `sudo route -n add -net 192.168.64.0/24 192.168.64.1`
    (the `-interface bridge100` form got EINVAL on this build). Watch for
    recurrence on Tailscale reconnect / VM restart.
+
+   **Recurred twice since; the third occurrence (2026-08-02, Tailscale
+   route management again the suspect) exposed the connected-vs-static
+   distinction.** The `route -n add` restore above is a **crutch, not a
+   repair**: it installs a `UGSc` gateway static via the bridge's own
+   address, and that gateway is only resolvable *through* the connected
+   route the static stands in for. When the connected route was deleted
+   again, the static survived in the table — `netstat -rn` said a route
+   for the subnet was "present" — while the routing was dead: every
+   `192.168.64.x` connect returned **ENETUNREACH**, connecting to
+   `192.168.64.1` itself returned **EHOSTUNREACH**, and the subnet's ARP
+   table was completely empty (the LAN's was populated). The repair that
+   actually reinstalls the connected route is deleting the static and
+   bouncing the interface address — configuring the address is what
+   installs the connected route:
+   `sudo route -n delete -net 192.168.64.0/24`, then
+   `sudo ifconfig bridge100 -alias 192.168.64.1 && sudo ifconfig bridge100
+   alias 192.168.64.1 netmask 255.255.255.0` (`route add -interface` still
+   EINVAL on this build). Doctor check 5 now classifies the covering
+   route's *type* — a static-without-connected is fail-grade with this
+   repair named, corroborated by the probe's errno class and the
+   subnet-wide ARP emptiness — and its missing-route remedy is the address
+   bounce, never the static.
 2. **With the route restored, the Local Network permission denial appeared
    underneath**: unprivileged `nc` → EHOSTUNREACH; `sudo nc` → succeeded
    (root exempt, per TN3179). Prompts/Settings entries remain broken on this

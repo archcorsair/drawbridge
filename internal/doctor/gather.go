@@ -352,11 +352,15 @@ func Gather(ctx context.Context, o Options) (Inputs, error) {
 		CandidateIP: candidate,
 		GuestUp:     haveTarget,
 		ProbeOK:     in.LocalNetwork.UserProbe == ProbeOK,
+		ProbeNote:   in.LocalNetwork.ProbeNote,
 	}
 	if candidate != "" {
 		arp := runCommand(ctx, "arp", "-n", candidate)
 		route.ARPOut, route.ARPErr = arp.Out, arp.Err
 	}
+	// The whole table, for the subnet-wide emptiness signal that corroborates
+	// the crutch verdict (a single candidate line can age out innocently).
+	route.ARPTableOut = runCommand(ctx, "arp", "-an").Out
 	in.Route = route
 
 	// --- 5. Mac-side daemon state ------------------------------------------
@@ -642,6 +646,8 @@ func localNetworkInput(ctx context.Context, candidate string, res limaaddr.Resol
 // an input to check 6, never its verdict.
 func classifyDialError(err error) string {
 	switch {
+	case errors.Is(err, syscall.ENETUNREACH):
+		return "dial: ENETUNREACH (the route table cannot carry a packet there — a gateway static whose gateway has no connected route to resolve through does this; check 5 classifies)"
 	case errors.Is(err, syscall.EHOSTUNREACH):
 		return "dial: EHOSTUNREACH (no route, or the host-side gate refused it)"
 	case errors.Is(err, syscall.ECONNREFUSED):
