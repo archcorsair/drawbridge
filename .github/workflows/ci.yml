@@ -7,11 +7,15 @@ name: CI
 # the cost — and `pull_request` on main covers fork PRs, which produce no
 # push event here. When the repo goes public for release (Phase 6), widen
 # push back to ['**'] so every branch verifies for free.
-# Manual-only while the repo is private: every push/PR run bills real macOS
-# minutes. When the repo goes public (free minutes), widen to
-#   push: { branches: ['**'] } and pull_request: { branches: [main] }
-# per docs/ergonomics.md §8 Phase 1.
+# Public-repo triggers (free minutes): every branch push, PRs into main,
+# and manual dispatch — docs/ergonomics.md §8 Phase 1. While the repo was
+# private this was dispatch-only; if it ever goes private again, narrow it
+# back before the first push.
 on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -35,8 +39,8 @@ jobs:
       matrix:
         go: ['1.25.x', '1.26.x']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: ${{ matrix.go }}
           cache-dependency-path: go.sum
@@ -64,8 +68,8 @@ jobs:
       matrix:
         go: ['1.25.x', '1.26.x']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: ${{ matrix.go }}
           cache-dependency-path: go.sum
