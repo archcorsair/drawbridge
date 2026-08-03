@@ -73,8 +73,9 @@ type Syncer struct {
 
 	// Introspection counters: conns currently parked waiting for an
 	// activation header, and whether the 'M' session is up.
-	parked    atomic.Int64
-	sessionUp atomic.Bool
+	parked       atomic.Int64
+	sessionUp    atomic.Bool
+	sessionSince atomic.Int64 // unix nanos of sessionUp's last transition; 0 ⇒ none yet
 
 	// advertised is the set of (proto, port) pairs this syncer most recently
 	// offered the guest — the bound handleStream dials within (Q8 c,
@@ -130,6 +131,9 @@ func (s *Syncer) Snapshot() introspect.Sync {
 		SessionUp:  s.sessionUp.Load(),
 		PoolParked: int(s.parked.Load()),
 		UDPPorts:   append([]uint16(nil), s.UDPPorts...),
+	}
+	if ns := s.sessionSince.Load(); ns != 0 {
+		out.Since = time.Unix(0, ns)
 	}
 	if adv := s.advertised.Load(); adv != nil {
 		for k := range *adv {
@@ -418,8 +422,15 @@ func (s *Syncer) session(ctx context.Context) error {
 		return err
 	}
 	s.setAdvertised(last)
+	// Since before Up on the way up, Up before Since on the way down: a
+	// snapshot that sees the session up never dates it with a stamp from a
+	// previous session.
+	s.sessionSince.Store(time.Now().UnixNano())
 	s.sessionUp.Store(true)
-	defer s.sessionUp.Store(false)
+	defer func() {
+		s.sessionUp.Store(false)
+		s.sessionSince.Store(time.Now().UnixNano())
+	}()
 	if len(last) == 0 {
 		s.noteEmptySession()
 	}

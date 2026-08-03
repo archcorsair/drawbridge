@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/archcorsair/drawbridge/internal/install"
 	"github.com/archcorsair/drawbridge/internal/introspect"
@@ -754,6 +755,34 @@ func TestCheckDaemonSurfacesEmptyAdvertisedSet(t *testing.T) {
 	f = CheckDaemon(DaemonInput{Status: st, InstalledVersion: "v0.1.0", CLIVersion: "v0.1.0",
 		Snapshots: []*introspect.Snapshot{snapshot(introspect.RootSocketPath, nil)}})
 	wantNotContains(t, f, "advertises nothing")
+}
+
+// The alarm rows (§7 rows 7/9, the advertised-set alarms) surface from the
+// ring with presence as the alarm — but ring entries never expire, so one
+// recorded before the sync session now up is dated as history rather than
+// left to read as live (§5's staleness rule). Fresh rows keep the bare
+// rendering.
+func TestCheckDaemonDatesStaleAlarmRows(t *testing.T) {
+	t0 := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	st := install.Status{PlistInstalled: true, BinaryInstalled: true, Loaded: true, State: "running", PID: 4242}
+	f := CheckDaemon(DaemonInput{Status: st, InstalledVersion: "v0.1.0", CLIVersion: "v0.1.0",
+		Snapshots: []*introspect.Snapshot{snapshot(introspect.RootSocketPath, func(s *introspect.State) {
+			s.Sync.Since = t0
+			s.RecentRefusals = []introspect.Refusal{
+				{At: t0.Add(-time.Hour), ID: introspect.IDReverseDialRefused,
+					Line: "drawbridged: macsync: refused reverse dial to 127.0.0.1:5432 (proto 6): not a port this Mac advertised"},
+				{At: t0.Add(time.Minute), ID: introspect.IDActivationReserved,
+					Line: "drawbridged: macsync: dropping reverse-stream conn: nonzero reserved byte in activation header"},
+			}
+		})}})
+	wantContains(t, f, "refused reverse dial")
+	wantContains(t, f, "predates the current sync session")
+	// The fresh row carries no staleness note.
+	for _, e := range f.Evidence {
+		if strings.Contains(e, "nonzero reserved byte") && strings.Contains(e, "predates") {
+			t.Fatalf("a fresh alarm row was dated as stale: %s", e)
+		}
+	}
 }
 
 // The daemon states its own endpoint, source and auth mode — the vantage

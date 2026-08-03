@@ -14,6 +14,7 @@ package doctor
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/archcorsair/drawbridge/internal/introspect"
 )
@@ -62,10 +63,13 @@ func (s SecretFile) prefix() string {
 // site, and the only vantage a foreground daemon has, since it writes no log
 // file), "log" for a line matched out of the daemon log tail. Empty means
 // log, so a fixture built before the ring existed still reads correctly.
+// At is the ring's stamp; zero for log lines, which carry no timestamp and
+// can therefore never be judged stale (§5's staleness rule).
 type AuthEvidence struct {
 	ID     string
 	Line   string
 	Source string
+	At     time.Time
 }
 
 // label is how one observation renders. The prefix is load-bearing: a
@@ -84,6 +88,37 @@ type AuthInput struct {
 	GuestSkip        string // non-empty: the guest side could not be compared
 	Evidence         []AuthEvidence
 	ResolutionSource string
+	Sessions         Sessions
+}
+
+// Sessions is the matched daemon's live session state — the clock ring
+// evidence is dated against (docs/doctor.md §5). Ring entries are
+// append-only history and never expire, so without a session clock a
+// refusal recorded before a wire that has since healed is indistinguishable
+// from a live fault. A zero Since (older daemon, or a session that never
+// transitioned) disables the discount: evidence doctor cannot date stays
+// loud.
+type Sessions struct {
+	MirrorUp    bool
+	SyncUp      bool
+	MirrorSince time.Time
+	SyncSince   time.Time
+}
+
+// healedSince is the staleness threshold: evidence older than this predates
+// BOTH currently-up, mutually-authenticated sessions — a wire that refused
+// then and authenticates now has healed. ok is false unless both sessions
+// are up and dated, which is what keeps the discount off for a daemon that
+// predates the since fields.
+func (s Sessions) healedSince() (time.Time, bool) {
+	if !s.MirrorUp || !s.SyncUp || s.MirrorSince.IsZero() || s.SyncSince.IsZero() {
+		return time.Time{}, false
+	}
+	t := s.MirrorSince
+	if s.SyncSince.Before(t) {
+		t = s.SyncSince
+	}
+	return t, true
 }
 
 // MatchAuthLog tags a daemon log tail with the transport-auth §7 rows doctor
@@ -123,7 +158,7 @@ func MatchAuthRing(refusals []introspect.Refusal) []AuthEvidence {
 	for _, r := range refusals {
 		switch r.ID {
 		case IDAuth, IDAuthMacMissing, IDAuthGuestMissing, IDAuthMismatch, IDAuthWrongPeer, IDAuthFilePerms:
-			out = append(out, AuthEvidence{ID: r.ID, Line: strings.TrimSpace(r.Line), Source: "ring"})
+			out = append(out, AuthEvidence{ID: r.ID, Line: strings.TrimSpace(r.Line), Source: "ring", At: r.At})
 		}
 	}
 	return out
@@ -139,7 +174,40 @@ func (in AuthInput) evidenceFor(id string) []string {
 	return out
 }
 
-func (in AuthInput) hasEvidence(id string) bool { return len(in.evidenceFor(id)) > 0 }
+// splitStale partitions the evidence for ids into live lines and
+// stale-annotated lines (§5's staleness rule). Only a dated entry — a ring
+// entry, stamped at the emit site — older than both currently-authenticated
+// sessions is stale; a log line has no timestamp and is never discounted
+// (the log tail rotates on its own, which is exactly what the ring does
+// not do).
+func (in AuthInput) splitStale(ids ...string) (live, stale []string) {
+	healedAt, dated := in.Sessions.healedSince()
+	for _, e := range in.Evidence {
+		match := false
+		for _, id := range ids {
+			if e.ID == id {
+				match = true
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		if dated && !e.At.IsZero() && e.At.Before(healedAt) {
+			stale = append(stale, fmt.Sprintf("%s (recorded %s — predates the current sessions)",
+				e.label(), e.At.Format(time.RFC3339)))
+			continue
+		}
+		live = append(live, e.label())
+	}
+	return live, stale
+}
+
+// healedSessionsLine names the clock the stale entries were dated against.
+func (in AuthInput) healedSessionsLine() string {
+	return fmt.Sprintf("the daemon's sessions are up and mutually authenticated (mirror since %s, sync since %s); every refusal below predates both, so it describes a fault that has since healed — history, not a live problem.",
+		in.Sessions.MirrorSince.Format(time.RFC3339), in.Sessions.SyncSince.Format(time.RFC3339))
+}
 
 // CheckAuth is the whole §5 block. It emits at most one primary finding
 // (the umbrella or one of the three state IDs), plus auth-file-perms when a
@@ -181,15 +249,26 @@ func checkAuthFilePerms(in AuthInput) (Finding, bool) {
 			bad = append(bad, fmt.Sprintf("guest %s: owner %s, want root:root", in.Guest.Path, in.Guest.Owner))
 		}
 	}
-	logged := in.evidenceFor(IDAuthFilePerms)
-	if len(bad) == 0 && len(logged) == 0 {
-		return Finding{}, false
+	live, stale := in.splitStale(IDAuthFilePerms)
+	if len(bad) == 0 && len(live) == 0 {
+		if len(stale) == 0 {
+			return Finding{}, false
+		}
+		// The files are healthy now and every row-8 refusal predates the
+		// sessions that have since authenticated: the ring is history, not a
+		// live fault (§5's staleness rule).
+		return Finding{
+			ID:       IDAuthFilePerms,
+			Title:    "transport secret — past unusable-file refusals predate the current sessions",
+			Status:   StatusInfo,
+			Evidence: append([]string{in.healedSessionsLine()}, stale...),
+		}, true
 	}
 	f := Finding{
 		ID:       IDAuthFilePerms,
 		Title:    "transport secret — unusable file",
 		Status:   StatusFail,
-		Evidence: append(bad, logged...),
+		Evidence: append(bad, append(live, stale...)...),
 		Remedy: "a transport secret is 64 lowercase hex characters plus a newline, mode 0600 (root:root in the guest);\n" +
 			"a malformed one fails closed. Delete the Mac file and re-run `drawbridge up " + in.VM + "` to reprovision both sides",
 	}
@@ -284,14 +363,29 @@ func primaryAuthFinding(in AuthInput) Finding {
 // checkWrongPeer is evidence-only, and deliberately suppressed when the
 // digests differ: then the same log line corroborates auth-mismatch instead
 // (one condition, two vantage points — transport-auth §7's own note).
+//
+// Evidence is dated before it convicts (§5's staleness rule): ring entries
+// never expire, so refusals recorded during an episode that has since
+// healed — sessions up and mutually authenticated after every entry — would
+// otherwise keep a healthy wire red until a daemon restart rotated them
+// out (observed live 2026-08-02). All-stale evidence softens to info; one
+// fresh or undatable line fails exactly as before.
 func checkWrongPeer(in AuthInput) (Finding, bool) {
 	digestsMatch := in.Mac.Present && in.Guest.Present && in.Mac.Digest != "" && in.Mac.Digest == in.Guest.Digest
 	if !digestsMatch {
 		return Finding{}, false
 	}
-	lines := append(in.evidenceFor(IDAuthMismatch), in.evidenceFor(IDAuthWrongPeer)...)
-	if len(lines) == 0 {
+	live, stale := in.splitStale(IDAuthMismatch, IDAuthWrongPeer)
+	if len(live) == 0 && len(stale) == 0 {
 		return Finding{}, false
+	}
+	if len(live) == 0 {
+		return Finding{
+			ID:       IDAuthWrongPeer,
+			Title:    "transport authentication — past refusals predate the current authenticated sessions",
+			Status:   StatusInfo,
+			Evidence: append([]string{in.healedSessionsLine()}, stale...),
+		}, true
 	}
 	src := firstNonEmpty(in.ResolutionSource, "unknown")
 	f := Finding{
@@ -301,7 +395,7 @@ func checkWrongPeer(in AuthInput) (Finding, bool) {
 		Evidence: append([]string{
 			fmt.Sprintf("this VM's provisioned pair matches (sha256 %s…), yet the wire refused authentication — the daemon is not talking to it.", in.Mac.prefix()),
 			"resolution source: " + src,
-		}, lines...),
+		}, append(live, stale...)...),
 		Remedy: "check `-vm`, and whether the transport fell back to the loopback forwarder — the forwarded 127.0.0.1:" +
 			fmt.Sprint(ControlPort) + " port is not attributable to a VM",
 	}

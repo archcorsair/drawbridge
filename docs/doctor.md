@@ -190,12 +190,12 @@ that predates the endpoint degrades to exactly today's output.
   },
   "auth": {"mode": "static-hmac-v1", "secretPath": "/Users/nxc/Library/…/transport-secret-colima-colima", "secretState": "ok"},
   "mirror": {
-    "sessionUp": true, "lastEventAt": "2026-08-01T18:22:10Z",
+    "sessionUp": true, "since": "2026-08-01T18:00:02Z", "lastEventAt": "2026-08-01T18:22:10Z",
     "entries": [{"proto": "tcp", "port": 8080, "state": "bound", "since": "…"}],
     "skip": [22]
   },
   "sync": {
-    "sessionUp": true,
+    "sessionUp": true, "since": "2026-08-01T18:00:02Z",
     "advertised": [{"proto": "tcp", "port": 5432}],
     "udpPorts": [5353],
     "poolParked": 4
@@ -218,12 +218,19 @@ Field notes:
   entries plus `mirror.skip` make check 11 exact instead of log-scraping;
   `bind-failed` (the `logBindError` path) is check 10's live evidence of a
   forwarder winning the race.
+- `mirror.since` / `sync.since` (additive, 2026-08-02) are when `sessionUp`
+  entered its current value — the clock §5's staleness rule dates ring
+  entries against. Absent from an older daemon's payload; readers treat
+  absence as "undatable", never as "just now".
 - `recentRefusals` is a fixed 32-entry ring fed at the same call sites as the
   throttled refusal/skip log lines (mirror skips, macsync row-7 refusals,
   Mac-side auth refusals rows 4/5/6, reserved-byte row 9). Each entry carries
   the transport-auth §7 check ID when one applies, so doctor's evidence
   matching is by ID, not by string-parsing log text. The ring is what makes
   auth evidence work for the *foreground* daemon, which has no log file.
+  Entries never expire (append-only history — the TUI refusals pane shows
+  them raw); §5's staleness rule is doctor-side judgment over that history,
+  never daemon-side forgetting.
 
 New exported accessors feeding the snapshot closure in `drawbridged`:
 `mirror.(*Client).Snapshot()` (entries + skip + session state — the state
@@ -433,6 +440,34 @@ When digests differ *and* row-4 evidence exists, the evidence corroborates
 `auth-mismatch` (one condition, two vantage points — §7's own note) and
 `auth-wrong-peer` is not emitted. VM not running → guest-side comparisons
 `skip`; Mac-side file checks still run.
+
+**Staleness rule (ratified 2026-08-02, after a live false-red).** The ring
+is append-only history that never expires an entry, and the introspection
+socket is write-only, so there is no clear verb and must not be one — the
+daemon never forgets; doctor judges. Runtime evidence is therefore *dated*
+before it convicts: the snapshot's `mirror.since` / `sync.since` (additive
+within schema 1) record when each session entered its current state, and a
+ring entry recorded before **both** currently-up, mutually-authenticated
+sessions describes a fault that has since healed — the wire refused then
+and authenticates now. Concretely:
+
+- `auth-wrong-peer`: when the digest comparison is healthy and *every*
+  row-4/5 entry is stale by this rule, the finding is emitted at `info`
+  grade — same ID, evidence still listed and stamped `recorded <t> —
+  predates the current sessions` — instead of `fail`. One fresh entry, a
+  down session, or a snapshot without the `since` fields (an older daemon)
+  fails exactly as before, with any stale entries annotated alongside.
+- `auth-file-perms`: the same discount for ring row-8 lines when doctor's
+  own file checks are clean *now*; a file that is bad now fails regardless.
+- Log-tail lines carry no timestamp and are **never** discounted — the log
+  tail rotates on its own (which is exactly what the ring does not do), and
+  an undatable line staying loud is the conservative side of the rule.
+- Check 9's alarm-row surfacing (§7 rows 7/9 and the advertised-set
+  alarms, all sync-session-scoped) gets the same dating: an entry older
+  than the current sync session is annotated `predates the current sync
+  session` rather than silently dropped — presence remains the alarm for
+  fresh rows, and the TUI's refusals pane keeps showing the raw ring
+  either way.
 
 ## 6. Report types and exit codes
 

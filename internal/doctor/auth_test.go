@@ -3,6 +3,7 @@ package doctor
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/archcorsair/drawbridge/internal/introspect"
 )
@@ -196,6 +197,125 @@ func TestAuthWrongPeerSuppressedOnMismatch(t *testing.T) {
 
 func TestAuthWrongPeerNeedsEvidence(t *testing.T) {
 	noFindingByID(t, CheckAuth(AuthInput{VM: "lima:dev", Mac: macSecret(digestA), Guest: guestSecret(digestA)}), IDAuthWrongPeer)
+}
+
+// --- stale ring evidence (§5's staleness rule) ------------------------------
+
+// The 2026-08-02 incident: a real wrong-peer episode was fixed, the daemon
+// self-healed to matching secrets with both sessions authenticated — and
+// the finding kept firing, because ring entries never expire. Refusals that
+// predate both currently-up sessions are history, not a live fault: info,
+// not fail, with the evidence still listed and dated.
+func TestAuthWrongPeerStaleRingSoftens(t *testing.T) {
+	t0 := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	got := CheckAuth(AuthInput{
+		VM: "lima:dev", Mac: macSecret(digestA), Guest: guestSecret(digestA),
+		Evidence: MatchAuthRing([]introspect.Refusal{
+			{At: t0, ID: IDAuthMismatch, Line: row4Line},
+			{At: t0.Add(time.Minute), ID: IDAuthMismatch, Line: row4Line},
+		}),
+		ResolutionSource: "vznat-direct",
+		Sessions: Sessions{
+			MirrorUp: true, SyncUp: true,
+			MirrorSince: t0.Add(5 * time.Minute), SyncSince: t0.Add(6 * time.Minute),
+		},
+	})
+	f := findingByID(t, got, IDAuthWrongPeer)
+	wantStatus(t, f, StatusInfo)
+	wantContains(t, f, "predates the current sessions")
+	wantContains(t, f, row4Line) // evidence stays listed, softened
+	wantStatus(t, findingByID(t, got, IDAuth), StatusOK)
+	if code := (Report{Findings: got}).ExitCode(); code != 0 {
+		t.Fatalf("a healed wire made doctor exit %d", code)
+	}
+}
+
+// One entry recorded after the sessions came up is a live fault: fail
+// exactly as before, with the stale entries still listed and dated.
+func TestAuthWrongPeerFreshRingStillFails(t *testing.T) {
+	t0 := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	sessions := Sessions{MirrorUp: true, SyncUp: true,
+		MirrorSince: t0.Add(5 * time.Minute), SyncSince: t0.Add(6 * time.Minute)}
+	got := CheckAuth(AuthInput{
+		VM: "lima:dev", Mac: macSecret(digestA), Guest: guestSecret(digestA),
+		Evidence: MatchAuthRing([]introspect.Refusal{
+			{At: t0, ID: IDAuthMismatch, Line: row4Line},
+			{At: t0.Add(10 * time.Minute), ID: IDAuthMismatch, Line: row4Line},
+		}),
+		Sessions: sessions,
+	})
+	f := findingByID(t, got, IDAuthWrongPeer)
+	wantStatus(t, f, StatusFail)
+	wantContains(t, f, "predates the current sessions") // the stale one, annotated
+}
+
+// Down (or half-down) sessions date nothing: fail as today.
+func TestAuthWrongPeerSessionsDownStillFails(t *testing.T) {
+	t0 := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	for _, s := range []Sessions{
+		{},
+		{MirrorUp: true, MirrorSince: t0.Add(time.Hour)},
+		{MirrorUp: true, SyncUp: false, MirrorSince: t0.Add(time.Hour), SyncSince: t0.Add(time.Hour)},
+	} {
+		got := CheckAuth(AuthInput{
+			VM: "lima:dev", Mac: macSecret(digestA), Guest: guestSecret(digestA),
+			Evidence: MatchAuthRing([]introspect.Refusal{{At: t0, ID: IDAuthMismatch, Line: row4Line}}),
+			Sessions: s,
+		})
+		wantStatus(t, findingByID(t, got, IDAuthWrongPeer), StatusFail)
+	}
+}
+
+// A snapshot without since fields (a daemon predating them) disables the
+// discount — additive-schema tolerance must not turn absence into "now".
+func TestAuthWrongPeerUndatedSessionsStillFail(t *testing.T) {
+	t0 := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	got := CheckAuth(AuthInput{
+		VM: "lima:dev", Mac: macSecret(digestA), Guest: guestSecret(digestA),
+		Evidence: MatchAuthRing([]introspect.Refusal{{At: t0, ID: IDAuthMismatch, Line: row4Line}}),
+		Sessions: Sessions{MirrorUp: true, SyncUp: true},
+	})
+	wantStatus(t, findingByID(t, got, IDAuthWrongPeer), StatusFail)
+}
+
+// A log line carries no timestamp, so it can never be judged stale — the
+// log tail rotates on its own; only the ring needs the dating rule.
+func TestAuthWrongPeerLogEvidenceNeverStale(t *testing.T) {
+	t0 := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	got := CheckAuth(AuthInput{
+		VM: "lima:dev", Mac: macSecret(digestA), Guest: guestSecret(digestA),
+		Evidence: MatchAuthLog([]string{row4Line}),
+		Sessions: Sessions{MirrorUp: true, SyncUp: true,
+			MirrorSince: t0, SyncSince: t0},
+	})
+	wantStatus(t, findingByID(t, got, IDAuthWrongPeer), StatusFail)
+}
+
+// The same rule for row 8: files healthy now, every ring refusal older than
+// the authenticated sessions — info, not fail.
+func TestAuthFilePermsStaleRingSoftens(t *testing.T) {
+	t0 := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	got := CheckAuth(AuthInput{
+		VM: "lima:dev", Mac: macSecret(digestA), Guest: guestSecret(digestA),
+		Evidence: MatchAuthRing([]introspect.Refusal{
+			{At: t0, ID: IDAuthFilePerms, Line: "drawbridged: mirror: transport secret is unusable: /mac: mode 644"},
+		}),
+		Sessions: Sessions{MirrorUp: true, SyncUp: true,
+			MirrorSince: t0.Add(time.Minute), SyncSince: t0.Add(time.Minute)},
+	})
+	f := findingByID(t, got, IDAuthFilePerms)
+	wantStatus(t, f, StatusInfo)
+	wantContains(t, f, "predates the current sessions")
+
+	// A file that is bad NOW fails regardless of what the ring says.
+	mac := macSecret(digestA)
+	mac.Mode = "644"
+	got = CheckAuth(AuthInput{
+		VM: "lima:dev", Mac: mac, Guest: guestSecret(digestA),
+		Sessions: Sessions{MirrorUp: true, SyncUp: true,
+			MirrorSince: t0.Add(time.Minute), SyncSince: t0.Add(time.Minute)},
+	})
+	wantStatus(t, findingByID(t, got, IDAuthFilePerms), StatusFail)
 }
 
 // --- the guest half unavailable --------------------------------------------

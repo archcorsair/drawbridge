@@ -105,9 +105,16 @@ type MirrorEntry struct {
 	Since time.Time `json:"since"`
 }
 
-// Mirror is the guest→Mac direction.
+// Mirror is the guest→Mac direction. Since is when SessionUp entered its
+// current value (zero: no transition yet). It exists so a reader can date
+// ring entries against the live session — recentRefusals never expire, and
+// without a session clock a refusal that predates a healed wire is
+// indistinguishable from a live fault (docs/doctor.md §5). Additive within
+// schema 1: a reader seeing it absent treats the session as undatable,
+// never as "just now".
 type Mirror struct {
 	SessionUp   bool          `json:"sessionUp"`
+	Since       time.Time     `json:"since,omitempty"`
 	LastEventAt time.Time     `json:"lastEventAt,omitempty"`
 	Entries     []MirrorEntry `json:"entries,omitempty"`
 	Skip        []uint16      `json:"skip,omitempty"`
@@ -120,9 +127,11 @@ type Advertised struct {
 	Port  uint16 `json:"port"`
 }
 
-// Sync is the Mac→guest direction.
+// Sync is the Mac→guest direction. Since has Mirror.Since's semantics: when
+// SessionUp entered its current value.
 type Sync struct {
 	SessionUp  bool         `json:"sessionUp"`
+	Since      time.Time    `json:"since,omitempty"`
 	Advertised []Advertised `json:"advertised,omitempty"`
 	UDPPorts   []uint16     `json:"udpPorts,omitempty"`
 	PoolParked int          `json:"poolParked"`

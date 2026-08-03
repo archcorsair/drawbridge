@@ -390,6 +390,12 @@ func Gather(ctx context.Context, o Options) (Inputs, error) {
 	in.Auth = authInput(tgt, skip, in.Guest, st.LogTail, res.Source)
 	if matched != nil {
 		in.Auth.Evidence = append(in.Auth.Evidence, MatchAuthRing(matched.State.RecentRefusals)...)
+		in.Auth.Sessions = Sessions{
+			MirrorUp:    matched.State.Mirror.SessionUp,
+			SyncUp:      matched.State.Sync.SessionUp,
+			MirrorSince: matched.State.Mirror.Since,
+			SyncSince:   matched.State.Sync.Since,
+		}
 	}
 
 	// --- 8. the one active probe, opt-in and last ---------------------------

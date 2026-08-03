@@ -1187,12 +1187,20 @@ func snapshotEvidence(snaps []*introspect.Snapshot) []string {
 			upDown(st.Sync.SessionUp), len(st.Sync.Advertised), st.Sync.PoolParked))
 		// The refusal ring's non-auth alarm rows (transport-auth §7 rows 7
 		// and 9, plus the advertised-set-emptied transition) have no check
-		// ID of their own: presence is the alarm, here.
+		// ID of their own: presence is the alarm, here. All four are scoped
+		// to the sync session, so an entry older than the session now up is
+		// dated rather than left to read as live (§5's staleness rule) —
+		// the ring never expires an entry, and history must stay listed
+		// without impersonating a current fault.
 		for _, r := range st.RecentRefusals {
 			switch r.ID {
 			case introspect.IDReverseDialRefused, introspect.IDActivationReserved,
 				introspect.IDAdvertisedEmptied, introspect.IDAdvertisedNone:
-				out = append(out, "  refusal ["+r.ID+"]: "+strings.TrimSpace(r.Line))
+				line := "  refusal [" + r.ID + "]: " + strings.TrimSpace(r.Line)
+				if st.Sync.SessionUp && !st.Sync.Since.IsZero() && r.At.Before(st.Sync.Since) {
+					line += fmt.Sprintf(" (recorded %s — predates the current sync session)", r.At.Format(time.RFC3339))
+				}
+				out = append(out, line)
 			}
 		}
 		// The adv-0 state itself, independent of the ring (a daemon predating

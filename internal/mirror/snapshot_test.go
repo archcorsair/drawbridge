@@ -127,6 +127,9 @@ func TestSnapshotSessionLiveness(t *testing.T) {
 	if !snap.SessionUp {
 		t.Fatal("sessionUp is false while the session is up")
 	}
+	if snap.Since.IsZero() {
+		t.Fatal("since is unset while the session is up — doctor cannot date ring evidence without it")
+	}
 	if snap.LastEventAt.IsZero() {
 		t.Fatal("lastEventAt is unset after the snapshot event")
 	}

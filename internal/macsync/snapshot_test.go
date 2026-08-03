@@ -36,6 +36,9 @@ func TestSnapshotReportsAdvertisedAndPool(t *testing.T) {
 		return snap.SessionUp && snap.PoolParked == 2
 	})
 	snap := s.Snapshot()
+	if snap.Since.IsZero() {
+		t.Fatal("since is unset while the session is up — doctor cannot date ring evidence without it")
+	}
 	if len(snap.Advertised) != 2 {
 		t.Fatalf("advertised = %+v, want tcp 5432 and udp 5353", snap.Advertised)
 	}

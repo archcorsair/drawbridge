@@ -114,10 +114,11 @@ type Client struct {
 	// Introspection state. obs has its own mutex because the skip and
 	// bind-failure sites run outside c.mu; the lock order is c.mu → obsMu and
 	// never the reverse.
-	obsMu       sync.Mutex
-	obs         map[mirrorKey]observed
-	sessionUp   atomic.Bool
-	lastEventAt atomic.Int64 // unix nanos; 0 ⇒ no event yet
+	obsMu        sync.Mutex
+	obs          map[mirrorKey]observed
+	sessionUp    atomic.Bool
+	sessionSince atomic.Int64 // unix nanos of sessionUp's last transition; 0 ⇒ none yet
+	lastEventAt  atomic.Int64 // unix nanos; 0 ⇒ no event yet
 }
 
 // observe records a non-bound outcome, keeping the time of the transition
@@ -149,6 +150,9 @@ func (c *Client) forget(key mirrorKey) {
 // site actually reached.
 func (c *Client) Snapshot() introspect.Mirror {
 	m := introspect.Mirror{SessionUp: c.sessionUp.Load()}
+	if ns := c.sessionSince.Load(); ns != 0 {
+		m.Since = time.Unix(0, ns)
+	}
 	if ns := c.lastEventAt.Load(); ns != 0 {
 		m.LastEventAt = time.Unix(0, ns)
 	}
@@ -252,8 +256,15 @@ func (c *Client) session(ctx context.Context) error {
 	if err := transportauth.AwaitAgentProof(conn, sec, frame, transportauth.HandshakeTimeout); err != nil {
 		return c.Auth.Wrap(err, c.addr())
 	}
+	// Since before Up on the way up, Up before Since on the way down: a
+	// snapshot that sees the session up never dates it with a stamp from a
+	// previous session.
+	c.sessionSince.Store(time.Now().UnixNano())
 	c.sessionUp.Store(true)
-	defer c.sessionUp.Store(false)
+	defer func() {
+		c.sessionUp.Store(false)
+		c.sessionSince.Store(time.Now().UnixNano())
+	}()
 	dec := json.NewDecoder(conn)
 	events := 0
 	for {
