@@ -6,7 +6,7 @@ your native Mac services, and a container bind that collides with a Mac-held
 port fails with `EADDRINUSE` on the spot.
 
 > **Alpha. A personal research project.** It works, and it is verified end to
-> end on one Mac and two VM providers — but there is no release yet, no
+> end on one Mac and two VM providers, but v0.0.1 is an alpha release: no
 > stability promise, and the wire protocol, CLI flags and on-disk state can all
 > change without notice. Recent macOS betas actively fight parts of this (see
 > [Common issues](#common-issues)). Run it on a dev machine you are happy to
@@ -102,8 +102,6 @@ planned). Nothing is signed or notarized.
 
 ## Install
 
-There is no release yet, so today this means building from source.
-
 **Prerequisites**
 
 - An Apple silicon Mac. Developed and verified on macOS 27; older versions are
@@ -111,31 +109,32 @@ There is no release yet, so today this means building from source.
 - A **running** Lima or Colima VM with `vmType: vz` — drawbridge attaches to a
   VM you already have and never creates one. The guest needs a BTF kernel
   (≥ 5.7), cgroup v2 and systemd; Ubuntu 24.04, the Colima default, is fine.
-- [mise](https://mise.jdx.dev) for the toolchain (Go, just, lima).
 
-**Build**
+**Homebrew**
 
 ```sh
-git clone https://github.com/archcorsair/drawbridge
-cd drawbridge
-mise install && mise reshim
-just build          # guest binaries first, then bin/drawbridge + bin/drawbridged
+brew install archcorsair/drawbridge/drawbridge
 ```
 
-The guest binaries are embedded into the CLI, so `bin/drawbridge` alone can
-provision a guest. That is also why the build order matters.
+One cask, both binaries (`drawbridge` and `drawbridged`), universal, with the
+Linux guest binaries embedded in the CLI. The binaries are ad-hoc signed rather
+than notarized; the cask strips the quarantine attribute on install so the
+first run is not a Gatekeeper kill.
+
+Building from source is the development workflow: see
+[docs/dev.md](docs/dev.md) (mise for the toolchain, `just build`).
 
 **Provision the guest**
 
 ```sh
-bin/drawbridge up                 # one running vz VM: instance can be omitted
-bin/drawbridge up colima          # or name it; lima:myvm / colima:default also work
-bin/drawbridge up colima --oci    # additionally install the runc wrapper (see below)
+drawbridge up                 # one running vz VM: instance can be omitted
+drawbridge up colima          # or name it; lima:myvm / colima:default also work
+drawbridge up colima --oci    # additionally install the runc wrapper (see below)
 ```
 
 No sudo on the Mac — the privileged half happens inside the guest. `up`
 installs the agent as a systemd unit and writes a per-VM transport secret on
-both sides. It is idempotent: re-run it to upgrade. `bin/drawbridge down`
+both sides. It is idempotent: re-run it to upgrade. `drawbridge down`
 reverses exactly what it did.
 
 `--oci` is opt-in because it edits Docker's `daemon.json` in your guest to
@@ -146,7 +145,7 @@ above) needs the wrapper.
 **Run the Mac daemon** — pick one posture:
 
 ```sh
-sudo bin/drawbridge install -vm colima:default   # root LaunchDaemon (recommended)
+sudo drawbridge install -vm colima:default   # root LaunchDaemon (recommended)
 ```
 
 Ports <1024, survives reboot, and exempt from the macOS Local Network gate and
@@ -155,15 +154,12 @@ the pcblist filtering that bite terminal-launched processes. Add `-vm-mac
 everything and tells you the exact command to read the address).
 
 ```sh
-bin/drawbridged -vm colima:default               # foreground, no sudo
+drawbridged -vm colima:default               # foreground, no sudo
 ```
 
 Ports ≥1024 only, dies with the terminal, and on macOS 27 betas it may see an
 empty Mac listener set (see [Common issues](#common-issues)). Good for a quick
 look; not the posture to live in.
-
-Homebrew and tagged binaries are planned for v0.1.0. `brew install
-archcorsair/drawbridge/drawbridge` does **not** work yet.
 
 ## Use it
 
@@ -262,9 +258,11 @@ authentication, `up`/`down` provisioning for Lima and Colima, `doctor`, and the
 TUI. `docker run --network host nginx` in the guest really does serve
 `http://localhost:80` on the Mac.
 
-Next: v0.1.0 — a tagged release through goreleaser, universal binaries, and a
-Homebrew tap. After that: row detail in the TUI, and Podman machine + crun.
-Current state always lives in [docs/HANDOFF.md](docs/HANDOFF.md).
+v0.0.1 is the current release: tagged through goreleaser, universal binaries,
+installed via the Homebrew tap, and acceptance-tested end to end against a
+Colima VM with the released artifacts. Next: Podman machine + crun, and row
+detail in the TUI. Current state always lives in
+[docs/HANDOFF.md](docs/HANDOFF.md).
 
 ## Development
 

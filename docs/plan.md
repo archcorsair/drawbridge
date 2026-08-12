@@ -353,6 +353,64 @@ Findings:
    in practice: the daemon resolved and used vzNAT-direct with no
    subnet-exemption dependency.
 
+## v0.0.1 brew acceptance (2026-08-12, colima)
+
+The Phase 6 acceptance: the README quickstart executed with the released
+brew artifacts only (`/opt/homebrew/bin/drawbridge` and `drawbridged`,
+both reporting v0.0.1), against `colima:default` (vz, Ubuntu guest,
+kernel 6.8.0-117-generic), with the v0.0.1 root LaunchDaemon already
+installed and running (pid 846). Both content-filter extensions (Little
+Snitch, Tailscale) were active throughout. The earlier attempt on
+2026-08-02 was interrupted by the live LS/route incident; this run
+completed it post-reboot.
+
+Sequence and results, all with the brew CLI:
+
+1. `colima start`, then `drawbridge up colima --oci`: agent already
+   current and active, wrapper re-registered as default runtime
+   (idempotence confirmed), docker 29.5.2, transport resolved
+   `tcp://192.168.64.3:4777` (source vznat-direct), per-VM static-HMAC
+   auth on.
+2. Inbound: `docker run --rm --network host nginx` in the guest, then
+   Mac-side `curl http://localhost:80/`: HTTP 200 in 2.8 ms, nginx
+   welcome page. Attribution is structural: the Mac listener was
+   `127.0.0.1:80`, a port colima's unprivileged hostagent forwarder
+   cannot bind, so only the root daemon's mirror can be serving it.
+3. Reverse: a Mac loopback-only server on `127.0.0.1:8899`, reached from
+   a `--network host` container (`curlimages/curl`): HTTP 200 in 3.1 ms.
+   The provider forwarder has no path into this direction.
+4. Synchronous `EADDRINUSE`: `docker run --rm --network host busybox
+   nc -l -p 8899` with the Mac holding 8899 failed immediately with
+   `nc: bind: Address already in use` (rc=1), the semantic-3 arbitration
+   through the wrapper runtime on an unmodified image.
+5. `drawbridge doctor -v` (v0.0.1 catalog): all ok apart from the two
+   expected warns, content filters present and provider-forwarder
+   coexistence (colima's forwarder holds guest wildcard 1-65535; the
+   daemon lost the `udp/53` mirror bind race to a Mac-local DNS holder,
+   logged and surfaced, no silent drop). Check 5 route ok, check 6 LN
+   permission ok, agent and CLI versions match.
+
+One honest wrinkle: the daemon's sessions reconnected mid-boot while the
+guest agent was not yet reachable on the vzNAT address, so the session
+rode the ssh-forwarder fallback for the whole run (status note named the
+fallback and the reason, as designed). CLI-side resolution in the same
+minutes was vznat-direct, so the fallback is a reconnect-timing artifact,
+not a resolution regression. The operator legs closed later the same day:
+`launchctl kickstart -k` restarted the daemon, which re-resolved to
+`tcp://192.168.64.3:4777` (source vznat-leases, the root daemon's leases
+path) with sessions up and the fallback note gone, confirmed in both
+`status` and the interactive TUI pass (vznat source, auth ok, mirror and
+sync panes live, skip-list and the `udp/53` bind-fail surfaced). The
+operator's doctor run happened to use the dev CLI (`bin/drawbridge`,
+stamped f1d3617-dirty) against the v0.0.1 agent and daemon, so checks 3
+and 9 correctly reported version skew with the right remedies: an
+accidental live validation of the skew detection with a genuinely skewed
+CLI.
+
+Verdict: acceptance passed. All three quickstart semantics demonstrated
+end to end on the released artifacts; the README install section can flip
+to brew-primary.
+
 ## Decisions log
 
 drawbridge name (user-confirmed; loophole/ghostnet/mirage rejected for collisions — loophole.cloud tunneling CLI, GhostNet espionage network, MirageOS/Mirage JS) · cilium/ebpf v0.22 over libbpf-go (pure Go, no cgo; requires Go ≥1.25 — running current stable go 1.26.5 both sides) · fexit over kprobes where BTF allows (Phase 2) · same-port gateway scheme, no stash maps (see BPF section) · gateway addrs `127.0.0.2` and `fd77::2` on lo · dummy "Mac" backends on `127.0.0.3` · tooling via mise + just (user preference) · Apache-2.0 · `'M'`/`'D'` frames mirror `'E'`/`'S'` — the Mac always dials, the guest never does · park-ahead reverse-conn pool over a mux protocol (no per-byte framing; vsock swap stays localized) · Phase 3 outbound is TCP + IPv4 only (v6 gateway listener and UDP-over-stream framing deferred) · sync entries are session-owned, dropped on `'M'` disconnect · seccomp classifies sockets by type+domain, never `SO_PROTOCOL` (MPTCP) · reservations are mirror-owned pending entries released by adoption or TTL, not by a bind-error kernel hook · every uncertain arbitration answers CONTINUE (coordination, not enforcement) · repo pushed 2026-07-30 to `github.com/archcorsair/drawbridge` (private; module path confirmed) · OCI integration via wrapper runtime + spec listenerPath, not daemon-wide profile (agent-down must degrade, never brick `docker run`), not OCI hooks (cannot install filters), not crun plugin (crun-only, C ABI) · OCI protocol on a second socket, no protocol sniffing · `default-runtime=drawbridge` with skip-conditions (user-decided) · unconfined/privileged containers get a synthesized transparent filter, `dev.drawbridge.arbitrate=false` opts out (user-decided) · rootless engines out of scope, OCI socket 0600 (user-decided) · demo standardizes on `:8080`-class ports until the privileged-`drawbridged` story exists (user-decided) · a profile that doesn't provably allow bind is never mutated (deny must not become notify-CONTINUE) · notify-fd supervision is poll-first (RECV blocks forever on dead filters) · UDP muxes per-port framed streams over 'S'/'D' proto 17 (stream-per-flow rejected: socket-per-query workloads would pay ~1 ms per query), 21-byte v1 frame frozen, reserved header byte is the version escape · UDP mirrors exclude the guest autobind range (BPF snum flag is the precise upgrade path) · Mac UDP services are explicit `-udp` config only (udp pcblist has no LISTEN state; auto-discovery deferred) · flow tables expire (60 s/4096) on the side that dials the real backend · tracker events filter autobind-range UDP at the hub; subscriber overflow closes the subscription (drop = reconnect + snapshot, never silent divergence).
