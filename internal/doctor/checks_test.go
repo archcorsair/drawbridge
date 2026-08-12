@@ -757,7 +757,8 @@ func TestCheckNEFilter(t *testing.T) {
 			"at.obdev.littlesnitch.networkextension",
 			"half-close",
 			"per-binary",
-			`all three persisted with the filter "disabled"`,
+			`all three persist with the filter "disabled"`,
+			"DPI port-exclusion list",
 			"benchmark numbers",
 			"Network Extensions",
 		} {

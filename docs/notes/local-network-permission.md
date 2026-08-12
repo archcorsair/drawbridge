@@ -172,6 +172,27 @@ Two stacked problems, diagnosed in sequence:
    plan.md §Benchmark. Robustness note for the transport seam: never leave
    the conn-type byte as a lone first segment — pad the type announcement
    (e.g. 4 bytes) so protocol-sniffing middleboxes classify instantly.
+
+   **RESOLVED as intended behavior — vendor reply, 2026-08-12 (obdev,
+   Christian).** The hold is Little Snitch's DPI obtaining a hostname for
+   name-based rules and Network Monitor display: when recent DNS lookups
+   don't yield a unique name for the IP, it reads protocol headers (e.g.
+   the HTTP/1.1 Host field), and an ambiguous lone method prefix is
+   buffered with a short timeout waiting for the request line to complete.
+   "Disable filter" stops **rule enforcement, not DPI** (names are still
+   needed for Network Monitor) — that's why the hold survived every
+   setting short of deactivating the extension; loopback skips LS
+   entirely; alert-mode pauses are Apple holding the flow indefinitely at
+   obdev's request. Vendor-documented opt-outs: (1) a longer first
+   segment — **exactly the shipped 4-byte conn-type frame**, so drawbridge
+   is immune by construction; (2) a unique DNS name resolving to the IP
+   (`/etc/hosts` entries currently do *not* count); (3) Apple
+   Network.framework (name arrives out-of-band, no DPI); (4) the DPI
+   port-exclusion list — ports ≤ 20, 22, 53, 67, 68, 111, 123, 137–139,
+   161, 445, 548, 652, 713–728, 742, 2049, 4500, 5353, and **> 49152**
+   are never inspected (the agent's 4777 is *not* excluded). Confirmed
+   live same day: lone `'D'` held 2.02 s on an included port (45001),
+   192 µs on an excluded port (50001).
 4. **A second, distinct Little Snitch bug, isolated 2026-07-30 (same 6.5
    nightly (7300) extension): TCP half-close kills inbound delivery on
    non-loopback flows.** Once a Mac process calls `shutdown(SHUT_WR)`,
@@ -247,6 +268,25 @@ Two stacked problems, diagnosed in sequence:
    the guest. Goes into the obdev bug-report thread instead. Mitigations
    meanwhile: deactivate the LS network extension for inbound-bulk work,
    or pin the loopback transport (`DRAWBRIDGE_AGENT=tcp://127.0.0.1:4777`).
+
+   **Port-exclusion discriminator, run 2026-08-12 (after the vendor's
+   finding-3 reply documented a DPI port-exclusion list): the half-close
+   kill follows that list.** Standalone python sinks in the guest, LS
+   extension active and DPI proven live in the same session (finding 3
+   addendum): the 1-byte write → `CloseWrite()` → read repro **wedged 2/2
+   on a DPI-included port** (45002: n=0 at the 20 s deadline) and ran
+   **clean 2/2 on a DPI-excluded port** (50002, > 49152: ack delivered in
+   ~270 µs). The guest journal shows the sink received the byte, saw the
+   client FIN, and sent its ack in all four runs — on the wedged runs the
+   ack was sent and kernel-ACKed but never delivered to the Mac process,
+   the exact finding-4 signature. This places the half-close kill in the
+   same DPI flow-classification path as finding 3 (flow context torn down
+   on the app's outbound FIN), which the vendor has not yet acknowledged —
+   the 2026-08-12 follow-up email offered this test; the result is ready
+   to send when they reply. **New mitigation:** serve the affected flow
+   on a DPI-exempt port (> 49152); this is the first workaround that
+   keeps the extension active, and would make the inbound-bulk bench leg
+   valid again if the transport port ever moves.
 
 5. **`sysctl net.inet.tcp.pcblist_n` is filtered per responsible app on
    this seed (found 2026-08-01 via the TUI's `adv 0`).** An unprivileged
