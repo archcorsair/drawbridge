@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -109,7 +110,13 @@ func TestServerNeverReads(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 	defer conn.Close()
-	if _, err := conn.Write([]byte(`{"op":"shutdown"}` + strings.Repeat("\x00", 512))); err != nil {
+	// A peer-closed write error is a legal outcome of the race this test sets
+	// up: the server may have written the complete snapshot and closed before
+	// our garbage lands (macOS surfaces EPIPE or ENOTCONN depending on where
+	// the close catches the write). The property under test is the decode
+	// below, not this write.
+	if _, err := conn.Write([]byte(`{"op":"shutdown"}` + strings.Repeat("\x00", 512))); err != nil &&
+		!errors.Is(err, syscall.EPIPE) && !errors.Is(err, syscall.ENOTCONN) && !errors.Is(err, syscall.ECONNRESET) {
 		t.Fatalf("write: %v", err)
 	}
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
