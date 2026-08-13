@@ -1193,7 +1193,8 @@ func CheckNEFilter(exts []NEExtension, probeErr string) Finding {
 		"  1. first-payload DPI stall — an ambiguous HTTP-method prefix in the first segment is held ~2 s",
 		"     (vendor-confirmed intended DPI: hostname classification for name-based rules; drawbridge's 4-byte conn-type frame is immune)",
 		"  2. TCP half-close kill — after shutdown(SHUT_WR) inbound bytes are ACKed by the kernel and never delivered to the process",
-		"     (non-loopback only; follows the DPI port-exclusion list — flows on DPI-exempt ports such as >49152 half-close cleanly)",
+		"     (non-loopback only; follows the DPI port-exclusion list — flows on DPI-exempt ports such as >49152 half-close cleanly;",
+		"     vendor-confirmed bug, fix expected in the Little Snitch release after 6.5 nightly 7300)",
 		"  3. per-binary connect-then-die for binaries the filter has no rule for",
 		"all three persist with the filter \"disabled\" — vendor-confirmed: that stops rule enforcement, not DPI; only deactivating the network extension stops them.",
 		"benchmark numbers taken while one of these is active are invalid.")

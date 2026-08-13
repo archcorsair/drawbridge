@@ -281,12 +281,26 @@ Two stacked problems, diagnosed in sequence:
    ack was sent and kernel-ACKed but never delivered to the Mac process,
    the exact finding-4 signature. This places the half-close kill in the
    same DPI flow-classification path as finding 3 (flow context torn down
-   on the app's outbound FIN), which the vendor has not yet acknowledged —
-   the 2026-08-12 follow-up email offered this test; the result is ready
-   to send when they reply. **New mitigation:** serve the affected flow
+   on the app's outbound FIN). **New mitigation:** serve the affected flow
    on a DPI-exempt port (> 49152); this is the first workaround that
-   keeps the extension active, and would make the inbound-bulk bench leg
-   valid again if the transport port ever moves.
+   keeps the extension active.
+
+   **CONFIRMED as a real bug — vendor reply, 2026-08-13 (obdev,
+   Christian).** Their analysis: when the outbound half of the socket
+   closes they abort DPI (intended, since no more data can arrive for
+   analysis), but a side effect flips the socket status to disconnected,
+   after which inbound data received post-close is discarded at the
+   extension. That mechanism explains the whole observation set: loopback
+   exempt (LS never consulted), kernel ACKs on the wire (kernel path
+   untouched, the discard is extension-level delivery), the 1-byte repro
+   (any post-close inbound byte), and the port-exclusion discriminator
+   (DPI-exempt ports never attach DPI, so there is no abort path and no
+   disconnected flip). **Fix lands in the next Little Snitch release;**
+   the vendor states there is no good workaround, though the DPI-exempt
+   port finding above remains a de facto one for services whose port you
+   control. When the fixed release ships, re-run the inbound-bulk bench
+   leg with the extension active — it should become valid again with no
+   configuration at all.
 
 5. **`sysctl net.inet.tcp.pcblist_n` is filtered per responsible app on
    this seed (found 2026-08-01 via the TUI's `adv 0`).** An unprivileged
