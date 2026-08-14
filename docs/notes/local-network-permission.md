@@ -298,9 +298,23 @@ Two stacked problems, diagnosed in sequence:
    disconnected flip). **Fix lands in the next Little Snitch release;**
    the vendor states there is no good workaround, though the DPI-exempt
    port finding above remains a de facto one for services whose port you
-   control. When the fixed release ships, re-run the inbound-bulk bench
-   leg with the extension active — it should become valid again with no
-   configuration at all.
+   control (vendor-endorsed 2026-08-13: "if you are free to choose the
+   port, you can opt out of DPI this way").
+
+   **Caveat on the fix (vendor, 2026-08-13): do not trust it to resolve
+   the problem entirely.** Christian's own tests are inconsistent: the
+   shipped version always fails, the fixed version mostly passes but
+   still fails occasionally ("close at end of DPI") — and his debug logs
+   show the API call the fix targets (half-close) is never invoked by
+   Apple at all, in either case. His conclusion: the fix is correct and
+   stays, but Apple may have a similar bug in the Network Extension
+   framework (their original suspicion from the first reply, and
+   consistent with our finding-3 observation of framework-level batch
+   flushing). Consequence for us: when the fixed release ships, re-run
+   `TestWedgeRepro` at a high iteration count — the residual failure is
+   intermittent, so a single pass proves nothing. If wedges persist on
+   DPI-included ports under the fixed build, that implicates the macOS 27
+   NE framework and becomes an Apple Feedback report with our pcaps.
 
 5. **`sysctl net.inet.tcp.pcblist_n` is filtered per responsible app on
    this seed (found 2026-08-01 via the TUI's `adv 0`).** An unprivileged
