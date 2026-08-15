@@ -5,9 +5,9 @@
  auth static-hmac-v1 ok
  mirror ● up · event 12s ago   sync ● up · adv 3 · parked 4
  MIRROR (2)                                                            skip: 22
- PROTO  PORT   STATE         SINCE
- tcp    3000   ● bound       2m
- tcp    8080   ● bound       2m
+   PROTO  PORT   STATE         SINCE
+   tcp    3000   ● bound       2m
+   tcp    8080   ● bound       2m
 
 
 

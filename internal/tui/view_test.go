@@ -236,6 +236,8 @@ func TestViewGoldens(t *testing.T) {
 		{"sync_expanded_120x40", press(testModel(120, 40, ephemeralSnap()), "x")},
 		// The footer's unseen counter, with the pane still closed.
 		{"counter_120x40", counterModel(120, 40)},
+		// A row mid-pulse: the change gutter's mark, on the row that flipped.
+		{"pulsed_120x40", pulsedModel(120, 40)},
 	} {
 		t.Run(tc.name, func(t *testing.T) { golden(t, tc.name, tc.m.View()) })
 	}
@@ -362,6 +364,17 @@ func noteModel(w, h int) Model {
 	s.State.Resolution.Source = "ssh-forwarder"
 	s.State.Resolution.Note = "vzNAT dial was refused (Local Network permission); fell back to the SSH forwarder"
 	return testModel(w, h, s)
+}
+
+// pulsedModel has one row mid-pulse: the state the change gutter exists for,
+// two seconds after tcp/5000 flipped bound to bind-failed.
+func pulsedModel(w, h int) Model {
+	m := testModel(w, h, healthySnap())
+	m.pulses = map[string]pulse{
+		pulseKey(userSock, introspect.MirrorEntry{Proto: "tcp", Port: 5000}): {
+			from: introspect.EntryBound, at: fixtureNow.Add(-2 * time.Second)},
+	}
+	return m
 }
 
 func manyEntries() *introspect.Snapshot {

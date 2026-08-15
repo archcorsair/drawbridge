@@ -184,12 +184,12 @@ At 120×40 (the roomy case):
  │ mirror     session up · last event 12s ago            sync   session up · pool 4 parked            │
  └────────────────────────────────────────────────────────────────────────────────────────────────────┘
   MIRROR — guest listeners on Mac localhost (5)          SYNC — Mac ports advertised to guest (3)
-  PROTO  PORT   STATE         SINCE                      PROTO  PORT
-  tcp    8080   ● bound       2m                         tcp    5432
-  tcp    3000   ● bound       2m                         tcp    6379
-  udp    5353   ● bound       1m                         udp    5353
-  tcp    22     · skipped     2h
-  tcp    5000   ✕ bind-failed 40s
+    PROTO  PORT   STATE         SINCE                    PROTO  PORT
+    tcp    8080   ● bound       2m                       tcp    5432
+    tcp    3000   ● bound       2m                       tcp    6379
+    udp    5353   ● bound       1m                       udp    5353
+    tcp    22     · skipped     2h
+  ◆ tcp    5000   ✕ bind-failed 40s
                                         skip list: 22
                                                                                                       
   tab next daemon · r refusals · d doctor · ? help · q quit
@@ -208,7 +208,15 @@ At 120×40 (the roomy case):
 - Mirror table: one row per entry, `state` as a glyph plus the word,
   colored (`● bound` green, `· skipped` dim, `✕ bind-failed` red, `◌` for
   a state this build does not know), `since` relative. The glyph column is
-  what survives `NO_COLOR`; the word survives everything. Sorted by port
+  what survives `NO_COLOR`; the word survives everything. A two-column
+  gutter leads every row and carries the change pulse: a warn `◆` marks a
+  row whose state changed, or that appeared on a daemon already being
+  watched, within the last 5 s. The pulse is diffed client-side between
+  consecutive fetches (no schema fields); a daemon's first snapshot marks
+  nothing, and rows retained through D7's grace window never read as
+  change. The `since` value is tinted by age: warn under 30 s, plain under
+  five minutes, dim after, so the number still carries the whole meaning
+  without color. Sorted by port
   within proto. The skip list renders under the table when non-empty, with
   the same discoverability wording doctor check 11 uses available in the
   row's dim styling ("skipped" entries are the default exclusion at work,
@@ -225,12 +233,12 @@ At 80×24 (the honest case — SSH sessions, split panes):
  auth static-hmac-v1 · secret ok
  mirror ● up · event 12s ago   sync ● up · adv 3 · parked 4
  MIRROR (5)                              skip: 22
- PROTO  PORT   STATE         SINCE
- tcp    8080   ● bound       2m
- tcp    3000   ● bound       2m
- udp    5353   ● bound       1m
- tcp    22     · skipped     2h
- tcp    5000   ✕ bind-failed 40s
+   PROTO  PORT   STATE         SINCE
+   tcp    8080   ● bound       2m
+   tcp    3000   ● bound       2m
+   udp    5353   ● bound       1m
+   tcp    22     · skipped     2h
+ ◆ tcp    5000   ✕ bind-failed 40s
  ...
  tab daemon · r refusals · d doctor · ? help · q quit
 ```

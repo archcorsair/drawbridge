@@ -4,7 +4,7 @@
  auth static-hmac-v1 ok
  mirror ○ down   sync ● up · adv 3 · parked 4
  MIRROR (0)
- PROTO  PORT   STATE         SINCE
+   PROTO  PORT   STATE         SINCE
  (mirror session down — press d for a diagnosis)
 
 

@@ -5,9 +5,9 @@
  │ auth       static-hmac-v1 ok   ·   mirror ● up · event 12s ago   ·   sync ● up · pool 4 parked                     │
  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
   MIRROR — guest listeners on Mac localhost (2) · skip: 22  │ SYNC — Mac ports advertised to guest (3)
-  PROTO  PORT   STATE         SINCE                         │ PROTO  PORT
-  tcp    3000   ● bound       2m                            │ tcp    5432
-  tcp    8080   ● bound       2m                            │ tcp    6379
+    PROTO  PORT   STATE         SINCE                       │ PROTO  PORT
+    tcp    3000   ● bound       2m                          │ tcp    5432
+    tcp    8080   ● bound       2m                          │ tcp    6379
                                                             │ udp    5353
 
 

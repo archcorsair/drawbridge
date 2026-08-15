@@ -130,6 +130,11 @@ type Model struct {
 	// the view, not one per daemon: it is a way of looking, and carrying it
 	// across a `tab` is what the user means by pressing the key.
 	syncExpanded bool
+
+	// pulses marks the mirror rows whose state changed within pulseTTL, keyed
+	// by path+proto+port (pulse.go), so the table can flag what moved since
+	// the last refresh.
+	pulses map[string]pulse
 }
 
 func newModel(opts Options) Model {
@@ -140,6 +145,7 @@ func newModel(opts Options) Model {
 		missedTicks:  map[string]int{},
 		refusals:     map[string][]introspect.Refusal{},
 		refusalsSeen: map[string]string{},
+		pulses:       map[string]pulse{},
 		now:          time.Now(),
 		// The constructor's Init fires a fetch alongside the first tick, so
 		// the guard starts closed: the 1 Hz tick must not race it.
@@ -396,6 +402,9 @@ func (m Model) applySnapshots(msg snapshotsMsg) Model {
 	m.fetchedAt = msg.at
 	m.now = msg.at
 	m.problems = msg.problems
+	// Pulses compare against the snapshots this fetch replaces, so they are
+	// computed before the merge below overwrites m.snaps.
+	m.pulses = m.mergePulses(msg)
 
 	fresh := map[string]*introspect.Snapshot{}
 	m.skewed = nil

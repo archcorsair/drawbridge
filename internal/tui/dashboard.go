@@ -358,7 +358,7 @@ func (m Model) tableLines(lo layout, s *introspect.Snapshot, budget int) []strin
 	st := s.State
 	pad := strings.Repeat(" ", lo.indent)
 
-	left := m.mirrorBlock(lo, st, budget)
+	left := m.mirrorBlock(lo, s, budget)
 	if !lo.wide {
 		out := make([]string, 0, len(left))
 		for _, l := range left {
@@ -386,7 +386,8 @@ func (m Model) tableLines(lo layout, s *introspect.Snapshot, budget int) []strin
 	return out
 }
 
-func (m Model) mirrorBlock(lo layout, st introspect.State, budget int) []string {
+func (m Model) mirrorBlock(lo layout, snap *introspect.Snapshot, budget int) []string {
+	st := snap.State
 	entries := sortedEntries(st.Mirror.Entries)
 	// The skip list rides in the header: it is a property of what this table
 	// shows, not a row of it, and a floating line under the table moved every
@@ -407,7 +408,9 @@ func (m Model) mirrorBlock(lo layout, st introspect.State, budget int) []string 
 			head = padRight(head, lo.mirrorWidth-visWidth(s)) + styleDim.Render(s)
 		}
 	}
-	cols := padRight("PROTO", protoW) + padRight("PORT", portW) + padRight("STATE", stateW)
+	// The two-column gutter carries the change pulse (pulse.go); the header
+	// row carries it blank so the columns stay aligned.
+	cols := "  " + padRight("PROTO", protoW) + padRight("PORT", portW) + padRight("STATE", stateW)
 	if lo.showSince {
 		cols += "SINCE"
 	}
@@ -424,10 +427,13 @@ func (m Model) mirrorBlock(lo layout, st introspect.State, budget int) []string 
 	for _, e := range entries {
 		// The state cell is glyph plus word: the glyph column survives
 		// NO_COLOR, the word survives everything (§3.6).
-		row := padRight(e.Proto, protoW) + padRight(strconv.Itoa(int(e.Port)), portW) +
+		row := m.mirrorGutter(snap.Path, e) +
+			padRight(e.Proto, protoW) + padRight(strconv.Itoa(int(e.Port)), portW) +
 			entryStyle(e.State).Render(padRight(entryGlyph(e.State)+" "+e.State, stateW))
 		if lo.showSince {
-			row += relative(m.now.Sub(e.Since))
+			// The age tint: what changed in the last half minute is what a
+			// 1 Hz watcher is here for, and settled rows recede.
+			row += ageStyle(m.now.Sub(e.Since)).Render(relative(m.now.Sub(e.Since)))
 		}
 		rows = append(rows, row)
 	}

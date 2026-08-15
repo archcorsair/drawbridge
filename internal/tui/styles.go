@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"time"
+
 	"github.com/archcorsair/drawbridge/internal/doctor"
 	"github.com/archcorsair/drawbridge/internal/introspect"
 	"github.com/charmbracelet/lipgloss"
@@ -51,6 +53,21 @@ const (
 	glyphUp      = "●"
 	glyphDown    = "○"
 )
+
+// ageStyle tints a relative age: under half a minute it reads as news, under
+// five minutes it reads as recent, and anything older recedes. The number
+// itself still carries the meaning; the tint only orders the eye, so losing
+// it to NO_COLOR loses nothing semantic.
+func ageStyle(d time.Duration) lipgloss.Style {
+	switch {
+	case d < 30*time.Second:
+		return styleWarn
+	case d < 5*time.Minute:
+		return lipgloss.NewStyle()
+	default:
+		return styleDim
+	}
+}
 
 func entryGlyph(state string) string {
 	switch state {
