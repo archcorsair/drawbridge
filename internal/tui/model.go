@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"context"
 	"net/netip"
 	"sort"
 	"time"
 
 	"github.com/archcorsair/drawbridge/internal/buildinfo"
+	"github.com/archcorsair/drawbridge/internal/doctor"
 	"github.com/archcorsair/drawbridge/internal/introspect"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
 	tea "github.com/charmbracelet/bubbletea"
@@ -26,6 +28,17 @@ type Options struct {
 	// CLIVersion is what the header prints and what the skew chip compares a
 	// daemon's version against. Empty takes the linked buildinfo.Version.
 	CLIVersion string
+
+	// GatherDoctor overrides the doctor run the doctor view performs. Nil
+	// means doctor.Gather followed by doctor.Classify, the real, read-only
+	// catalog; production callers leave it nil. The demo harness
+	// (cmd/tui-demo-daemon plus cmd/drawbridge's canned-doctor wiring)
+	// substitutes canned findings so the view renders without probing the
+	// machine. Snapshots have no such seam on purpose: the fixture serves
+	// real introspection sockets and the TUI discovers them through its
+	// ordinary path, but a doctor gather probes the machine in-process and
+	// no socket can stand in for that.
+	GatherDoctor func(ctx context.Context, opts doctor.Options) (doctor.Report, error)
 }
 
 type pane int
@@ -484,12 +497,13 @@ func matchesVM(s *introspect.Snapshot, provider, instance, spec string) bool {
 // dir lexicographically — for the merged list, so a retained absent path holds
 // the position it had while answering.
 func sortSnaps(snaps []*introspect.Snapshot) {
+	root := introspect.EffectiveRootSocketPath()
 	sort.SliceStable(snaps, func(i, j int) bool {
 		a, b := snaps[i].Path, snaps[j].Path
-		if a == introspect.RootSocketPath {
-			return b != introspect.RootSocketPath
+		if a == root {
+			return b != root
 		}
-		if b == introspect.RootSocketPath {
+		if b == root {
 			return false
 		}
 		return a < b

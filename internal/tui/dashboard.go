@@ -605,7 +605,7 @@ func (m Model) noDaemonCard(lo layout) []string {
 		"no drawbridge daemon is answering",
 		"",
 		styleDim.Render("checked"),
-		"  " + introspect.RootSocketPath,
+		"  " + introspect.EffectiveRootSocketPath(),
 		"  " + m.userRunDir,
 		"",
 		styleDim.Render("start one"),
@@ -829,7 +829,7 @@ const (
 )
 
 func flavor(path string) string {
-	if path == introspect.RootSocketPath {
+	if path == introspect.EffectiveRootSocketPath() {
 		return flavorRoot
 	}
 	return flavorUser

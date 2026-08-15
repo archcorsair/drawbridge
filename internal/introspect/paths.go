@@ -15,6 +15,23 @@ import (
 // LaunchDaemon is a singleton (D3).
 const RootSocketPath = "/var/run/drawbridge/introspect.sock"
 
+// EnvRootSocket overrides where consumers look for the root daemon's socket.
+// Demo and test plumbing only: it lets a fixture (cmd/tui-demo-daemon) stand
+// in for a root daemon without root, and lets a recording ignore a real
+// installed daemon. Consumer-side only by construction: the daemon derives
+// its bind path through AutoPath, which never reads it.
+const EnvRootSocket = "DRAWBRIDGE_INTROSPECT_ROOT"
+
+// EffectiveRootSocketPath is the root socket path consumers discover and
+// label against: the EnvRootSocket override when set, RootSocketPath
+// otherwise.
+func EffectiveRootSocketPath() string {
+	if p := os.Getenv(EnvRootSocket); p != "" {
+		return p
+	}
+	return RootSocketPath
+}
+
 // RootSocketDir is the directory the root daemon creates at startup
 // (0755 root:wheel — traversable so a staff consumer can reach the 0660
 // socket inside it).
@@ -86,8 +103,8 @@ func CheckPath(path string) error {
 // posture), so this returns every candidate rather than the first hit.
 func Discover() []string {
 	var out []string
-	if isSocket(RootSocketPath) {
-		out = append(out, RootSocketPath)
+	if root := EffectiveRootSocketPath(); isSocket(root) {
+		out = append(out, root)
 	}
 	dir, err := UserRunDir()
 	if err != nil {

@@ -137,15 +137,28 @@ func doctorTickCmd(gen int) tea.Cmd {
 // The context is never given a deadline here: -timeout is Options.Timeout and
 // Gather applies it (with the -probe floor) itself. Reimplementing that ceiling
 // on this side would silently override the floor the probe needs.
-func startDoctorCmd(gen int, opts doctor.Options) (context.CancelFunc, tea.Cmd) {
+//
+// gather is Options.GatherDoctor or the real run; the substitution point lives
+// here so everything downstream (generations, cancel, spinner) is exercised
+// identically by the demo harness and production.
+func startDoctorCmd(gen int, opts doctor.Options, gather func(context.Context, doctor.Options) (doctor.Report, error)) (context.CancelFunc, tea.Cmd) {
+	if gather == nil {
+		gather = func(ctx context.Context, opts doctor.Options) (doctor.Report, error) {
+			in, err := doctor.Gather(ctx, opts)
+			if err != nil {
+				return doctor.Report{}, err
+			}
+			return doctor.Classify(in), nil
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return cancel, func() tea.Msg {
 		start := time.Now()
-		in, err := doctor.Gather(ctx, opts)
+		report, err := gather(ctx, opts)
 		if err != nil {
 			return doctorFailedMsg{gen: gen, err: err, ranAt: start, elapsed: time.Since(start)}
 		}
-		return doctorDoneMsg{gen: gen, report: doctor.Classify(in), ranAt: start, elapsed: time.Since(start)}
+		return doctorDoneMsg{gen: gen, report: report, ranAt: start, elapsed: time.Since(start)}
 	}
 }
 
@@ -199,7 +212,7 @@ func (m Model) startDoctor(probe bool) (Model, tea.Cmd) {
 	d.restore = d.phase
 	d.phase, d.probe = doctorRunning, probe
 	d.since, d.frame = m.now, 0
-	cancel, cmd := startDoctorCmd(d.gen, m.doctorOptions(probe))
+	cancel, cmd := startDoctorCmd(d.gen, m.doctorOptions(probe), m.opts.GatherDoctor)
 	d.cancel = cancel
 	m.doctor = d
 	m.scroll = scrollState{}

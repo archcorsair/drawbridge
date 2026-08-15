@@ -119,6 +119,41 @@ func TestDiscover(t *testing.T) {
 	}
 }
 
+// The consumer-side root override: EnvRootSocket redirects discovery and the
+// effective root path (demo plumbing for cmd/tui-demo-daemon), and the
+// daemon-side AutoPath never reads it, so a fixture can fake a root daemon
+// without ever being able to move where a real one binds.
+func TestRootSocketOverride(t *testing.T) {
+	homeDir(t)
+	fake := filepath.Join(shortDir(t), "root.sock")
+	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: fake, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	t.Setenv(EnvRootSocket, fake)
+
+	if got := EffectiveRootSocketPath(); got != fake {
+		t.Fatalf("EffectiveRootSocketPath = %q, want %q", got, fake)
+	}
+	got := Discover()
+	if len(got) == 0 || got[0] != fake {
+		t.Fatalf("Discover with the override = %v, want %q first", got, fake)
+	}
+	ref, err := vmprovider.ParseRef("lima:dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := AutoPath(0, ref); err != nil || p != RootSocketPath {
+		t.Fatalf("AutoPath(0) under the override = %q, %v; the daemon side must not read it", p, err)
+	}
+
+	t.Setenv(EnvRootSocket, "")
+	if got := EffectiveRootSocketPath(); got != RootSocketPath {
+		t.Fatalf("EffectiveRootSocketPath unset = %q, want %q", got, RootSocketPath)
+	}
+}
+
 func TestVMFromSocketPath(t *testing.T) {
 	provider, instance, ok := VMFromSocketPath("/x/run/introspect-colima-colima.sock")
 	if !ok || provider != "colima" || instance != "colima" {

@@ -8,12 +8,16 @@ package main
 // lease view `drawbridge doctor` gives — same grammar, same defaults.
 
 import (
+	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/archcorsair/drawbridge/internal/buildinfo"
+	"github.com/archcorsair/drawbridge/internal/doctor"
 	"github.com/archcorsair/drawbridge/internal/limaaddr"
 	"github.com/archcorsair/drawbridge/internal/tui"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
@@ -49,7 +53,70 @@ func tuiFlags(args []string) (tui.Options, error) {
 		}
 		opts.HWAddr = hw
 	}
+	if dir := os.Getenv(envDemoDoctor); dir != "" {
+		opts.GatherDoctor = cannedDoctor(dir)
+	}
 	return opts, nil
+}
+
+// envDemoDoctor is demo plumbing, the doctor half of the tui-demo-daemon
+// fixture: it names a directory holding canned doctor reports, and the doctor
+// view then renders those instead of gathering from this machine. Deliberately
+// an env var rather than a flag: the demo fixture prints the export, and the
+// verb's advertised surface stays exactly its production flags. Snapshots need
+// no counterpart because the fixture serves real introspection sockets.
+const envDemoDoctor = "DRAWBRIDGE_TUI_DEMO_DOCTOR"
+
+// Canned report filenames and the honest-spinner delays the demo gather takes
+// before returning them. The probe run takes visibly longer, so `p` costs
+// something on camera the way the real half-close probe does.
+const (
+	cannedPlainFile  = "doctor.json"
+	cannedProbeFile  = "doctor-probe.json"
+	cannedPlainDelay = 2 * time.Second
+	cannedProbeDelay = 6 * time.Second
+)
+
+// readCannedReport is the pure half of the demo gather: one file per run
+// kind, JSON in doctor.Report's own shape (the same encoding `doctor -json`
+// consumers already parse).
+func readCannedReport(dir string, probe bool) (doctor.Report, error) {
+	name := cannedPlainFile
+	if probe {
+		name = cannedProbeFile
+	}
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return doctor.Report{}, err
+	}
+	var r doctor.Report
+	if err := json.Unmarshal(b, &r); err != nil {
+		return doctor.Report{}, fmt.Errorf("canned doctor report %s: %w", name, err)
+	}
+	return r, nil
+}
+
+// cannedDoctor is tui.Options.GatherDoctor over readCannedReport: a scripted
+// wait (so the running screen and its esc-cancel path are exercised for
+// real), then the canned findings. Cancellation wins the wait, exactly as a
+// canceled real gather would.
+func cannedDoctor(dir string) func(context.Context, doctor.Options) (doctor.Report, error) {
+	return func(ctx context.Context, opts doctor.Options) (doctor.Report, error) {
+		r, err := readCannedReport(dir, opts.Probe)
+		if err != nil {
+			return doctor.Report{}, err
+		}
+		delay := cannedPlainDelay
+		if opts.Probe {
+			delay = cannedProbeDelay
+		}
+		select {
+		case <-ctx.Done():
+			return doctor.Report{}, ctx.Err()
+		case <-time.After(delay):
+		}
+		return r, nil
+	}
 }
 
 func runTUI(args []string) int {
