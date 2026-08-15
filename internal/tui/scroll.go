@@ -181,6 +181,9 @@ func (m Model) scrollTotal() int {
 	case regionHelp:
 		return len(helpBody(m.keys))
 	case regionRefusals:
+		if m.refusalsGrouped {
+			return len(groupRefusals(m.refusals[m.selected]))
+		}
 		return len(m.refusals[m.selected])
 	case regionDoctor:
 		rows, _ := m.doctorRows(m.layout())

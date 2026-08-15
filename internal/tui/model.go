@@ -117,6 +117,10 @@ type Model struct {
 	pane    pane
 	view    view
 	overlay overlay
+	// refusalsGrouped folds the refusals pane's repeats into per-ID groups
+	// (`u`). One flag for the view, syncExpanded-style: it is a way of
+	// looking at a log, not a property of one daemon's log.
+	refusalsGrouped bool
 	// doctor is the doctor view's own state machine (D6): the run generation,
 	// the cancel that belongs to it, and the last report, which outlives every
 	// view switch until `R` replaces it.
@@ -287,6 +291,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// surprise them on the way back.
 		if m.view == viewDashboard {
 			m.syncExpanded = !m.syncExpanded
+		}
+		return m, nil
+	case k.GroupRefusals.matches(msg):
+		// Pane only, the SyncExpand discipline: the key means nothing while
+		// the log is not on screen. The scroll region's shape changed under
+		// the keys, so it restarts where its own kind starts (following the
+		// newest line).
+		if m.pane == paneRefusals {
+			m.refusalsGrouped = !m.refusalsGrouped
+			m.scroll = m.freshScroll()
 		}
 		return m, nil
 	case k.LineDown.matches(msg):

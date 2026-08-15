@@ -12,7 +12,7 @@
    tcp    22     · skipped     2h
 
 
- ─ refusals · 15 kept (ring carries last 32 per refresh) ──────────────────────
+ ─ refusals · 15 kept (ring carries last 32 per refresh) · u group ────────────
  18:30:54  mirror-skip              guest tcp :9004 not mirrored (skip list)
  18:30:55  mirror-skip              guest tcp :9005 not mirrored (skip list)
  18:30:56  mirror-skip              guest tcp :9006 not mirrored (skip list)

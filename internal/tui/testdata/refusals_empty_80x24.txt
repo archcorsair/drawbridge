@@ -12,7 +12,7 @@
    tcp    22     · skipped     2h
 
 
- ─ refusals · 0 kept (ring carries last 32 per refresh) ───────────────────────
+ ─ refusals · 0 kept (ring carries last 32 per refresh) · u group ─────────────
  (no refusals seen since attach — the ring starts with what the daemon remembe…
 
 

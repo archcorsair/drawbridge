@@ -279,6 +279,16 @@ the vocabulary doctor's findings use. While open, scroll keys drive this
 pane. An empty log renders "(no refusals seen since attach — the ring
 starts with what the daemon remembers)".
 
+`u` folds the log into per-ID groups (added 2026-08-15): one line per
+cause, its time span (`18:23→18:31:01`), a `×N` count, and the newest
+line verbatim as the exemplar. Groups order by their newest entry, so the
+reading order stays newest at the bottom; a one-off keeps its raw-pane
+spelling exactly, no span and no multiplier. What the fold buys is
+proportion: a storm of one cause reads as one counted line instead of a
+pane of identical prose, and the rare one-off it would have scrolled away
+stays visible. The pane header names the mode and the way back
+(`grouped by id · u raw`).
+
 ### 3.3 The doctor view (`d`)
 
 Full-screen replacement (the dashboard keeps refreshing underneath, D6).
@@ -425,6 +435,7 @@ said.
 | `r` | Toggle the refusals pane (the footer entry carries the unseen count) |
 | `d` | Open the doctor view (runs a gather on first entry) |
 | `x` | Dashboard only (added 2026-08-01): expand / collapse the sync table's folded ephemeral rows. Full help only — the footer stays five entries |
+| `u` | Refusals pane only (added 2026-08-15): fold repeats into per-ID groups / unfold. The pane header carries the mode and the hint, sync-fold style; full help only, the footer stays five entries |
 
 **Scrolling (whichever single region is scrollable — the refusals pane
 when open, else an overflowing mirror table, else the doctor findings

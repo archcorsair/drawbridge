@@ -2,8 +2,10 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/archcorsair/drawbridge/internal/introspect"
 	"github.com/charmbracelet/lipgloss"
@@ -162,12 +164,18 @@ func (m Model) refusalPane(lo layout) []string {
 	if len(log) == 0 {
 		body = append(body, styleDim.Render(truncEnd(refusalEmpty, w)))
 	}
-	for _, r := range log {
-		body = append(body, refusalLine(r, lo, w))
+	if m.refusalsGrouped {
+		for _, g := range groupRefusals(log) {
+			body = append(body, refusalGroupLine(g, lo, w))
+		}
+	} else {
+		for _, r := range log {
+			body = append(body, refusalLine(r, lo, w))
+		}
 	}
 
 	out := make([]string, 0, h)
-	out = append(out, pad+refusalRule(len(log), w))
+	out = append(out, pad+refusalRule(len(log), w, m.refusalsGrouped))
 	// Rows start under the rule, oldest first, newest last — log-file order
 	// (T2's bottom-float was reversed on user feedback 2026-08-01: rows
 	// hovering above the footer with dead space over them read as upside
@@ -193,20 +201,84 @@ func (m Model) paneScroll() scrollState {
 	return scrollState{follow: true}
 }
 
-func refusalRule(n, width int) string {
-	head := "─ " + refusalHeader(n, max(0, width-4)) + " "
+func refusalRule(n, width int, grouped bool) string {
+	head := "─ " + refusalHeader(n, max(0, width-4), grouped) + " "
 	return styleDim.Render(head + strings.Repeat("─", max(0, width-visWidth(head))))
 }
 
 // refusalHeader states D5's loss bound in the pane's own header, in whichever
 // spelling fits: a log that silently drops what the ring rotated past would
-// read as an audit trail, which it is not.
-func refusalHeader(n, width int) string {
-	full := fmt.Sprintf("refusals · %d kept (ring carries last %d per refresh)", n, introspect.RingSize)
+// read as an audit trail, which it is not. The `u` hint lives here because
+// the fold it toggles lives here too, same as the sync fold's `x expand`.
+func refusalHeader(n, width int, grouped bool) string {
+	mode := "u group"
+	if grouped {
+		mode = "grouped by id · u raw"
+	}
+	full := fmt.Sprintf("refusals · %d kept (ring carries last %d per refresh) · %s", n, introspect.RingSize, mode)
 	if visWidth(full) <= width {
 		return full
 	}
-	return truncEnd(fmt.Sprintf("refusals · %d kept · last %d/refresh", n, introspect.RingSize), width)
+	return truncEnd(fmt.Sprintf("refusals · %d kept · %s", n, mode), width)
+}
+
+// refusalGroup is one folded line of the grouped pane: every entry sharing an
+// ID, its span, and the newest line verbatim as the exemplar.
+type refusalGroup struct {
+	id          string
+	count       int
+	first, last time.Time
+	lastLine    string
+}
+
+// groupRefusals folds a log into per-ID groups ordered by each group's newest
+// entry, oldest group first: the same newest-at-the-bottom reading order as
+// the raw pane. What the fold buys is proportion: a storm of one cause reads
+// as one line with a count instead of a pane of identical prose, and the rare
+// one-off refusal it would have scrolled away stays visible.
+func groupRefusals(log []introspect.Refusal) []refusalGroup {
+	idx := map[string]int{}
+	var out []refusalGroup
+	for _, r := range log {
+		if i, ok := idx[r.ID]; ok {
+			g := out[i]
+			g.count++
+			g.last = r.At
+			g.lastLine = r.Line
+			out[i] = g
+			continue
+		}
+		idx[r.ID] = len(out)
+		out = append(out, refusalGroup{id: r.ID, count: 1, first: r.At, last: r.At, lastLine: r.Line})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].last.Before(out[j].last) })
+	return out
+}
+
+// refusalGroupLine is one group: the time span, the ID, the count, and the
+// newest line. A count of one drops the span and the multiplier so a one-off
+// reads exactly like its raw-pane self.
+func refusalGroupLine(g refusalGroup, lo layout, width int) string {
+	var b strings.Builder
+	rest := width
+	if lo.showSince {
+		span := g.last.Format(refusalClock)
+		if g.count > 1 {
+			span = g.first.Format("15:04") + "→" + g.last.Format(refusalClock)
+		}
+		b.WriteString(padRight(span, refusalTimeW+6))
+		rest -= refusalTimeW + 6
+	}
+	b.WriteString(padRight(refusalStyle(g.id).Render(truncEnd(g.id, refusalIDW-2)), refusalIDW))
+	rest -= refusalIDW
+	count := "      "
+	if g.count > 1 {
+		count = padRight(styleTitle.Render(fmt.Sprintf("×%d", g.count)), 6)
+	}
+	b.WriteString(count)
+	rest -= 6
+	b.WriteString(truncEnd(oneLine(g.lastLine), rest))
+	return b.String()
 }
 
 // refusalLine is one entry: wall clock, the stable ID, and the daemon's line

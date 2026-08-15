@@ -12,6 +12,7 @@
  │   r                   toggle the refusals pane (the footer counts what it has not shown yet)                     │
  │   d                   open the doctor view (runs a gather on first entry)                                        │
  │   x                   dashboard: expand / collapse the folded ephemeral SYNC rows                                │
+ │   u                   refusals pane: fold repeats into per-ID groups / unfold                                    │
  │                                                                                                                  │
  │ Scrolling                                                                                                        │
  │   j, down             line down (doctor view: move the cursor)                                                   │
@@ -31,7 +32,6 @@
  │   enter               select daemon and close                                                                    │
  │   esc, v              close without changing selection                                                           │
  └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-
 
 
 

@@ -222,6 +222,9 @@ func TestViewGoldens(t *testing.T) {
 		{"refusals_scrolled_80x24", press(manyRefusalsModel(80, 24), "k", "k")},
 		{"refusals_empty_120x40", emptyRefusalsModel(120, 40)},
 		{"refusals_empty_80x24", emptyRefusalsModel(80, 24)},
+		// The per-ID fold (`u`): the mirror-skip storm reads as one counted
+		// line and the two one-off causes stay visible beside it.
+		{"refusals_grouped_80x24", press(manyRefusalsModel(80, 24), "u")},
 		{"switcher_120x40", switcherModel(120, 40)},
 		{"switcher_80x24", switcherModel(80, 24)},
 		{"fighting_120x40", fightingModel(120, 40)},

@@ -12,13 +12,13 @@
  │   r                   toggle the refusals pane (the footer counts what it… │
  │   d                   open the doctor view (runs a gather on first entry)  │
  │   x                   dashboard: expand / collapse the folded ephemeral S… │
+ │   u                   refusals pane: fold repeats into per-ID groups / un… │
  │                                                                            │
  │ Scrolling                                                                  │
  │   j, down             line down (doctor view: move the cursor)             │
  │   k, up               line up (doctor view: move the cursor)               │
  │   pgdn, space         page down                                            │
  │   pgup, b             page up                                              │
- │   g                   top                                                  │
- │ … +11 more                                                                 │
+ │ … +12 more                                                                 │
  └────────────────────────────────────────────────────────────────────────────┘
  tab next daemon · r refusals · d doctor · ? help · q quit

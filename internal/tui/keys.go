@@ -47,6 +47,8 @@ type keyMap struct {
 	Refusals     binding
 	Doctor       binding
 	SyncExpand   binding
+	// GroupRefusals is the refusals pane's per-ID fold.
+	GroupRefusals binding
 
 	LineDown binding
 	LineUp   binding
@@ -68,16 +70,17 @@ type keyMap struct {
 // to survive small keyboards and SSH (§4).
 func defaultKeys() keyMap {
 	return keyMap{
-		Quit:         binding{keys: []string{"q", "ctrl+c"}, label: "q, ctrl+c", help: "quit (terminal restored)"},
-		Help:         binding{keys: []string{"?"}, label: "?", help: "toggle this help overlay"},
-		Esc:          binding{keys: []string{"esc"}, label: "esc", help: "close the topmost overlay, else the refusals pane; doctor view: cancel a gather, else back"},
-		NextDaemon:   binding{keys: []string{"tab", "l", "right"}, label: "tab, l, right", help: "next daemon"},
-		PrevDaemon:   binding{keys: []string{"shift+tab", "h", "left"}, label: "shift+tab, h, left", help: "previous daemon"},
-		SelectDaemon: binding{keys: []string{"1", "2", "3", "4", "5", "6", "7", "8", "9"}, label: "1-9", help: "select daemon N (switcher order)"},
-		Switcher:     binding{keys: []string{"v"}, label: "v", help: "toggle the daemon switcher overlay"},
-		Refusals:     binding{keys: []string{"r"}, label: "r", help: "toggle the refusals pane (the footer counts what it has not shown yet)"},
-		Doctor:       binding{keys: []string{"d"}, label: "d", help: "open the doctor view (runs a gather on first entry)"},
-		SyncExpand:   binding{keys: []string{"x"}, label: "x", help: "dashboard: expand / collapse the folded ephemeral SYNC rows"},
+		Quit:          binding{keys: []string{"q", "ctrl+c"}, label: "q, ctrl+c", help: "quit (terminal restored)"},
+		Help:          binding{keys: []string{"?"}, label: "?", help: "toggle this help overlay"},
+		Esc:           binding{keys: []string{"esc"}, label: "esc", help: "close the topmost overlay, else the refusals pane; doctor view: cancel a gather, else back"},
+		NextDaemon:    binding{keys: []string{"tab", "l", "right"}, label: "tab, l, right", help: "next daemon"},
+		PrevDaemon:    binding{keys: []string{"shift+tab", "h", "left"}, label: "shift+tab, h, left", help: "previous daemon"},
+		SelectDaemon:  binding{keys: []string{"1", "2", "3", "4", "5", "6", "7", "8", "9"}, label: "1-9", help: "select daemon N (switcher order)"},
+		Switcher:      binding{keys: []string{"v"}, label: "v", help: "toggle the daemon switcher overlay"},
+		Refusals:      binding{keys: []string{"r"}, label: "r", help: "toggle the refusals pane (the footer counts what it has not shown yet)"},
+		Doctor:        binding{keys: []string{"d"}, label: "d", help: "open the doctor view (runs a gather on first entry)"},
+		SyncExpand:    binding{keys: []string{"x"}, label: "x", help: "dashboard: expand / collapse the folded ephemeral SYNC rows"},
+		GroupRefusals: binding{keys: []string{"u"}, label: "u", help: "refusals pane: fold repeats into per-ID groups / unfold"},
 
 		LineDown: binding{keys: []string{"j", "down"}, label: "j, down", help: "line down (doctor view: move the cursor)"},
 		LineUp:   binding{keys: []string{"k", "up"}, label: "k, up", help: "line up (doctor view: move the cursor)"},
@@ -105,7 +108,7 @@ type helpGroup struct {
 // adding a binding without listing it here fails the drift test.
 func (k keyMap) groups() []helpGroup {
 	return []helpGroup{
-		{"Global", []binding{k.Quit, k.Help, k.Esc, k.NextDaemon, k.PrevDaemon, k.SelectDaemon, k.Switcher, k.Refusals, k.Doctor, k.SyncExpand}},
+		{"Global", []binding{k.Quit, k.Help, k.Esc, k.NextDaemon, k.PrevDaemon, k.SelectDaemon, k.Switcher, k.Refusals, k.Doctor, k.SyncExpand, k.GroupRefusals}},
 		{"Scrolling", []binding{k.LineDown, k.LineUp, k.PageDown, k.PageUp, k.Top, k.Bottom}},
 		{"Doctor view", []binding{k.Expand, k.Rerun, k.Probe}},
 		{"Switcher overlay", []binding{k.SwitcherMove, k.SwitcherSelect, k.SwitcherClose}},
@@ -229,7 +232,7 @@ func helpBody(k keyMap) []string {
 func (k keyMap) dispatchedBindings() []binding {
 	return []binding{
 		k.Quit, k.Help, k.Esc, k.NextDaemon, k.PrevDaemon, k.SelectDaemon,
-		k.Switcher, k.Refusals, k.Doctor, k.SyncExpand,
+		k.Switcher, k.Refusals, k.Doctor, k.SyncExpand, k.GroupRefusals,
 		k.LineDown, k.LineUp, k.PageDown, k.PageUp, k.Top, k.Bottom,
 	}
 }

@@ -21,7 +21,7 @@
 
 
 
-  ─ refusals · 3 kept (ring carries last 32 per refresh) ──────────────────────────────────────────────────────────────
+  ─ refusals · 3 kept (ring carries last 32 per refresh) · u group ────────────────────────────────────────────────────
   18:22:10  auth-mismatch            agent at tcp://192.168.64.5:4777 closed during transport authentication (wrong se…
   18:22:41  reverse-dial-refused     'D' activation named 127.0.0.1:9099 — not advertised; refused
   18:23:05  mirror-skip              guest tcp :22 not mirrored (skip list)
