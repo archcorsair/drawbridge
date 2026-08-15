@@ -408,16 +408,57 @@ func (m Model) detailPane(lo layout) []string {
 }
 
 // entryDetailRows is the strip's body: one labelled line each for the state,
-// its consequence, and the next command. It returns a slice on purpose, so
-// an optional line (per-entry counters, when a daemon populates them) can be
-// appended without touching the strip's frame arithmetic.
+// its consequence, and the next command, plus the traffic line for a bound
+// row (a skipped or bind-failed port has no socket to account, so it gets
+// no traffic story). It returns a slice on purpose: optional lines join
+// without touching the strip's frame arithmetic.
 func (m Model) entryDetailRows(e introspect.MirrorEntry) []string {
 	state := padRight(styleDim.Render("state"), labelW) +
 		entryStyle(e.State).Render(entryGlyph(e.State)+" "+e.State) +
 		"   " + styleDim.Render("since ") + e.Since.Format(refusalClock) + " · " + relative(m.now.Sub(e.Since)) + " ago"
 	meaning := padRight(styleDim.Render("meaning"), labelW) + entryMeaning(e)
 	try := padRight(styleDim.Render("try"), labelW) + entryTry(e)
-	return []string{state, meaning, try}
+	rows := []string{state, meaning, try}
+	if e.State == introspect.EntryBound {
+		if s := m.selectedSnap(); s != nil {
+			rows = append(rows, m.trafficRow(s.State.Mirror.PerEntryCounters, e))
+		}
+	}
+	return rows
+}
+
+// trafficRow renders the per-entry counters, or the honest absence when the
+// daemon never advertised them (Mirror.PerEntryCounters is the capability
+// bool: absent means the daemon predates accounting, never zero traffic;
+// present with zeros means genuinely idle, rendered proudly as zeros).
+func (m Model) trafficRow(counted bool, e introspect.MirrorEntry) string {
+	label := padRight(styleDim.Render("traffic"), labelW)
+	if !counted {
+		return label + styleDim.Render("(this daemon reports no per-entry counters)")
+	}
+	var parts []string
+	if e.Proto != "udp" {
+		// A UDP mirror is a datagram relay with no per-client conns.
+		parts = append(parts, fmt.Sprintf("conns %d", e.Conns))
+	}
+	parts = append(parts, "rx "+humanBytes(e.RxBytes), "tx "+humanBytes(e.TxBytes))
+	if !e.LastActiveAt.IsZero() {
+		parts = append(parts, "active "+relative(m.now.Sub(e.LastActiveAt))+" ago")
+	}
+	return label + strings.Join(parts, " · ")
+}
+
+func humanBytes(n uint64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	default:
+		return strconv.FormatUint(n, 10) + " B"
+	}
 }
 
 // entryMeaning and entryTry translate a state word into its consequence and

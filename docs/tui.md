@@ -766,6 +766,18 @@ test makes this mechanical); docs render sanely.
   fields plus splice-path accounting, bench-gated; a row cursor and
   overlay are the right UI for that data, and mouse capture's cost
   (terminal text selection stops working) gets weighed then, not before.
+  REVIVED and landed 2026-08-15: the cursor and the `enter` detail strip
+  shipped first as the interaction shell (§4.1's enter row), and the
+  daemon now reports the counters as additive schema-1 fields on
+  `MirrorEntry` (conns, rxBytes, txBytes, lastActiveAt) gated by
+  `mirror.perEntryCounters`, the capability bool that keeps a
+  pre-accounting daemon's absence distinct from real zeros. Accounting
+  attaches after the transport-auth exchange, counts payload only, and
+  was gated on an in-package copy-path benchmark (about 30 ns per
+  counted op, zero allocations); the live `just bench` revalidation is
+  on the milestone follow-up list. The strip renders the traffic line
+  for bound rows and an honest absence for daemons that predate the
+  fields; mouse capture stayed out.
 
 ## 11. Open questions for the user, ranked by plan impact — RESOLVED 2026-08-01
 

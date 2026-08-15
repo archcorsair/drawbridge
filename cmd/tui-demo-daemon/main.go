@@ -170,24 +170,32 @@ func colimaState(start time.Time) introspect.State {
 	t := now.Sub(start)
 	up := 2*time.Hour + 14*time.Minute
 
+	// Counter fakes (PerEntryCounters below): busy services with live
+	// traffic, so the detail strip's traffic line has a story to tell.
 	entries := []introspect.MirrorEntry{
-		{Proto: "tcp", Port: 8080, State: introspect.EntryBound, Since: now.Add(-97 * time.Minute)},
-		{Proto: "tcp", Port: 3000, State: introspect.EntryBound, Since: now.Add(-52 * time.Minute)},
-		{Proto: "udp", Port: 5353, State: introspect.EntryBound, Since: now.Add(-61 * time.Minute)},
+		{Proto: "tcp", Port: 8080, State: introspect.EntryBound, Since: now.Add(-97 * time.Minute),
+			Conns: 3, RxBytes: 48_213_902, TxBytes: 3_144_265, LastActiveAt: now.Add(-2 * time.Second)},
+		{Proto: "tcp", Port: 3000, State: introspect.EntryBound, Since: now.Add(-52 * time.Minute),
+			Conns: 1, RxBytes: 1_204_112, TxBytes: 226_540, LastActiveAt: now.Add(-45 * time.Second)},
+		{Proto: "udp", Port: 5353, State: introspect.EntryBound, Since: now.Add(-61 * time.Minute),
+			RxBytes: 88_204, TxBytes: 12_930, LastActiveAt: now.Add(-9 * time.Second)},
 		{Proto: "tcp", Port: 22, State: introspect.EntrySkipped, Since: start.Add(-up)},
 	}
 	lastEvent := now.Add(-12 * time.Second)
 	if t >= 6*time.Second {
 		entries = append(entries, introspect.MirrorEntry{
-			Proto: "tcp", Port: 5173, State: introspect.EntryBound, Since: start.Add(6 * time.Second)})
+			Proto: "tcp", Port: 5173, State: introspect.EntryBound, Since: start.Add(6 * time.Second),
+			Conns: 2, RxBytes: 402_113, TxBytes: 1_929_004, LastActiveAt: now.Add(-1 * time.Second)})
 		lastEvent = start.Add(6 * time.Second)
 	}
 	// tcp 5000 is bound for the first ten seconds, then loses its Mac port to
 	// a forwarder and reports bind-failed: live evidence of the state doctor's
-	// ring can only tell you about after the fact.
+	// ring can only tell you about after the fact. Its counters vanish with
+	// the binding, exactly as the real daemon's do.
 	if t < 10*time.Second {
 		entries = append(entries, introspect.MirrorEntry{
-			Proto: "tcp", Port: 5000, State: introspect.EntryBound, Since: now.Add(-5 * time.Minute)})
+			Proto: "tcp", Port: 5000, State: introspect.EntryBound, Since: now.Add(-5 * time.Minute),
+			RxBytes: 3_211, TxBytes: 954, LastActiveAt: now.Add(-4 * time.Minute)})
 	} else {
 		entries = append(entries, introspect.MirrorEntry{
 			Proto: "tcp", Port: 5000, State: introspect.EntryBindFailed, Since: start.Add(10 * time.Second)})
@@ -195,7 +203,8 @@ func colimaState(start time.Time) introspect.State {
 	}
 	if t >= 16*time.Second {
 		entries = append(entries, introspect.MirrorEntry{
-			Proto: "tcp", Port: 9229, State: introspect.EntryBound, Since: start.Add(16 * time.Second)})
+			Proto: "tcp", Port: 9229, State: introspect.EntryBound, Since: start.Add(16 * time.Second),
+			Conns: 1, RxBytes: 18_112, TxBytes: 7_430, LastActiveAt: now})
 		lastEvent = start.Add(16 * time.Second)
 	}
 
@@ -217,6 +226,7 @@ func colimaState(start time.Time) introspect.State {
 		Mirror: introspect.Mirror{
 			SessionUp: true, Since: start.Add(-up), LastEventAt: lastEvent,
 			Entries: entries, Skip: []uint16{22},
+			PerEntryCounters: true,
 		},
 		Sync: introspect.Sync{
 			SessionUp: true, Since: start.Add(-up),
@@ -237,7 +247,9 @@ func colimaState(start time.Time) introspect.State {
 // resolver's note verbatim, secret absent (so this side refuses to connect,
 // which is the storm below), sync session down, and a mirror session that
 // flaps: up for 14 s of every 20 s cycle, entries only while up, so the
-// "session down, press d" wording shows the rest of the time.
+// "session down, press d" wording shows the rest of the time. Its Mirror
+// deliberately omits PerEntryCounters: a v0.0.9 daemon predates the
+// accounting, which is the detail strip's honest-absence demo surface.
 func devState(start time.Time) introspect.State {
 	now := time.Now()
 	up := 11 * time.Minute
@@ -317,7 +329,8 @@ func rootState(start time.Time) introspect.State {
 				{Proto: "tcp", Port: 3000, State: introspect.EntryBindFailed, Since: now.Add(-5 * time.Minute)},
 				{Proto: "tcp", Port: 22, State: introspect.EntrySkipped, Since: start.Add(-up)},
 			},
-			Skip: []uint16{22},
+			Skip:             []uint16{22},
+			PerEntryCounters: true,
 		},
 		Sync: introspect.Sync{SessionUp: true, Since: start.Add(-up), PoolParked: 2},
 	}

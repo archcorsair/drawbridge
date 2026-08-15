@@ -257,6 +257,11 @@ func TestViewGoldens(t *testing.T) {
 		// The cursor at the bottom of an overflowing table: reveal slid the
 		// window, so the tail line is gone and the last row is on screen.
 		{"cursor_bottom_120x16", press(testModel(120, 16, manyEntries()), "G")},
+		// The strip's traffic line: a counting daemon's bound row renders its
+		// conns/rx/tx/active, and a daemon that predates the accounting gets
+		// the honest-absence line instead.
+		{"rowdetail_traffic_120x40", trafficModel(120, 40)},
+		{"rowdetail_nocounters_120x40", press(testModel(120, 40, healthySnap()), "g", "j", "enter")},
 	} {
 		t.Run(tc.name, func(t *testing.T) { golden(t, tc.name, tc.m.View()) })
 	}
@@ -384,6 +389,24 @@ func flashModel(w, h int) Model {
 	m := skewChipModel(w, h)
 	m.flashLeft = flashFrames
 	return m
+}
+
+// trafficModel is healthySnap as a counting daemon (PerEntryCounters set,
+// traffic on the tcp/3000 row) with the strip open on that row.
+func trafficModel(w, h int) Model {
+	s := healthySnap()
+	s.State.Mirror.PerEntryCounters = true
+	for i := range s.State.Mirror.Entries {
+		e := &s.State.Mirror.Entries[i]
+		if e.Proto == "tcp" && e.Port == 3000 {
+			e.Conns = 2
+			e.RxBytes = 48_213_902
+			e.TxBytes = 3_144_265
+			e.LastActiveAt = fixtureNow.Add(-2 * time.Second)
+		}
+	}
+	// Sorted order puts bind-failed tcp/5000 first; one j lands on tcp/3000.
+	return press(testModel(w, h, s), "g", "j", "enter")
 }
 
 // attentionModel is a healthy selected daemon with lima:dev degraded beside

@@ -53,6 +53,34 @@ func TestRowDetailMeaningAndTry(t *testing.T) {
 	}
 }
 
+// The traffic line: a counting daemon's bound row carries its counters, a
+// pre-accounting daemon's carries the honest absence, and a row with no
+// socket (bind-failed, skipped) carries no traffic story at all.
+func TestRowDetailTrafficLine(t *testing.T) {
+	m := trafficModel(120, 40)
+	v := m.View()
+	if !strings.Contains(v, "conns 2 · rx 46.0 MB · tx 3.0 MB · active 2s ago") {
+		t.Fatalf("the counters line is wrong:\n%s", v)
+	}
+	if lines := m.detailLines(m.layout()); lines != 5 {
+		t.Fatalf("a counted bound row budgets %d strip lines, want 5", lines)
+	}
+
+	absent := press(testModel(120, 40, healthySnap()), "g", "j", "enter")
+	if !strings.Contains(absent.View(), "(this daemon reports no per-entry counters)") {
+		t.Fatal("a pre-accounting daemon lost its honest-absence line")
+	}
+
+	// The bind-failed row: three body rows, no traffic in either world.
+	failed := press(trafficModel(120, 40), "g")
+	if lines := failed.detailLines(failed.layout()); lines != 4 {
+		t.Fatalf("a bind-failed row budgets %d strip lines, want 4", lines)
+	}
+	if strings.Contains(failed.View(), "traffic") {
+		t.Fatal("a socketless row grew a traffic line")
+	}
+}
+
 // The cursor bar is invisible until the user drives it: an untouched
 // dashboard renders no reverse-video row and no strip, and enter alone
 // reveals the bar with the strip it opens.
