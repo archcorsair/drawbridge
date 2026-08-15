@@ -1,37 +1,37 @@
  drawbridge tui · CLI v0.1.0                                                 ● daemon 1/2 · refreshed <1s ago ·  ? help
+ ┌ colima:colima ─ user socket · pid 71234 · daemon v0.1.0 · up 2h14m ────────────────────────────────────────────────┐
+ │ endpoint   tcp://192.168.64.5:4777    source vznat-direct    resolved 2h14m ago                                    │
+ │ auth       static-hmac-v1 ok   ·   mirror ● up · event 12s ago   ·   sync ● up · pool 4 parked                     │
+ └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+  MIRROR — guest listeners on Mac localhost (5) · skip: 22  │ SYNC — Mac ports advertised to guest (3)
+    PROTO  PORT   STATE         SINCE                       │ PROTO  PORT
+    tcp    5000   ✕ bind-failed 40s                         │ tcp    5432
+    tcp    3000   ● bound       2m                          │ tcp    6379
+    tcp   ┌ keys ───────────────────────────────────────────────────────────────────────────────────────────┐
+    udp   │ GLOBAL  ◂ you are here                           SCROLLING                                      │
+    tcp   │ q, ctrl+c          quit (terminal restored)      j, down            line down (doctor view: mo… │
+          │ ?                  toggle this help overlay      k, up              line up (doctor view: move… │
+          │ esc                close the topmost overlay,…   pgdn, space        page down                   │
+          │ tab, l, right      next daemon                   pgup, b            page up                     │
+          │ shift+tab, h, left previous daemon               g                  top                         │
+          │ 1-9                select daemon N (switcher …   G                  bottom (re-engages follow … │
+          │ v                  toggle the daemon switcher…                                                  │
+          │ r                  toggle the refusals pane (…   DOCTOR VIEW                                    │
+          │ d                  open the doctor view (runs…   enter              expand / collapse the sele… │
+          │ x                  dashboard: expand / collap…   R                  re-run the gather           │
+          │ u                  refusals pane: fold repeat…   p                  re-run with the half-close… │
+          │                                                                                                 │
+          │                                                  SWITCHER OVERLAY                               │
+          │                                                  j/k, up/down       move                        │
+          │                                                  enter              select daemon and close     │
+          │                                                  esc, v             close without changing sel… │
+          │                                                                                                 │
+          │ ? or esc closes                                                                                 │
+          └─────────────────────────────────────────────────────────────────────────────────────────────────┘
 
- ┌ keys ────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
- │ Global                                                                                                           │
- │   q, ctrl+c           quit (terminal restored)                                                                   │
- │   ?                   toggle this help overlay                                                                   │
- │   esc                 close the topmost overlay, else the refusals pane; doctor view: cancel a gather, else back │
- │   tab, l, right       next daemon                                                                                │
- │   shift+tab, h, left  previous daemon                                                                            │
- │   1-9                 select daemon N (switcher order)                                                           │
- │   v                   toggle the daemon switcher overlay                                                         │
- │   r                   toggle the refusals pane (the footer counts what it has not shown yet)                     │
- │   d                   open the doctor view (runs a gather on first entry)                                        │
- │   x                   dashboard: expand / collapse the folded ephemeral SYNC rows                                │
- │   u                   refusals pane: fold repeats into per-ID groups / unfold                                    │
- │                                                                                                                  │
- │ Scrolling                                                                                                        │
- │   j, down             line down (doctor view: move the cursor)                                                   │
- │   k, up               line up (doctor view: move the cursor)                                                     │
- │   pgdn, space         page down                                                                                  │
- │   pgup, b             page up                                                                                    │
- │   g                   top                                                                                        │
- │   G                   bottom (re-engages follow in the refusals pane)                                            │
- │                                                                                                                  │
- │ Doctor view                                                                                                      │
- │   enter               expand / collapse the selected finding                                                     │
- │   R                   re-run the gather                                                                          │
- │   p                   re-run with the half-close probe (~20s+)                                                   │
- │                                                                                                                  │
- │ Switcher overlay                                                                                                 │
- │   j/k, up/down        move                                                                                       │
- │   enter               select daemon and close                                                                    │
- │   esc, v              close without changing selection                                                           │
- └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
 
 
 

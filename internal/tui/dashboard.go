@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -653,21 +654,156 @@ func (m Model) noDaemonCard(lo layout) []string {
 	return indentAll(card("no daemon", body, inner), 1)
 }
 
-// helpVisible is the overlay's body height: the chrome, the blank spacer, the
-// card's two borders, the refusals pane if it is open and the footer are
-// fixed, and the rest is the map. A terminal too short for all of §4.1 scrolls
-// rather than hiding the tail.
+// The help modal: a centered card composited over the live screen, dimmed.
+// The dashboard stays recognizable underneath, which is what tells the user
+// where they will land when the card closes. Two columns when the terminal
+// affords them, key labels in the accent color, and the group that owns the
+// current view carries a "you are here" marker.
+
+// helpVisible is the modal card's body budget: the card floats, so only the
+// window's own height bounds it (top/bottom margin plus two border rows).
 func (m Model) helpVisible(lo layout) int {
-	// chrome + the blank spacer + the card's two borders + the footer.
-	return max(1, lo.height-len(m.chromeLines(lo))-4-m.paneLines(lo))
+	return max(1, lo.height-6)
+}
+
+const helpColGap = 3
+
+// helpBodyStyled renders the keymap into card body lines, and returns them
+// with the card's inner width. Same keymap struct the Update loop dispatches
+// on; the one-source-of-truth rule survives the restyle.
+func (m Model) helpBodyStyled(lo layout) ([]string, int) {
+	groups := m.keys.groups()
+	current := "Global"
+	if m.view == viewDoctor {
+		current = "Doctor view"
+	}
+
+	labelw := 0
+	for _, g := range groups {
+		for _, b := range g.rows {
+			labelw = max(labelw, visWidth(b.label))
+		}
+	}
+
+	twoCol := lo.width >= wideWidth
+	colw := min(46, lo.contentWidth()-6)
+	if twoCol {
+		colw = min(46, (lo.contentWidth()-6-helpColGap)/2)
+	}
+
+	render := func(g helpGroup) []string {
+		title := styleAccentBold.Render(strings.ToUpper(g.name))
+		if g.name == current {
+			title += "  " + styleAccent.Render("◂ you are here")
+		}
+		out := []string{title}
+		for _, b := range g.rows {
+			out = append(out, styleAccent.Render(padRight(b.label, labelw))+" "+
+				truncEnd(b.help, colw-labelw-1))
+		}
+		return out
+	}
+
+	if !twoCol {
+		var body []string
+		for i, g := range groups {
+			if i > 0 {
+				body = append(body, "")
+			}
+			body = append(body, render(g)...)
+		}
+		return body, colw
+	}
+
+	// Two columns: the tall Global group on the left, everything contextual on
+	// the right, so both columns land within a few rows of each other.
+	var left, right []string
+	for i, g := range groups {
+		dst := &right
+		if i == 0 {
+			dst = &left
+		}
+		if len(*dst) > 0 {
+			*dst = append(*dst, "")
+		}
+		*dst = append(*dst, render(g)...)
+	}
+	n := max(len(left), len(right))
+	body := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		l, r := "", ""
+		if i < len(left) {
+			l = left[i]
+		}
+		if i < len(right) {
+			r = right[i]
+		}
+		body = append(body, padRight(l, colw)+strings.Repeat(" ", helpColGap)+r)
+	}
+	return body, 2*colw + helpColGap
 }
 
 func (m Model) helpView() string {
 	lo := m.layout()
-	body := windowRows(helpBody(m.keys), m.scroll, m.helpVisible(lo))
-	head := append(m.chromeLines(lo), "")
-	head = append(head, indentAll(titledCard("keys", body, lo.contentWidth()-1), 1)...)
-	return m.frame(head, lo)
+	base := m.dashboardView()
+	if m.view == viewDoctor {
+		base = m.doctorView()
+	}
+	bg := strings.Split(base, "\n")
+
+	body, inner := m.helpBodyStyled(lo)
+	vis := m.helpVisible(lo)
+	total := len(body)
+	first, last := m.scroll.window(total, vis)
+	win := append([]string(nil), body[first:last]...)
+	if total > last-first {
+		win = append(win, styleDim.Render(fmt.Sprintf("… %d-%d of %d · j/k scroll", first+1, last, total)))
+	}
+	win = append(win, "", styleDim.Render("? or esc closes"))
+
+	c := card("keys", win, inner)
+	x := max(0, (lo.width-visWidth(c[0]))/2)
+	y := max(0, (lo.height-len(c))/2)
+	return strings.Join(overlayCompose(bg, c, x, y), "\n")
+}
+
+// overlayCompose seats styled card lines over a rendered screen. The backdrop
+// is stripped of its own color and re-rendered dim, so the card is the only
+// saturated thing on screen: focus by contrast, not by a border alone.
+var ansiRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
+
+func overlayCompose(bg, card []string, x, y int) []string {
+	if len(card) > len(bg) {
+		card = card[:len(bg)]
+	}
+	if y+len(card) > len(bg) {
+		y = max(0, len(bg)-len(card))
+	}
+	cw := 0
+	if len(card) > 0 {
+		cw = visWidth(card[0])
+	}
+	out := make([]string, len(bg))
+	for i, line := range bg {
+		plain := stripANSI(line)
+		if i < y || i >= y+len(card) {
+			out[i] = styleDim.Render(plain)
+			continue
+		}
+		r := []rune(plain)
+		left := string(r[:min(len(r), x)])
+		if pad := x - visWidth(left); pad > 0 {
+			left += strings.Repeat(" ", pad)
+		}
+		right := ""
+		if len(r) > x+cw {
+			right = string(r[x+cw:])
+		}
+		out[i] = styleDim.Render(left) + card[i-y] + styleDim.Render(right)
+	}
+	return out
 }
 
 // tooSmallView is the whole screen below 44×12: a terminal this small cannot

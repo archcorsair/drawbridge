@@ -185,8 +185,13 @@ func TestRefusalPaneIgnoresAnotherRegionsOffset(t *testing.T) {
 	if got := m.paneScroll(); !got.follow || got.offset != 0 {
 		t.Fatalf("the pane borrowed the help overlay's offset: %+v", got)
 	}
-	if !strings.Contains(m.View(), "guest tcp :9011 not mirrored") {
-		t.Fatal("the pane under an overlay is not showing its newest line")
+	// The overlay is now a centered card over the dimmed screen, so the
+	// pane's newest line may be covered rather than beside the card; the
+	// follow discipline above is the property that matters, and the card
+	// itself must be on screen (offset 7 has scrolled it past the GLOBAL
+	// heading, which is the point of the fixture).
+	if !strings.Contains(m.View(), "SCROLLING") {
+		t.Fatal("the help card is not on screen")
 	}
 }
 

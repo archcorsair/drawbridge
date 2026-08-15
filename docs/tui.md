@@ -478,7 +478,15 @@ list):**
   Scrolling / Doctor / Switcher, rendered from the same keymap structure
   the Update loop dispatches on (`internal/tui/keys.go` — one source of
   truth, so the help can never drift from the behavior; a unit test walks
-  the keymap and asserts every binding appears in the overlay).
+  the keymap and asserts every binding appears in the overlay). Restyled
+  2026-08-15 as a centered card composited over the live screen: the
+  backdrop is stripped of its color and re-rendered dim, so the card is
+  the only saturated thing on screen and the dashboard stays recognizable
+  underneath (which is what says where closing lands). Two columns at the
+  wide breakpoint (Global left, the contextual groups right), uppercase
+  group headings, key labels in the accent color, and the group that owns
+  the current view carries a `◂ you are here` marker. A card taller than
+  the window scrolls, with an `… i-j of N` tail line.
 - Context-sensitive additions: while the doctor view is open, the footer
   swaps to its own five (`enter expand · R re-run · p probe · esc back ·
   ? help`); while the refusals pane is open, the footer appends nothing —

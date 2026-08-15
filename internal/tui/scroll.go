@@ -179,7 +179,8 @@ func (m Model) scrollVisible() int {
 func (m Model) scrollTotal() int {
 	switch m.scrollRegion() {
 	case regionHelp:
-		return len(helpBody(m.keys))
+		body, _ := m.helpBodyStyled(m.layout())
+		return len(body)
 	case regionRefusals:
 		if m.refusalsGrouped {
 			return len(groupRefusals(m.refusals[m.selected]))

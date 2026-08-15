@@ -314,7 +314,7 @@ func TestHelpToggleAndEsc(t *testing.T) {
 	if m.overlay != overlayHelp {
 		t.Fatal("? did not open the help overlay")
 	}
-	if !strings.Contains(m.View(), "Switcher overlay") {
+	if !strings.Contains(m.View(), "SWITCHER OVERLAY") {
 		t.Fatal("the help overlay does not render the full map")
 	}
 	if got := press(m, "?"); got.overlay != overlayNone {

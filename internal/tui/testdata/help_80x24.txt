@@ -1,24 +1,24 @@
- drawbridge tui · v0.1.0                           ● daemon 1/1 · <1s ·  ? help
-
- ┌ keys ──────────────────────────────────────────────────────────────────────┐
- │ Global                                                                     │
- │   q, ctrl+c           quit (terminal restored)                             │
- │   ?                   toggle this help overlay                             │
- │   esc                 close the topmost overlay, else the refusals pane; … │
- │   tab, l, right       next daemon                                          │
- │   shift+tab, h, left  previous daemon                                      │
- │   1-9                 select daemon N (switcher order)                     │
- │   v                   toggle the daemon switcher overlay                   │
- │   r                   toggle the refusals pane (the footer counts what it… │
- │   d                   open the doctor view (runs a gather on first entry)  │
- │   x                   dashboard: expand / collapse the folded ephemeral S… │
- │   u                   refusals pane: fold repeats into per-ID groups / un… │
- │                                                                            │
- │ Scrolling                                                                  │
- │   j, down             line down (doctor view: move the cursor)             │
- │   k, up               line up (doctor view: move the cursor)               │
- │   pgdn, space         page down                                            │
- │   pgup, b             page up                                              │
- │ … +12 more                                                                 │
- └────────────────────────────────────────────────────────────────────────────┘
+ drawbridge tui┌ keys ──────────────────────────────────────────┐ <1s ·  ? help
+ colima:colima │ GLOBAL  ◂ you are here                         │
+ endpoint tcp:/│ q, ctrl+c          quit (terminal restored)    │
+ auth static-hm│ ?                  toggle this help overlay    │
+ mirror ● up · │ esc                close the topmost overlay,… │
+ MIRROR (5)    │ tab, l, right      next daemon                 │      skip: 22
+   PROTO  PORT │ shift+tab, h, left previous daemon             │
+   tcp    5000 │ 1-9                select daemon N (switcher … │
+   tcp    3000 │ v                  toggle the daemon switcher… │
+   tcp    8080 │ r                  toggle the refusals pane (… │
+   udp    5353 │ d                  open the doctor view (runs… │
+   tcp    22   │ x                  dashboard: expand / collap… │
+               │ u                  refusals pane: fold repeat… │
+               │                                                │
+               │ SCROLLING                                      │
+               │ j, down            line down (doctor view: mo… │
+               │ k, up              line up (doctor view: move… │
+               │ pgdn, space        page down                   │
+               │ pgup, b            page up                     │
+               │ … 1-18 of 30 · j/k scroll                      │
+               │                                                │
+               │ ? or esc closes                                │
+               └────────────────────────────────────────────────┘
  tab next daemon · r refusals · d doctor · ? help · q quit
