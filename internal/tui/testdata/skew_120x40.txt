@@ -1,4 +1,4 @@
- drawbridge tui · CLI v0.1.0                                                   daemon 1/1 · refreshed <1s ago ·  ? help
+ drawbridge tui · CLI v0.1.0                                                 ● daemon 1/1 · refreshed <1s ago ·  ? help
  ┌ schema skew ──────────────────────────────────────────────────────────────────┐
  │ daemon at /var/run/drawbridge/introspect.sock                                 │
  │ speaks introspection schema 2; this build knows 1 (daemon v0.2.0, CLI v0.1.0) │

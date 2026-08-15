@@ -19,8 +19,9 @@ import (
 //   - dim is Light "8" (bright black), not "7" (light gray): ANSI 7 on a
 //     white background is close to invisible, and dim text still has to read.
 //   - a dedicated accent pair carries focus and selection (the switcher's
-//     cursor marker, the doctor spinner) so "selected" stops borrowing the
-//     label blue and the verdict colors stay reserved for verdicts.
+//     cursor marker, the doctor spinner, the selection flash and the header
+//     heartbeat in motion.go) so "selected" stops borrowing the label blue
+//     and the verdict colors stay reserved for verdicts.
 //
 // DRAWBRIDGE_TUI_BG=light|dark pins the palette half where background
 // detection cannot see the terminal (applyBackgroundOverride in tui.go).

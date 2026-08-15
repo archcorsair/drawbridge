@@ -135,6 +135,12 @@ type Model struct {
 	// by path+proto+port (pulse.go), so the table can flag what moved since
 	// the last refresh.
 	pulses map[string]pulse
+
+	// flashLeft counts the frames remaining of the accent pulse a daemon
+	// switch triggers; flashGen invalidates the tick chain of a superseded
+	// pulse, doctorState.gen-style (motion.go).
+	flashLeft int
+	flashGen  int
 }
 
 func newModel(opts Options) Model {
@@ -195,6 +201,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyDoctorFailed(msg), nil
 	case doctorTickMsg:
 		return m.tickDoctor(msg)
+	case flashMsg:
+		return m.tickFlash(msg)
 	}
 	return m, nil
 }
@@ -219,7 +227,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.overlay == overlaySwitcher {
-		return m.handleSwitcherKey(msg), nil
+		return m.handleSwitcherKey(msg)
 	}
 	// The doctor view's own table answers first; what it does not claim falls
 	// through to the global map below, which is what keeps `tab`, `1`–`9`, `v`
@@ -244,12 +252,17 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case k.NextDaemon.matches(msg):
-		return m.step(1), nil
+		return m.step(1).armFlash()
 	case k.PrevDaemon.matches(msg):
-		return m.step(-1), nil
+		return m.step(-1).armFlash()
 	case k.SelectDaemon.matches(msg):
-		m, _ = m.selectNth(numberKey(msg))
-		return m, nil
+		// The flash confirms a landing, so a number with no daemon behind it
+		// (a dead key) pulses nothing.
+		next, ok := m.selectNth(numberKey(msg))
+		if !ok {
+			return next, nil
+		}
+		return next.armFlash()
 	case k.Switcher.matches(msg):
 		m.overlay = overlaySwitcher
 		m.cursor = m.rowIndexOf(m.selected)
@@ -300,8 +313,10 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleSwitcherKey is §4.1's switcher table. Movement is a cursor, not a
 // selection: the overlay is for reading the list, and only enter (or a number,
-// or tab) changes which daemon the dashboard is showing.
-func (m Model) handleSwitcherKey(msg tea.KeyMsg) Model {
+// or tab) changes which daemon the dashboard is showing — and each of those
+// arms the selection flash, so the landing is visible the moment the overlay
+// closes.
+func (m Model) handleSwitcherKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	k := m.keys
 	rows := m.daemonRows()
 	switch {
@@ -314,6 +329,7 @@ func (m Model) handleSwitcherKey(msg tea.KeyMsg) Model {
 		if i := m.cursorIndex(rows); i >= 0 && rows[i].selectable() {
 			m = m.selectPath(rows[i].snap.Path)
 			m.overlay = overlayNone
+			return m.armFlash()
 		}
 	case k.SwitcherMove.matches(msg):
 		if s := msg.String(); s == "j" || s == "down" {
@@ -326,15 +342,16 @@ func (m Model) handleSwitcherKey(msg tea.KeyMsg) Model {
 	case k.PageUp.matches(msg), k.Top.matches(msg):
 		m = m.moveCursor(-len(rows))
 	case k.NextDaemon.matches(msg):
-		m = m.step(1)
+		return m.step(1).armFlash()
 	case k.PrevDaemon.matches(msg):
-		m = m.step(-1)
+		return m.step(-1).armFlash()
 	case k.SelectDaemon.matches(msg):
 		if next, ok := m.selectNth(numberKey(msg)); ok {
-			m, m.overlay = next, overlayNone
+			next.overlay = overlayNone
+			return next.armFlash()
 		}
 	}
-	return m
+	return m, nil
 }
 
 // numberKey is the 1-9 arm's index, 0-based.

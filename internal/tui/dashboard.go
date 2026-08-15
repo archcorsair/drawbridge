@@ -143,8 +143,10 @@ func (m Model) headerLine(lo layout) string {
 		}
 	}
 	// The doubled space before `? help` is the note's spelling: the hint gets
-	// breathing room from the status it trails.
-	right := joinDot(pos, age) + " ·  " + styleDim.Render("? help")
+	// breathing room from the status it trails. The heartbeat dot leads the
+	// status segment (motion.go): bright right after a fetch, settled by the
+	// next 1 Hz tick.
+	right := m.heartbeatDot() + " " + joinDot(pos, age) + " ·  " + styleDim.Render("? help")
 	return " " + rightAlign(styleTitle.Render(name), right, lo.contentWidth()-1)
 }
 
@@ -217,10 +219,16 @@ func (m Model) summaryBox(lo layout, s *introspect.Snapshot) []string {
 	inner := box - 2
 	iw := inner - 2
 
+	// The box border renders through flashStyle (motion.go): accent for a few
+	// frames after a daemon switch, then the quiet frame gray. The title text
+	// keeps its own weight so the pulse reads as chrome lighting up around
+	// it.
+	borderS, titleS := m.flashStyle()
 	title := st.VM.Ref + " ─ " + joinDot(flavor(s.Path)+" socket",
 		fmt.Sprintf("pid %d", st.PID), m.versionChip(pal, st), "up "+relative(m.now.Sub(st.StartedAt)))
-	top := "┌ " + truncEnd(title, inner-4) + " "
-	top += strings.Repeat("─", max(0, box-1-visWidth(top))) + "┐"
+	head := truncEnd(title, inner-4)
+	top := "┌ " + head + " "
+	rule := strings.Repeat("─", max(0, box-1-visWidth(top))) + "┐"
 
 	var body []string
 	if stale {
@@ -235,11 +243,11 @@ func (m Model) summaryBox(lo layout, s *introspect.Snapshot) []string {
 	}
 	body = append(body, field(pal, "auth", authSessions(pal, m.now, st)))
 
-	out := []string{" " + top}
+	out := []string{" " + borderS.Render("┌ ") + titleS.Render(head) + borderS.Render(" "+rule)}
 	for _, l := range body {
-		out = append(out, " │ "+padRight(l, iw)+" │")
+		out = append(out, " "+borderS.Render("│")+" "+padRight(l, iw)+" "+borderS.Render("│"))
 	}
-	return append(out, " └"+strings.Repeat("─", inner)+"┘")
+	return append(out, " "+borderS.Render("└"+strings.Repeat("─", inner)+"┘"))
 }
 
 func (m Model) summaryCompact(lo layout, s *introspect.Snapshot) []string {
@@ -248,13 +256,24 @@ func (m Model) summaryCompact(lo layout, s *introspect.Snapshot) []string {
 	w := lo.contentWidth() - lo.indent
 	pad := strings.Repeat(" ", lo.indent)
 
+	// The compact layout has no border to pulse, so the identity line itself
+	// carries the flash. While it does, the line is re-rendered whole in the
+	// pulse style, without the separately styled skew chip: nesting a styled
+	// chip inside a styled line breaks at the inner reset, and the chip is
+	// back four frames later.
+	_, titleS := m.flashStyle()
+	ident := joinDot(st.VM.Ref, flavor(s.Path), fmt.Sprintf("pid %d", st.PID), m.versionChipCompact(pal, st),
+		"up "+relative(m.now.Sub(st.StartedAt)))
+	if m.flashLeft > 0 {
+		ident = titleS.Render(joinDot(st.VM.Ref, flavor(s.Path), fmt.Sprintf("pid %d", st.PID)) +
+			" · up " + relative(m.now.Sub(st.StartedAt)))
+	}
 	var body []string
 	if stale {
 		body = append(body, styleWarn.Render(truncEnd(m.stoppedText(s), w)))
 	}
 	body = append(body,
-		joinDot(st.VM.Ref, flavor(s.Path), fmt.Sprintf("pid %d", st.PID), m.versionChipCompact(pal, st),
-			"up "+relative(m.now.Sub(st.StartedAt))),
+		ident,
 		pal.label.Render("endpoint ")+orUnknown(st.Resolution.Endpoint)+" ("+orUnknown(st.Resolution.Source)+")")
 	if st.Resolution.Note != "" {
 		body = append(body, pal.label.Render("note ")+st.Resolution.Note)

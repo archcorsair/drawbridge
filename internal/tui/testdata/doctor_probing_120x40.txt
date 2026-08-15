@@ -1,4 +1,4 @@
- drawbridge tui · CLI v0.1.0                                                   daemon 1/1 · refreshed <1s ago ·  ? help
+ drawbridge tui · CLI v0.1.0                                                 ● daemon 1/1 · refreshed <1s ago ·  ? help
   doctor — gathering… with probe (~20s+) 7s   ⠸                                                              esc cancel
   (checks are read-only; nothing is mutated, sudo is never spawned)
 

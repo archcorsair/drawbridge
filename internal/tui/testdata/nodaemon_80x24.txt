@@ -1,4 +1,4 @@
- drawbridge tui · v0.1.0                              no daemon · <1s ·  ? help
+ drawbridge tui · v0.1.0                            ● no daemon · <1s ·  ? help
  ┌ no daemon ────────────────────────────────────────────────────────────┐
  │ no drawbridge daemon is answering                                     │
  │                                                                       │

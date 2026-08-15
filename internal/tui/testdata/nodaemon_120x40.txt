@@ -1,4 +1,4 @@
- drawbridge tui · CLI v0.1.0                                                    no daemon · refreshed <1s ago ·  ? help
+ drawbridge tui · CLI v0.1.0                                                  ● no daemon · refreshed <1s ago ·  ? help
  ┌ no daemon ────────────────────────────────────────────────────────────┐
  │ no drawbridge daemon is answering                                     │
  │                                                                       │

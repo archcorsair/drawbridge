@@ -1,4 +1,4 @@
- drawbridge tui · CLI v0.1.0                                                   daemon 1/1 · refreshed <1s ago ·  ? help
+ drawbridge tui · CLI v0.1.0                                                 ● daemon 1/1 · refreshed <1s ago ·  ? help
   doctor — colima:colima · ran 18:30:42 · 14s · 20s ago
   ✓ ok   VM providers
   ✓ ok   guest prerequisites

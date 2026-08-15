@@ -1,4 +1,4 @@
- drawbridge tui · CLI v0.1.0                                                   daemon 1/2 · refreshed <1s ago ·  ? help
+ drawbridge tui · CLI v0.1.0                                                 ● daemon 1/2 · refreshed <1s ago ·  ? help
  ! two daemons serve colima:colima — root pid 4242 and user pid 71234 fight over mirror ports; stop one
 
  ┌ daemons ───────────────────────────────────────────────┐

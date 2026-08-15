@@ -383,8 +383,14 @@ is the contract; the TUI adds no posture of its own):
   into one gray word. The dim style's light half is ANSI 8 (bright
   black): ANSI 7 on a white background is close to invisible. A dedicated
   accent pair (cyan, `6`/`14`) carries focus and selection (the
-  switcher's cursor marker, the doctor spinner), so the label blue and
-  the three verdict colors stay reserved for what they name. Background
+  switcher's cursor marker, the doctor spinner, the selection flash a
+  daemon switch pulses through the summary chrome, the header's
+  heartbeat dot that brightens after each fetch), so the label blue and
+  the three verdict colors stay reserved for what they name. Motion is
+  ambience, never an information channel: the flash decays in five
+  frames over 400 ms on a generation-guarded tick chain (a second
+  switch supersedes the first), and everything it signals is also on
+  screen as text. Background
   detection (OSC 11) failing over SSH defaults to the dark palette, which
   is the safer guess; `DRAWBRIDGE_TUI_BG=light|dark` pins the palette
   half where the detection cannot see the terminal (recorders, CI).

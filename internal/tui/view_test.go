@@ -238,6 +238,10 @@ func TestViewGoldens(t *testing.T) {
 		{"counter_120x40", counterModel(120, 40)},
 		// A row mid-pulse: the change gutter's mark, on the row that flipped.
 		{"pulsed_120x40", pulsedModel(120, 40)},
+		// A compact flash frame: the identity line re-rendered whole in the
+		// pulse style, without the separately styled skew chip. The only
+		// text-visible motion state, so it gets the golden.
+		{"flash_compact_80x24", flashModel(80, 24)},
 	} {
 		t.Run(tc.name, func(t *testing.T) { golden(t, tc.name, tc.m.View()) })
 	}
@@ -357,6 +361,14 @@ func skewChipModel(w, h int) Model {
 	s := healthySnap()
 	s.State.Version = "v0.0.9"
 	return testModel(w, h, s)
+}
+
+// flashModel is skewChipModel mid-flash: the frame where the compact
+// identity line drops the chip for the pulse's duration.
+func flashModel(w, h int) Model {
+	m := skewChipModel(w, h)
+	m.flashLeft = flashFrames
+	return m
 }
 
 func noteModel(w, h int) Model {
