@@ -11,3 +11,12 @@ lima = "2.2.0"
 # docs/verify-colima.md is the verification artifact for every Colima claim,
 # and it has to be runnable without reaching for brew.
 "aqua:abiosoft/colima" = "0.10.3"
+# TUI demo recording (demos/): vhs renders the tapes, ffmpeg encodes the
+# gifs, and ttyd is the terminal vhs drives. No brew anywhere: ttyd has no
+# darwin binary in the aqua or GitHub-release backends, but the conda
+# backend ships one; if it fails on a machine, demos/build.sh documents the
+# from-source recipe (which uses the cmake pinned here).
+vhs = "0.11.0"
+"conda:ttyd" = "1.7.7"
+"conda:ffmpeg" = "9.0.0"
+cmake = "latest"

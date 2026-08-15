@@ -779,6 +779,20 @@ test makes this mechanical); docs render sanely.
   for bound rows and an honest absence for daemons that predate the
   fields; mouse capture stayed out.
 
+Milestone note, 2026-08-15: the v0.1.0 UX milestone landed as one
+integrated pass. What shipped: the color-semantics overhaul (glyph plus
+word statuses, the accent pair, `DRAWBRIDGE_TUI_BG`, §3.6), the selection
+flash and header heartbeat, the change-pulse gutter and age-tinted SINCE,
+the attention strip, refusal grouping (`u`), the help modal, the mirror
+row cursor with the `enter` detail strip, and the daemon-side per-entry
+mirror counters feeding its traffic line. Supporting it: the demo fixture
+(`cmd/tui-demo-daemon`, real introspection sockets under a fake HOME plus
+a canned doctor via `DRAWBRIDGE_TUI_DEMO_DOCTOR`), the consumer-side
+`DRAWBRIDGE_INTROSPECT_ROOT` override, and the demos/ recording pipeline
+(vhs tapes, one gif per feature, all tools from mise). One follow-up
+stands open: the live `just bench` revalidation of the splice accounting,
+which needs the dev VM.
+
 ## 11. Open questions for the user, ranked by plan impact — RESOLVED 2026-08-01
 
 All five resolved as recommended at plan approval (verb `tui`; doctor
