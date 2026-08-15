@@ -44,6 +44,7 @@ type mirrorEntry struct {
 	refs    int
 	pending bool      // Phase 4 reservation awaiting its listener event
 	since   time.Time // when this mirror was opened (introspection)
+	stats   *entryStats
 }
 
 // observed is a non-bound outcome for a port — skipped by the skip-list, or a
@@ -156,13 +157,25 @@ func (c *Client) Snapshot() introspect.Mirror {
 	if ns := c.lastEventAt.Load(); ns != 0 {
 		m.LastEventAt = time.Unix(0, ns)
 	}
+	// This daemon accounts per entry: the capability bool that lets a reader
+	// tell real zeros from a daemon that predates the counters.
+	m.PerEntryCounters = true
 	bound := map[mirrorKey]bool{}
 	c.mu.Lock()
 	for key, e := range c.mirrors {
 		bound[key] = true
-		m.Entries = append(m.Entries, introspect.MirrorEntry{
+		entry := introspect.MirrorEntry{
 			Proto: key.proto, Port: key.port, State: introspect.EntryBound, Since: e.since,
-		})
+		}
+		if s := e.stats; s != nil {
+			entry.Conns = int(s.conns.Load())
+			entry.RxBytes = s.rx.Load()
+			entry.TxBytes = s.tx.Load()
+			if ns := s.lastActive.Load(); ns != 0 {
+				entry.LastActiveAt = time.Unix(0, ns)
+			}
+		}
+		m.Entries = append(m.Entries, entry)
 	}
 	c.mu.Unlock()
 	c.obsMu.Lock()
@@ -448,28 +461,38 @@ func (c *Client) openLocked(key mirrorKey, refs int) {
 		return
 	}
 	log.Printf("drawbridged: mirroring guest :%d on %s", key.port, ln.Addr())
-	c.mirrors[key] = &mirrorEntry{stop: func() { ln.Close() }, refs: refs, since: time.Now()}
+	stats := &entryStats{}
+	c.mirrors[key] = &mirrorEntry{stop: func() { ln.Close() }, refs: refs, since: time.Now(), stats: stats}
 	c.forget(key)
-	go c.acceptLoop(ln, key.port)
+	go c.acceptLoop(ln, key.port, stats)
 }
 
-func (c *Client) acceptLoop(ln net.Listener, port uint16) {
+func (c *Client) acceptLoop(ln net.Listener, port uint16, stats *entryStats) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go c.splice(conn, port)
+		// Conns counts accepted mirror clients: up on accept, down when the
+		// handler is done with the conn, whichever way it ends.
+		stats.conns.Add(1)
+		go func() {
+			defer stats.conns.Add(-1)
+			c.splice(conn, port, stats)
+		}()
 	}
 }
 
-func (c *Client) splice(conn net.Conn, port uint16) {
+func (c *Client) splice(conn net.Conn, port uint16, stats *entryStats) {
 	up, err := c.dialStream(6, port)
 	if err != nil {
 		conn.Close()
 		return
 	}
-	proxy.Splice(conn, up)
+	// The wrapper attaches AFTER dialStream's hello and proof exchange, so
+	// auth bytes never reach a counter; from here every payload byte crosses
+	// `up` exactly once per direction.
+	proxy.Splice(conn, countingConn{Conn: up, s: stats})
 }
 
 // dialStream opens an authenticated 'S' conn for proto/port. The stream
@@ -620,10 +643,11 @@ func (c *Client) handleReserve(r reserveReq) reserveResp {
 		// e.g. privileged port without root: we cannot know — degrade.
 		return reserveResp{Reason: "unknown"}
 	}
-	e := &mirrorEntry{stop: func() { ln.Close() }, pending: true, since: time.Now()}
+	stats := &entryStats{}
+	e := &mirrorEntry{stop: func() { ln.Close() }, pending: true, since: time.Now(), stats: stats}
 	c.mirrors[key] = e
 	c.forget(key)
-	go c.acceptLoop(ln, r.Port)
+	go c.acceptLoop(ln, r.Port, stats)
 	ttl := c.ReserveTTL
 	if ttl <= 0 {
 		ttl = 10 * time.Second

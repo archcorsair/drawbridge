@@ -22,7 +22,12 @@ func Splice(a, b net.Conn) {
 }
 
 func closeWrite(c net.Conn) {
-	if t, ok := c.(*net.TCPConn); ok {
+	// Interface, not a *net.TCPConn assertion: *net.TCPConn and
+	// *net.UnixConn both implement it, and so do counting wrappers (the
+	// mirror's per-entry accounting) that would otherwise silently swallow
+	// the half-close.
+	type closeWriter interface{ CloseWrite() error }
+	if t, ok := c.(closeWriter); ok {
 		t.CloseWrite()
 	}
 }

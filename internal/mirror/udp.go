@@ -14,11 +14,12 @@ import (
 // framed datagrams both ways. The Mac side is stateless — reply frames
 // carry their destination — so flow state lives only on the agent end.
 type udpMirror struct {
-	c    *Client
-	port uint16
-	uc   *net.UDPConn
-	done chan struct{}
-	once sync.Once
+	c     *Client
+	port  uint16
+	uc    *net.UDPConn
+	done  chan struct{}
+	once  sync.Once
+	stats *entryStats
 }
 
 func (c *Client) openUDPLocked(key mirrorKey, refs int) {
@@ -35,8 +36,8 @@ func (c *Client) openUDPLocked(key mirrorKey, refs int) {
 	// replies over ~9 KiB don't die EMSGSIZE on the way to Mac clients.
 	uc.SetWriteBuffer(udpframe.MaxPayload)
 	log.Printf("drawbridged: mirroring guest udp :%d on %s", key.port, uc.LocalAddr())
-	m := &udpMirror{c: c, port: key.port, uc: uc, done: make(chan struct{})}
-	c.mirrors[key] = &mirrorEntry{stop: m.stop, refs: refs, since: time.Now()}
+	m := &udpMirror{c: c, port: key.port, uc: uc, done: make(chan struct{}), stats: &entryStats{}}
+	c.mirrors[key] = &mirrorEntry{stop: m.stop, refs: refs, since: time.Now(), stats: m.stats}
 	c.forget(key)
 	go m.run()
 }
@@ -111,6 +112,10 @@ func (m *udpMirror) pump(s net.Conn) {
 				return
 			}
 			m.uc.WriteToUDPAddrPort(payload, peer)
+			// Payload only, never the 21-byte frame header: rx is what the
+			// Mac client receives.
+			m.stats.rx.Add(uint64(len(payload)))
+			m.stats.touch()
 		}
 	}()
 	buf := make([]byte, udpframe.MaxPayload)
@@ -128,5 +133,7 @@ func (m *udpMirror) pump(s net.Conn) {
 			<-streamDead
 			return
 		}
+		m.stats.tx.Add(uint64(n))
+		m.stats.touch()
 	}
 }

@@ -98,11 +98,29 @@ const (
 
 // MirrorEntry is one guest listener's Mac-side fate. Since is when the entry
 // entered its current state.
+//
+// The counter fields are additive within schema 1, omitempty, and gated by
+// Mirror.PerEntryCounters: with that bool absent the daemon predates
+// per-entry accounting and a reader must treat these as unknown, never as
+// zero traffic; with it set, zeros are real (a genuinely idle entry). They
+// describe the current mirror binding and reset when it closes; only bound
+// entries carry them (a skipped or bind-failed port has no socket to
+// account), and the transport-auth exchange's bytes are never counted.
 type MirrorEntry struct {
 	Proto string    `json:"proto"`
 	Port  uint16    `json:"port"`
 	State string    `json:"state"`
 	Since time.Time `json:"since"`
+
+	// Conns is the entry's live spliced TCP connection count. UDP mirrors
+	// are datagram relays with no per-client connection, so theirs stays 0.
+	Conns int `json:"conns,omitempty"`
+	// RxBytes/TxBytes are cumulative payload bytes guest-to-Mac and
+	// Mac-to-guest for this binding.
+	RxBytes uint64 `json:"rxBytes,omitempty"`
+	TxBytes uint64 `json:"txBytes,omitempty"`
+	// LastActiveAt is the last payload byte's arrival in either direction.
+	LastActiveAt time.Time `json:"lastActiveAt,omitempty"`
 }
 
 // Mirror is the guest→Mac direction. Since is when SessionUp entered its
@@ -118,6 +136,14 @@ type Mirror struct {
 	LastEventAt time.Time     `json:"lastEventAt,omitempty"`
 	Entries     []MirrorEntry `json:"entries,omitempty"`
 	Skip        []uint16      `json:"skip,omitempty"`
+
+	// PerEntryCounters is the capability statement for MirrorEntry's counter
+	// fields: this daemon accounts per entry. Explicitly a bool rather than
+	// an overload of any counter's zero value, so a reader can tell "this
+	// daemon predates accounting" (bool absent: render an honest absence)
+	// from "this entry is idle" (bool set, counters zero: real zeros).
+	// Additive within schema 1.
+	PerEntryCounters bool `json:"perEntryCounters,omitempty"`
 }
 
 // Advertised is one (proto, port) pair the syncer offered the guest — the
