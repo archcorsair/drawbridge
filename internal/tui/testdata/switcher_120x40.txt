@@ -1,4 +1,5 @@
  drawbridge tui · CLI v0.1.0                                                 ● daemon 1/2 · refreshed <1s ago ·  ? help
+ ! elsewhere: colima:colima 1 bind-failed
  ┌ schema skew ───────────────────────────────────────────────────────────────────────────────┐
  │ daemon at /Users/x/Library/Application Support/drawbridge/run/introspect-lima-scratch.sock │
  │ speaks introspection schema 2; this build knows 1 (daemon v0.2.0, CLI v0.1.0)              │
@@ -12,7 +13,6 @@
  │      [unreadable]   —     introspect: unreadable snapshot: /tmp/introspect-bad.sock: unexpected EOF │
  │ enter select · esc close                                                                            │
  └─────────────────────────────────────────────────────────────────────────────────────────────────────┘
-
 
 
 

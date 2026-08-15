@@ -117,12 +117,13 @@ func (m Model) frame(body []string, lo layout) string {
 }
 
 // chromeLines is what every view carries above its own body: the header, the
-// D8 banner, and the notices for the sockets no dashboard can show. The banner
-// is here rather than in dashboardView because §3.4 and D8 both require it
-// above the overlays too.
+// D8 banner, the attention strip, and the notices for the sockets no
+// dashboard can show. The banner is here rather than in dashboardView because
+// §3.4 and D8 both require it above the overlays too.
 func (m Model) chromeLines(lo layout) []string {
 	out := []string{m.headerLine(lo)}
 	out = append(out, m.bannerLines(lo)...)
+	out = append(out, m.attentionLines(lo)...)
 	return append(out, m.noticeLines(lo)...)
 }
 

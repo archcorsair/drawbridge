@@ -242,6 +242,11 @@ func TestViewGoldens(t *testing.T) {
 		// pulse style, without the separately styled skew chip. The only
 		// text-visible motion state, so it gets the golden.
 		{"flash_compact_80x24", flashModel(80, 24)},
+		// The attention strip: an unselected daemon in trouble, named in the
+		// chrome with its triage items; every calm golden above pins the
+		// strip's absence.
+		{"attention_120x40", attentionModel(120, 40)},
+		{"attention_80x24", attentionModel(80, 24)},
 	} {
 		t.Run(tc.name, func(t *testing.T) { golden(t, tc.name, tc.m.View()) })
 	}
@@ -368,6 +373,21 @@ func skewChipModel(w, h int) Model {
 func flashModel(w, h int) Model {
 	m := skewChipModel(w, h)
 	m.flashLeft = flashFrames
+	return m
+}
+
+// attentionModel is a healthy selected daemon with lima:dev degraded beside
+// it: bind race lost, sync down, secret absent, version skew, unseen
+// refusals. The strip has to say so in one line of chrome.
+func attentionModel(w, h int) Model {
+	troubled := devSnap()
+	troubled.State.Version = "v0.0.9"
+	troubled.State.Auth.SecretState = introspect.SecretAbsent
+	troubled.State.Sync.SessionUp = false
+	troubled.State.Mirror.Entries = append(troubled.State.Mirror.Entries,
+		introspect.MirrorEntry{Proto: "tcp", Port: 5000, State: introspect.EntryBindFailed, Since: fixtureNow.Add(-40 * time.Second)})
+	m := testModel(w, h, healthySnap(), troubled)
+	m.refusals = map[string][]introspect.Refusal{devSock: refusalRing()}
 	return m
 }
 

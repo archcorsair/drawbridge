@@ -839,6 +839,17 @@ layout.
   narrow for it (at 100 columns it is) — the key still works and the map
   is one `?` away. Compact is unaffected: the sync set is already a
   summary line there.
+- **An attention strip in the chrome surfaces trouble elsewhere**:
+  `! elsewhere: lima:dev 1 bind-failed · sync down · secret absent`, one
+  segment per unselected daemon with something wrong, its triage items
+  severity-styled and worst first (not answering, bind-failed count,
+  mirror down, sync down, secret state, version skew, unseen refusals).
+  It renders nothing at all when the fleet is calm, so the calm default
+  stays calm, and the selected daemon never appears in it: the dashboard
+  below already tells that whole truth. A D8 fighting pair shares one VM
+  ref, so those segments carry the `(root)`/`(user)` flavor tag the same
+  way the banner's wording does. Skewed and unreadable sockets are
+  deliberately absent: their cards already render in every view's chrome.
 - **The mirror table sorts problems first**: `bind-failed`, then any
   state this build does not recognise, then `bound`, then `skipped`,
   with the previous proto-then-port order inside each class. The order
