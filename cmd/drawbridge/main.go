@@ -33,11 +33,7 @@ import (
 )
 
 func main() {
-	verb := ""
-	if len(os.Args) > 1 {
-		verb = os.Args[1]
-	}
-	args := os.Args[2:]
+	verb, args := verbArgs(os.Args)
 	switch verb {
 	case "up":
 		os.Exit(runUp(args))
@@ -62,6 +58,17 @@ func main() {
 		usage(os.Stderr)
 		os.Exit(2)
 	}
+}
+
+// verbArgs splits argv into the subcommand and its arguments. A bare
+// invocation has neither: argv[2:] on a one-element argv is the
+// out-of-range panic v0.1.0 shipped with, so the empty verb (which routes
+// to usage) must short-circuit before any slicing.
+func verbArgs(argv []string) (string, []string) {
+	if len(argv) < 2 {
+		return "", nil
+	}
+	return argv[1], argv[2:]
 }
 
 func usage(w *os.File) {
