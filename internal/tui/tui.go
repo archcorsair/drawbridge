@@ -20,6 +20,7 @@ import (
 
 	"github.com/archcorsair/drawbridge/internal/introspect"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // Run draws the TUI until the user quits. The alt screen means the shell the
@@ -28,9 +29,24 @@ import (
 // non-zero exit — after the restore, so the message is readable.
 func Run(opts Options) error {
 	defer silenceLog()()
+	applyBackgroundOverride()
 	p := tea.NewProgram(newModel(opts), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
+}
+
+// applyBackgroundOverride pins the light/dark palette half when
+// DRAWBRIDGE_TUI_BG says so. Background detection (OSC 11) fails over SSH and
+// under terminal recorders, and the fallback guess is dark (§3.6); this is
+// the escape hatch for a light terminal the detection cannot see. Unset or
+// anything else keeps termenv's own detection.
+func applyBackgroundOverride() {
+	switch os.Getenv("DRAWBRIDGE_TUI_BG") {
+	case "light":
+		lipgloss.SetHasDarkBackground(false)
+	case "dark":
+		lipgloss.SetHasDarkBackground(true)
+	}
 }
 
 // silenceLog mutes the stdlib logger for the TUI's lifetime and returns the

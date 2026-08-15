@@ -422,8 +422,10 @@ func (m Model) mirrorBlock(lo layout, st introspect.State, budget int) []string 
 
 	rows := make([]string, 0, len(entries))
 	for _, e := range entries {
+		// The state cell is glyph plus word: the glyph column survives
+		// NO_COLOR, the word survives everything (§3.6).
 		row := padRight(e.Proto, protoW) + padRight(strconv.Itoa(int(e.Port)), portW) +
-			entryStyle(e.State).Render(padRight(e.State, stateW))
+			entryStyle(e.State).Render(padRight(entryGlyph(e.State)+" "+e.State, stateW))
 		if lo.showSince {
 			row += relative(m.now.Sub(e.Since))
 		}

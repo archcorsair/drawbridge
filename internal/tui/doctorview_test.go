@@ -359,7 +359,7 @@ func TestDoctorCursorAndExpansion(t *testing.T) {
 // summary sentence is doctor's own.
 func TestDoctorRendersStatusesAndSummary(t *testing.T) {
 	v := doneModel(120, 40).View()
-	for _, want := range []string{"[ok]", "[warn]", "[fail]", "[skip]", "[info]", "colima:colima"} {
+	for _, want := range []string{"✓ ok", "! warn", "✕ fail", "· skip", "i info", "colima:colima"} {
 		if !strings.Contains(v, want) {
 			t.Fatalf("the complete screen is missing %q:\n%s", want, v)
 		}

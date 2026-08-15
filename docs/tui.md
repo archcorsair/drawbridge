@@ -185,11 +185,11 @@ At 120×40 (the roomy case):
  └────────────────────────────────────────────────────────────────────────────────────────────────────┘
   MIRROR — guest listeners on Mac localhost (5)          SYNC — Mac ports advertised to guest (3)
   PROTO  PORT   STATE         SINCE                      PROTO  PORT
-  tcp    8080   bound         2m                         tcp    5432
-  tcp    3000   bound         2m                         tcp    6379
-  udp    5353   bound         1m                         udp    5353
-  tcp    22     skipped       2h
-  tcp    5000   bind-failed   40s
+  tcp    8080   ● bound       2m                         tcp    5432
+  tcp    3000   ● bound       2m                         tcp    6379
+  udp    5353   ● bound       1m                         udp    5353
+  tcp    22     · skipped     2h
+  tcp    5000   ✕ bind-failed 40s
                                         skip list: 22
                                                                                                       
   tab next daemon · r refusals · d doctor · ? help · q quit
@@ -205,8 +205,10 @@ At 120×40 (the roomy case):
   unchanged, unchanged here too), auth mode + secret state + path
   (truncated middle-out to fit; the path is fine to show, the bytes never
   are), session states, `lastEventAt` as relative time, pool parked count.
-- Mirror table: one row per entry, `state` colored (`bound` green,
-  `skipped` dim, `bind-failed` red), `since` relative. Sorted by port
+- Mirror table: one row per entry, `state` as a glyph plus the word,
+  colored (`● bound` green, `· skipped` dim, `✕ bind-failed` red, `◌` for
+  a state this build does not know), `since` relative. The glyph column is
+  what survives `NO_COLOR`; the word survives everything. Sorted by port
   within proto. The skip list renders under the table when non-empty, with
   the same discoverability wording doctor check 11 uses available in the
   row's dim styling ("skipped" entries are the default exclusion at work,
@@ -221,14 +223,14 @@ At 80×24 (the honest case — SSH sessions, split panes):
  colima:colima · user · pid 71234 · v0.1.0 · up 2h14m
  endpoint tcp://192.168.64.5:4777 (vznat-direct)
  auth static-hmac-v1 · secret ok
- mirror up · event 12s ago   sync up · adv 3 · parked 4
+ mirror ● up · event 12s ago   sync ● up · adv 3 · parked 4
  MIRROR (5)                              skip: 22
  PROTO  PORT   STATE         SINCE
- tcp    8080   bound         2m
- tcp    3000   bound         2m
- udp    5353   bound         1m
- tcp    22     skipped       2h
- tcp    5000   bind-failed   40s
+ tcp    8080   ● bound       2m
+ tcp    3000   ● bound       2m
+ udp    5353   ● bound       1m
+ tcp    22     · skipped     2h
+ tcp    5000   ✕ bind-failed 40s
  ...
  tab daemon · r refusals · d doctor · ? help · q quit
 ```
@@ -288,10 +290,10 @@ selectable:
 
 ```
  doctor — colima:colima · ran 18:31:02 · 14s
- [ok]   providers: colima v0.9.2, 1 vz instance running
- [ok]   agent v0.1.0 active, listening loopback+vznat
- [warn] resolution: ssh-forwarder (fallback)                          ◂
- [fail] local-network: user probe failed, root evidence unknown
+ ✓ ok   providers: colima v0.9.2, 1 vz instance running
+ ✓ ok   agent v0.1.0 active, listening loopback+vznat
+ ! warn resolution: ssh-forwarder (fallback)                          ◂
+ ✕ fail local-network: user probe failed, root evidence unknown
  ...
  16 checks: 11 ok, 2 warn, 1 fail, 2 skip, 0 info
  enter expand · j/k move · R re-run · p re-run with probe (~20s+) · esc back
@@ -299,8 +301,10 @@ selectable:
 
 `enter` on a finding expands it in place: evidence lines indented, remedy
 prefixed `→` — the same content `Report.Render` prints, styled from the
-`Finding` struct directly. Statuses are colored *and* keep their bracketed
-words (color is never the only carrier — same accessibility rule as §3.6).
+`Finding` struct directly. Statuses are colored *and* keep a glyph plus
+the word (`✓ ok`, `! warn`, `✕ fail`, `· skip`, `i info`): color is never
+the only carrier, the same accessibility rule as §3.6, and the glyph keeps
+the verdicts distinct where color is gone.
 `R` re-runs; `p` re-runs with `Probe: true` and is labeled with its cost
 in the key line itself — the ~20 s post-FIN window is a deliberate,
 priced action, never a default (doctor.md §D6). A gather error (doctor's
@@ -348,7 +352,7 @@ is the contract; the TUI adds no posture of its own):
 | Condition | Rendering |
 |---|---|
 | No socket answers anywhere | Full-screen calm card: "no drawbridge daemon is answering", the two paths checked (`/var/run/drawbridge/introspect.sock`, `~/Library/Application Support/drawbridge/run/`), how to start one (`drawbridged` foreground for ports ≥1024; `sudo drawbridge install` for the LaunchDaemon), and "re-checking every second — this screen heals itself". Not styled as an error; this is the ordinary pre-start state. |
-| Daemon up, no mirror entries | Dashboard renders normally; the mirror table body is a dim "(no guest listeners mirrored yet)". If `mirror.sessionUp` is false, the summary line styles `session down` warn and the footer hint suggests `d`. |
+| Daemon up, no mirror entries | Dashboard renders normally; the mirror table body is a dim "(no guest listeners mirrored yet)". If `mirror.sessionUp` is false, the summary line styles `○ down` warn and the footer hint suggests `d`. |
 | Selected daemon stops answering | The daemon box renders "this daemon stopped answering Ns ago (path)" over the last-known summary, dimmed; heals on the next successful fetch (D7). |
 | `schema > 1` | The daemon's slot renders the skew card: "daemon at `<path>` speaks introspection schema N; this build knows 1 (daemon `<version>`, CLI `<version>`)" — frozen fields only, same wording family as `status`. |
 | Malformed payload | The socket appears in the switcher as `[unreadable]`; a warn line in the header area names it while the problem persists. |
@@ -364,11 +368,18 @@ is the contract; the TUI adds no posture of its own):
   nothing.
 - **Color:** ANSI-16 palette only via `lipgloss.AdaptiveColor` light/dark
   pairs (no truecolor requirement — SSH to a Mac from anything still
-  renders). Status is always carried by a word as well as a color
-  (`bound`/`bind-failed`, `[ok]`/`[fail]`), so `NO_COLOR`/`TERM=dumb`
-  degrade to legible monochrome through termenv's profile detection.
-  Background detection (OSC 11) failing over SSH defaults to the dark
-  palette, which is the safer guess.
+  renders). Status is always carried by a one-column glyph and a word as
+  well as a color (`● bound`/`✕ bind-failed`, `✓ ok`/`✕ fail`, sessions
+  `● up`/`○ down`), so `NO_COLOR`/`TERM=dumb` keep every distinction
+  through termenv's profile detection instead of collapsing the states
+  into one gray word. The dim style's light half is ANSI 8 (bright
+  black): ANSI 7 on a white background is close to invisible. A dedicated
+  accent pair (cyan, `6`/`14`) carries focus and selection (the
+  switcher's cursor marker, the doctor spinner), so the label blue and
+  the three verdict colors stay reserved for what they name. Background
+  detection (OSC 11) failing over SSH defaults to the dark palette, which
+  is the safer guess; `DRAWBRIDGE_TUI_BG=light|dark` pins the palette
+  half where the detection cannot see the terminal (recorders, CI).
 - **Lifecycle:** alt-screen (`tea.WithAltScreen()`); bubbletea restores
   the terminal on quit, on `ctrl+c`, and on panic. `Program.Run`'s error
   return becomes a non-zero exit with the error printed after restore.
@@ -535,8 +546,10 @@ is what makes goldens work.
 
 **Styles** live in `styles.go` only: a small set of named
 `lipgloss.Style` values built on `AdaptiveColor{Light, Dark}` ANSI-16
-pairs (§3.6). No color literals anywhere else; the doctor view maps
-`doctor.Status` → style through one function.
+pairs (§3.6), plus the status glyph constants beside them. No color
+literals anywhere else; the doctor view maps `doctor.Status` → style and
+→ glyph through one function each, and the mirror table does the same
+for entry states.
 
 ## 6. Dependencies and the import-graph pin
 
@@ -819,8 +832,8 @@ layout.
   except what changed state.
 - **The daemon box is two content lines.** Line 1 is unchanged
   (endpoint, source, resolved-ago). Line 2 merges auth and both
-  sessions: `auth  static-hmac-v1 ok   ·   mirror up · event 9s ago   ·
-  sync up · pool 8 parked`. **The secret path is dropped at every
+  sessions: `auth  static-hmac-v1 ok   ·   mirror ● up · event 9s ago   ·
+  sync ● up · pool 8 parked`. **The secret path is dropped at every
   width** — mode plus secret state carry the whole signal and the path
   was machinery (the same calm rule the CLI's `auth` line follows), so
   §3.1's "auth path drops below 70" degradation rule is retired along

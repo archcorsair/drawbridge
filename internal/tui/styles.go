@@ -8,20 +8,62 @@ import (
 
 // The palette is ANSI-16 only, through AdaptiveColor light/dark pairs
 // (docs/tui.md §3.6): SSH into this Mac from anything still renders, and no
-// truecolor terminal is assumed. Every status is also carried by a word
-// (`bound`/`bind-failed`, `session up`/`session down`), so NO_COLOR and
-// TERM=dumb degrade to legible monochrome rather than losing meaning.
+// truecolor terminal is assumed. Every status is carried by a word AND a
+// one-column glyph (`● bound`, `✕ bind-failed`), so NO_COLOR and TERM=dumb
+// keep every semantic distinction instead of collapsing the states into the
+// same gray word.
+//
+// Two light-terminal rules, each with a rationale:
+//   - dim is Light "8" (bright black), not "7" (light gray): ANSI 7 on a
+//     white background is close to invisible, and dim text still has to read.
+//   - a dedicated accent pair carries focus and selection (the switcher's
+//     cursor marker, the doctor spinner) so "selected" stops borrowing the
+//     label blue and the verdict colors stay reserved for verdicts.
+//
+// DRAWBRIDGE_TUI_BG=light|dark pins the palette half where background
+// detection cannot see the terminal (applyBackgroundOverride in tui.go).
 //
 // Color literals live here and nowhere else.
 var (
 	styleTitle = lipgloss.NewStyle().Bold(true)
-	styleDim   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "7", Dark: "8"})
+	styleDim   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "8", Dark: "8"})
 	styleLabel = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "4", Dark: "12"})
 	styleOK    = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "2", Dark: "10"})
 	styleWarn  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "3", Dark: "11"})
 	styleErr   = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "1", Dark: "9"})
 	styleFrame = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "8", Dark: "7"})
+
+	// styleAccent/styleAccentBold are the focus pair: selection markers and
+	// activity affordances. Cyan because it collides with none of the three
+	// verdict colors and is not the label blue.
+	styleAccent     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "6", Dark: "14"})
+	styleAccentBold = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "6", Dark: "14"}).Bold(true)
 )
+
+// State glyphs: one column each, chosen to differ in silhouette so they stay
+// distinct without color. The skip glyph is deliberately quiet: the skip
+// list is the default exclusion at work, not an error.
+const (
+	glyphBound   = "●"
+	glyphSkipped = "·"
+	glyphFailed  = "✕"
+	glyphOther   = "◌"
+	glyphUp      = "●"
+	glyphDown    = "○"
+)
+
+func entryGlyph(state string) string {
+	switch state {
+	case introspect.EntryBound:
+		return glyphBound
+	case introspect.EntrySkipped:
+		return glyphSkipped
+	case introspect.EntryBindFailed:
+		return glyphFailed
+	default:
+		return glyphOther
+	}
+}
 
 // entryStyle colors one mirror entry state. `skipped` is dim because the skip
 // list is the default exclusion at work, not an error (doctor check 11's
@@ -36,6 +78,23 @@ func entryStyle(state string) lipgloss.Style {
 		return styleErr
 	default:
 		return styleWarn
+	}
+}
+
+// doctorStatusGlyph pairs each verdict with a mark that reads without color:
+// the check, the bang, the cross, the quiet dot, the lowercase i.
+func doctorStatusGlyph(s doctor.Status) string {
+	switch s {
+	case doctor.StatusOK:
+		return "✓"
+	case doctor.StatusWarn:
+		return "!"
+	case doctor.StatusFail:
+		return "✕"
+	case doctor.StatusSkip:
+		return "·"
+	default:
+		return "i"
 	}
 }
 
@@ -95,7 +154,7 @@ func (p palette) secret(state string) lipgloss.Style {
 
 func (p palette) upDown(up bool) string {
 	if up {
-		return p.ok.Render("up")
+		return p.ok.Render(glyphUp + " up")
 	}
-	return p.warn.Render("down")
+	return p.warn.Render(glyphDown + " down")
 }

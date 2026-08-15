@@ -36,9 +36,11 @@ const (
 )
 
 const (
-	// doctorStatusW is the bracketed status column, sized for the longest of
-	// them. The words stay whatever the color does — §3.6's rule is that color
-	// is never the only carrier — so `[warn]` reads as warn on a mono terminal.
+	// doctorStatusW is the glyph-plus-word status column, sized for the
+	// longest of them (`! warn` and friends are six columns; `✓ ok` pads).
+	// The words stay whatever the color does — §3.6's rule is that color is
+	// never the only carrier — and the glyph keeps the verdicts distinct on a
+	// mono terminal.
 	doctorStatusW = 6
 	// doctorRemedyIndent and doctorEvidenceIndent reproduce Report.Render's
 	// relationship between the two: the remedy sits at the title column behind
@@ -412,7 +414,7 @@ func (m Model) doctorRunningLines(lo layout) []string {
 	if m.doctor.probe {
 		left += "with probe (~20s+) "
 	}
-	left += secondsText(m.now.Sub(m.doctor.since)) + "   " + m.doctor.spinner()
+	left += secondsText(m.now.Sub(m.doctor.since)) + "   " + styleAccent.Render(m.doctor.spinner())
 	return []string{
 		pad + rightAlign(left, styleDim.Render("esc cancel"), w),
 		pad + styleDim.Render(truncEnd(doctorReadOnly, w)),
@@ -482,7 +484,9 @@ func (m Model) doctorRows(lo layout) (rows []string, starts []int) {
 	titles := make([]string, 0, len(d.report.Findings))
 	mark := 0
 	for _, f := range d.report.Findings {
-		t := padRight(doctorStatusStyle(f.Status).Render("["+string(f.Status)+"]"), doctorStatusW) +
+		// The status cell is glyph plus word, not brackets: the glyph is what
+		// survives NO_COLOR, the word survives everything (§3.6).
+		t := padRight(doctorStatusStyle(f.Status).Render(doctorStatusGlyph(f.Status)+" "+string(f.Status)), doctorStatusW) +
 			" " + oneLine(f.Title)
 		titles = append(titles, t)
 		mark = max(mark, min(visWidth(t)+2, w))

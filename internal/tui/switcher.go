@@ -244,7 +244,9 @@ func (m Model) switcherBody() []string {
 	for i, r := range rows {
 		marker, num := "  ", "   "
 		if i == cur {
-			marker = "▸ "
+			// Accent, not a verdict color: the marker says "you are here",
+			// never "something is wrong here".
+			marker = styleAccentBold.Render("▸ ")
 		}
 		// Numbers belong to the rows `1`–`9` can actually select; a number on
 		// a row that answers nothing is an invitation to press a dead key.
