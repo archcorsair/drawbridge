@@ -95,11 +95,11 @@ func (m Model) dashboardView() string {
 }
 
 // frame seats the rendered body in the window: the footer always occupies the
-// last row, the refusals pane the rows above it when open, spare height
-// becomes blank lines between, and an overlong body is cut rather than allowed
-// to push either off screen.
+// last row, the row-detail strip and the refusals pane the rows above it when
+// open, spare height becomes blank lines between, and an overlong body is cut
+// rather than allowed to push either off screen.
 func (m Model) frame(body []string, lo layout) string {
-	pane := m.refusalPane(lo)
+	pane := append(m.detailPane(lo), m.refusalPane(lo)...)
 	rows := max(0, lo.height-1-len(pane))
 	if len(body) > rows {
 		body = body[:rows]
@@ -369,8 +369,81 @@ func syncCompact(pal palette, sy introspect.Sync) string {
 // what is left over belongs to the mirror table.
 func (m Model) rowBudget(lo layout, s *introspect.Snapshot) int {
 	fixed := len(m.chromeLines(lo)) + len(m.summaryLines(lo, s)) + 1 /*footer*/ + 2 /*table headers*/
-	fixed += m.paneLines(lo)
+	fixed += m.paneLines(lo) + m.detailLines(lo)
 	return max(1, lo.height-fixed)
+}
+
+// The row-detail strip, `enter` on a mirror row. It borrows the refusals
+// pane's shape, a rule line and a few rows above the footer, so the dashboard
+// has one grammar for "a strip of detail below". Everything it shows is
+// already in the snapshot; the strip spends its rows saying what the state
+// MEANS and what to try next, and entryDetailRows is the seam later steps
+// extend (a counters line joins when the daemon reports per-entry counters)
+// without reshaping the strip.
+
+func (m Model) detailLines(lo layout) int {
+	if !m.mirrorDetail || m.view != viewDashboard || m.mirrorCursorIndex() < 0 {
+		return 0
+	}
+	return 1 + len(m.entryDetailRows(m.mirrorEntries()[m.mirrorCursorIndex()]))
+}
+
+func (m Model) detailPane(lo layout) []string {
+	if m.detailLines(lo) == 0 {
+		return nil
+	}
+	e := m.mirrorEntries()[m.mirrorCursorIndex()]
+	w := lo.contentWidth() - lo.indent
+	pad := strings.Repeat(" ", lo.indent)
+
+	head := "─ " + styleAccent.Render(fmt.Sprintf("%s/%d", e.Proto, e.Port)) + " "
+	tail := " " + styleDim.Render("enter/esc close") + " ─"
+	rule := head + strings.Repeat("─", max(0, w-visWidth(head)-visWidth(tail))) + tail
+
+	out := []string{pad + rule}
+	for _, l := range m.entryDetailRows(e) {
+		out = append(out, pad+truncEnd(l, w))
+	}
+	return out
+}
+
+// entryDetailRows is the strip's body: one labelled line each for the state,
+// its consequence, and the next command. It returns a slice on purpose, so
+// an optional line (per-entry counters, when a daemon populates them) can be
+// appended without touching the strip's frame arithmetic.
+func (m Model) entryDetailRows(e introspect.MirrorEntry) []string {
+	state := padRight(styleDim.Render("state"), labelW) +
+		entryStyle(e.State).Render(entryGlyph(e.State)+" "+e.State) +
+		"   " + styleDim.Render("since ") + e.Since.Format(refusalClock) + " · " + relative(m.now.Sub(e.Since)) + " ago"
+	meaning := padRight(styleDim.Render("meaning"), labelW) + entryMeaning(e)
+	try := padRight(styleDim.Render("try"), labelW) + entryTry(e)
+	return []string{state, meaning, try}
+}
+
+// entryMeaning and entryTry translate a state word into its consequence and
+// the next command. One sentence each; doctor stays the real diagnosis.
+func entryMeaning(e introspect.MirrorEntry) string {
+	switch e.State {
+	case introspect.EntryBound:
+		return fmt.Sprintf("guest listener is live: connections to 127.0.0.1:%d on this Mac reach the guest", e.Port)
+	case introspect.EntrySkipped:
+		return "excluded by the skip list; the daemon never tried to bind it"
+	case introspect.EntryBindFailed:
+		return "another Mac process holds this port; the daemon retries while it stays taken"
+	default:
+		return "a state this build does not know; treat the entry as suspect"
+	}
+}
+
+func entryTry(e introspect.MirrorEntry) string {
+	switch e.State {
+	case introspect.EntryBindFailed:
+		return fmt.Sprintf("lsof -nP -i%s:%d   ·   d for a diagnosis", strings.ToUpper(e.Proto), e.Port)
+	case introspect.EntrySkipped:
+		return "drawbridged -skip lists the exclusions; d explains the default set"
+	default:
+		return fmt.Sprintf("nc 127.0.0.1 %d   ·   d for a diagnosis", e.Port)
+	}
 }
 
 // tableLines renders the mirror table — and, in the wide layout, the sync
@@ -444,19 +517,56 @@ func (m Model) mirrorBlock(lo layout, snap *introspect.Snapshot, budget int) []s
 		return append(out, styleDim.Render("(no guest listeners mirrored yet)"))
 	}
 
+	// The cursor bar renders only after the user drives it (mirrorMoved) and
+	// only while the mirror table is the region the keys drive: until then
+	// the table stays a table, not a selection nobody made.
+	cursorOn := m.mirrorMoved && m.scrollRegion() == regionMirror
+	cur := m.mirrorCursorIndex()
 	rows := make([]string, 0, len(entries))
-	for _, e := range entries {
+	for i, e := range entries {
 		// The state cell is glyph plus word: the glyph column survives
-		// NO_COLOR, the word survives everything (§3.6).
-		row := m.mirrorGutter(snap.Path, e) +
-			padRight(e.Proto, protoW) + padRight(strconv.Itoa(int(e.Port)), portW) +
-			entryStyle(e.State).Render(padRight(entryGlyph(e.State)+" "+e.State, stateW))
+		// NO_COLOR, the word survives everything (§3.6). The gutter carries
+		// the change pulse's mark (pulse.go).
+		mark := "  "
+		if _, ok := m.entryPulse(snap.Path, e); ok {
+			mark = "◆ "
+		}
+		cols := padRight(e.Proto, protoW) + padRight(strconv.Itoa(int(e.Port)), portW)
+		cell := padRight(entryGlyph(e.State)+" "+e.State, stateW)
+		since := ""
+		if lo.showSince {
+			since = relative(m.now.Sub(e.Since))
+		}
+		if cursorOn && i == cur {
+			// The bar is reverse video over the plain row text, gutter to
+			// SINCE at the region's width: every 16-color and mono terminal
+			// renders it, and nesting styles inside a reverse span would
+			// break at the first inner reset.
+			rows = append(rows, styleSelBar.Render(padRight(mark+cols+cell+since, lo.mirrorWidth)))
+			continue
+		}
+		gutter := mark
+		if mark != "  " {
+			gutter = styleWarn.Render(mark)
+		}
+		row := gutter + cols + entryStyle(e.State).Render(cell)
 		if lo.showSince {
 			// The age tint: what changed in the last half minute is what a
 			// 1 Hz watcher is here for, and settled rows recede.
-			row += ageStyle(m.now.Sub(e.Since)).Render(relative(m.now.Sub(e.Since)))
+			row += ageStyle(m.now.Sub(e.Since)).Render(since)
 		}
 		rows = append(rows, row)
+	}
+	if cursorOn {
+		// The cursor drives the window (reveal), so plain slicing, except the
+		// unscrolled overflow keeps its `… +N more` tail as long as the
+		// cursor is not standing on the row the tail would replace.
+		first, last := m.tableScroll().window(len(rows), budget)
+		if first == 0 && len(rows) > budget && cur < budget-1 {
+			return append(out, append(rows[:budget-1],
+				styleDim.Render(fmt.Sprintf("… +%d more", len(rows)-(budget-1))))...)
+		}
+		return append(out, rows[first:last]...)
 	}
 	return append(out, windowRows(rows, m.tableScroll(), budget)...)
 }

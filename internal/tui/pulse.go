@@ -82,13 +82,3 @@ func (m Model) entryPulse(path string, e introspect.MirrorEntry) (pulse, bool) {
 	}
 	return p, true
 }
-
-// mirrorGutter is the two-column gutter every mirror row carries: an active
-// change pulse's mark, blank otherwise. The mark is warn-styled and one
-// glyph, so it reads on mono terminals and never repaints the row itself.
-func (m Model) mirrorGutter(path string, e introspect.MirrorEntry) string {
-	if _, ok := m.entryPulse(path, e); ok {
-		return styleWarn.Render("◆ ")
-	}
-	return "  "
-}

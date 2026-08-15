@@ -428,7 +428,7 @@ said.
 |---|---|
 | `q`, `ctrl+c` | Quit (terminal restored) |
 | `?` | Toggle the help overlay |
-| `esc` | Close the topmost overlay, else the refusals pane (added 2026-08-01); in the doctor view: cancel a running gather, else return to the dashboard; on the plain dashboard with nothing open: nothing |
+| `esc` | Close the topmost overlay, else the row-detail strip (added 2026-08-15), else the refusals pane (added 2026-08-01); in the doctor view: cancel a running gather, else return to the dashboard; on the plain dashboard with nothing open: nothing |
 | `tab` / `shift+tab`, `l` / `h`, `→` / `←` | Next / previous daemon (the letter and arrow aliases added 2026-08-01, in every view where `tab` already cycled) |
 | `1`–`9` | Select daemon N (switcher order) |
 | `v` | Toggle the daemon switcher overlay |
@@ -436,6 +436,7 @@ said.
 | `d` | Open the doctor view (runs a gather on first entry) |
 | `x` | Dashboard only (added 2026-08-01): expand / collapse the sync table's folded ephemeral rows. Full help only — the footer stays five entries |
 | `u` | Refusals pane only (added 2026-08-15): fold repeats into per-ID groups / unfold. The pane header carries the mode and the hint, sync-fold style; full help only, the footer stays five entries |
+| `enter` | Dashboard only (added 2026-08-15): open / close the selected mirror row's detail strip (state and since, what the state means, the next command to try). The strip sits above the footer, refusals-pane style, and its rule line says `enter/esc close`. The row cursor it belongs to stays invisible until first driven; a daemon switch resets both. Full help only, the footer stays five entries |
 
 **Scrolling (whichever single region is scrollable — the refusals pane
 when open, else an overflowing mirror table, else the doctor findings
@@ -443,7 +444,7 @@ list):**
 
 | Key | Action |
 |---|---|
-| `j` / `k`, `↓` / `↑` | Line down / up (doctor view: move the cursor) |
+| `j` / `k`, `↓` / `↑` | Line down / up (doctor view and the dashboard's mirror table: move the cursor; the window follows it, and the mirror cursor renders only once driven, added 2026-08-15) |
 | `pgdn` / `pgup`, `space` / `b` | Page down / up |
 | `g` / `G` | Top / bottom (`G` re-engages follow in the refusals pane) |
 

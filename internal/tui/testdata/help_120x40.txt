@@ -20,7 +20,7 @@
           │ d                  open the doctor view (runs…   enter              expand / collapse the sele… │
           │ x                  dashboard: expand / collap…   R                  re-run the gather           │
           │ u                  refusals pane: fold repeat…   p                  re-run with the half-close… │
-          │                                                                                                 │
+          │ enter              dashboard: open / close th…                                                  │
           │                                                  SWITCHER OVERLAY                               │
           │                                                  j/k, up/down       move                        │
           │                                                  enter              select daemon and close     │

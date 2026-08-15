@@ -250,6 +250,13 @@ func TestViewGoldens(t *testing.T) {
 		// strip's absence.
 		{"attention_120x40", attentionModel(120, 40)},
 		{"attention_80x24", attentionModel(80, 24)},
+		// The row-detail strip on the bind-failed row (`g` then enter): rule,
+		// state, meaning and the lsof line. The reverse-video bar itself is
+		// color-only, so the strip is the text-visible pin.
+		{"rowdetail_120x40", press(testModel(120, 40, healthySnap()), "g", "enter")},
+		// The cursor at the bottom of an overflowing table: reveal slid the
+		// window, so the tail line is gone and the last row is on screen.
+		{"cursor_bottom_120x16", press(testModel(120, 16, manyEntries()), "G")},
 	} {
 		t.Run(tc.name, func(t *testing.T) { golden(t, tc.name, tc.m.View()) })
 	}

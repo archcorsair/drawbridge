@@ -41,6 +41,11 @@ var (
 	// verdict colors and is not the label blue.
 	styleAccent     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "6", Dark: "14"})
 	styleAccentBold = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "6", Dark: "14"}).Bold(true)
+
+	// styleSelBar is the mirror table's row cursor: reverse video, which every
+	// 16-color and monochrome terminal renders, so the selection bar can never
+	// vanish with a palette.
+	styleSelBar = lipgloss.NewStyle().Reverse(true)
 )
 
 // State glyphs: one column each, chosen to differ in silhouette so they stay

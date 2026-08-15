@@ -49,6 +49,8 @@ type keyMap struct {
 	SyncExpand   binding
 	// GroupRefusals is the refusals pane's per-ID fold.
 	GroupRefusals binding
+	// RowDetail is the dashboard's mirror-row detail strip.
+	RowDetail binding
 
 	LineDown binding
 	LineUp   binding
@@ -81,6 +83,7 @@ func defaultKeys() keyMap {
 		Doctor:        binding{keys: []string{"d"}, label: "d", help: "open the doctor view (runs a gather on first entry)"},
 		SyncExpand:    binding{keys: []string{"x"}, label: "x", help: "dashboard: expand / collapse the folded ephemeral SYNC rows"},
 		GroupRefusals: binding{keys: []string{"u"}, label: "u", help: "refusals pane: fold repeats into per-ID groups / unfold"},
+		RowDetail:     binding{keys: []string{"enter"}, label: "enter", help: "dashboard: open / close the selected mirror row's detail strip"},
 
 		LineDown: binding{keys: []string{"j", "down"}, label: "j, down", help: "line down (doctor view: move the cursor)"},
 		LineUp:   binding{keys: []string{"k", "up"}, label: "k, up", help: "line up (doctor view: move the cursor)"},
@@ -108,7 +111,7 @@ type helpGroup struct {
 // adding a binding without listing it here fails the drift test.
 func (k keyMap) groups() []helpGroup {
 	return []helpGroup{
-		{"Global", []binding{k.Quit, k.Help, k.Esc, k.NextDaemon, k.PrevDaemon, k.SelectDaemon, k.Switcher, k.Refusals, k.Doctor, k.SyncExpand, k.GroupRefusals}},
+		{"Global", []binding{k.Quit, k.Help, k.Esc, k.NextDaemon, k.PrevDaemon, k.SelectDaemon, k.Switcher, k.Refusals, k.Doctor, k.SyncExpand, k.GroupRefusals, k.RowDetail}},
 		{"Scrolling", []binding{k.LineDown, k.LineUp, k.PageDown, k.PageUp, k.Top, k.Bottom}},
 		{"Doctor view", []binding{k.Expand, k.Rerun, k.Probe}},
 		{"Switcher overlay", []binding{k.SwitcherMove, k.SwitcherSelect, k.SwitcherClose}},
@@ -232,7 +235,7 @@ func helpBody(k keyMap) []string {
 func (k keyMap) dispatchedBindings() []binding {
 	return []binding{
 		k.Quit, k.Help, k.Esc, k.NextDaemon, k.PrevDaemon, k.SelectDaemon,
-		k.Switcher, k.Refusals, k.Doctor, k.SyncExpand, k.GroupRefusals,
+		k.Switcher, k.Refusals, k.Doctor, k.SyncExpand, k.GroupRefusals, k.RowDetail,
 		k.LineDown, k.LineUp, k.PageDown, k.PageUp, k.Top, k.Bottom,
 	}
 }

@@ -145,6 +145,15 @@ type Model struct {
 	// pulse, doctorState.gen-style (motion.go).
 	flashLeft int
 	flashGen  int
+
+	// mirrorCursor is the mirror table's selected row, an index into
+	// sortedEntries order; mirrorDetail opens the bottom detail strip for it
+	// (enter). mirrorMoved gates the cursor bar's visibility: until the user
+	// drives the cursor or opens the strip, the table stays a table rather
+	// than presenting a selection nobody made.
+	mirrorCursor int
+	mirrorDetail bool
+	mirrorMoved  bool
 }
 
 func newModel(opts Options) Model {
@@ -244,12 +253,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case k.Esc.matches(msg):
 		// One step out of whatever is layered on the dashboard: the topmost
-		// overlay first, then the refusals pane. On the *plain* dashboard esc
-		// still does nothing — an escape that quits is how people lose a
-		// session they meant to keep.
+		// overlay first, then the row-detail strip, then the refusals pane.
+		// On the *plain* dashboard esc still does nothing — an escape that
+		// quits is how people lose a session they meant to keep.
 		switch {
 		case m.overlay != overlayNone:
 			m.overlay = overlayNone
+		case m.mirrorDetail:
+			m.mirrorDetail = false
 		case m.pane == paneRefusals:
 			m.pane = paneNone
 			m.scroll = m.freshScroll()
@@ -303,26 +314,87 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.scroll = m.freshScroll()
 		}
 		return m, nil
+	case k.RowDetail.matches(msg):
+		// Dashboard only, and only while the mirror table is what the
+		// movement keys drive: an enter that acted on a table the cursor
+		// cannot reach would be a surprise. Opening the strip counts as
+		// driving the cursor, so the bar appears with it.
+		if m.view == viewDashboard && m.scrollRegion() == regionMirror && len(m.mirrorEntries()) > 0 {
+			m.mirrorDetail = !m.mirrorDetail
+			if m.mirrorDetail {
+				m.mirrorMoved = true
+			}
+		}
+		return m, nil
 	case k.LineDown.matches(msg):
+		if m.scrollRegion() == regionMirror {
+			return m.moveMirrorCursor(1), nil
+		}
 		m.scroll = m.scroll.down(1, m.scrollTotal(), m.scrollVisible())
 		return m, nil
 	case k.LineUp.matches(msg):
+		if m.scrollRegion() == regionMirror {
+			return m.moveMirrorCursor(-1), nil
+		}
 		m.scroll = m.scroll.up(1, m.scrollTotal(), m.scrollVisible())
 		return m, nil
 	case k.PageDown.matches(msg):
+		if m.scrollRegion() == regionMirror {
+			return m.moveMirrorCursor(max(1, m.scrollVisible())), nil
+		}
 		m.scroll = m.scroll.down(m.scrollVisible(), m.scrollTotal(), m.scrollVisible())
 		return m, nil
 	case k.PageUp.matches(msg):
+		if m.scrollRegion() == regionMirror {
+			return m.moveMirrorCursor(-max(1, m.scrollVisible())), nil
+		}
 		m.scroll = m.scroll.up(m.scrollVisible(), m.scrollTotal(), m.scrollVisible())
 		return m, nil
 	case k.Top.matches(msg):
+		if m.scrollRegion() == regionMirror {
+			return m.moveMirrorCursor(-len(m.mirrorEntries())), nil
+		}
 		m.scroll = m.scroll.top()
 		return m, nil
 	case k.Bottom.matches(msg):
+		if m.scrollRegion() == regionMirror {
+			return m.moveMirrorCursor(len(m.mirrorEntries())), nil
+		}
 		m.scroll = m.scroll.bottom(m.scrollTotal(), m.scrollVisible())
 		return m, nil
 	}
 	return m, nil
+}
+
+// The mirror table's cursor. The movement keys drive it whenever the table is
+// the scroll region: the cursor moves, the window follows it (scroll.reveal,
+// the doctor view's discipline), and the sorted order means it rests on a row
+// identity that only shifts when a row actually changes state.
+func (m Model) mirrorEntries() []introspect.MirrorEntry {
+	s := m.selectedSnap()
+	if s == nil {
+		return nil
+	}
+	return sortedEntries(s.State.Mirror.Entries)
+}
+
+func (m Model) mirrorCursorIndex() int {
+	n := len(m.mirrorEntries())
+	if n == 0 {
+		return -1
+	}
+	return min(max(m.mirrorCursor, 0), n-1)
+}
+
+func (m Model) moveMirrorCursor(n int) Model {
+	entries := m.mirrorEntries()
+	if len(entries) == 0 {
+		return m
+	}
+	m.mirrorMoved = true
+	m.mirrorCursor = min(max(m.mirrorCursorIndex()+n, 0), len(entries)-1)
+	m.scroll = m.scroll.reveal(m.mirrorCursor, m.mirrorCursor, len(entries), m.scrollVisible())
+	return m
 }
 
 // handleSwitcherKey is §4.1's switcher table. Movement is a cursor, not a
@@ -404,6 +476,12 @@ func (m Model) selectPath(path string) Model {
 	m.selected = path
 	m.scroll = m.freshScroll()
 	m.cursor = m.rowIndexOf(path)
+	// The row cursor is per-daemon by meaning: row 3 of another daemon's
+	// table is not the row the user had selected, so it resets with the
+	// detail strip and the bar's visibility gate.
+	m.mirrorCursor = 0
+	m.mirrorDetail = false
+	m.mirrorMoved = false
 	// With the pane open the new daemon's log is on screen the moment the
 	// selection lands, so it counts as shown.
 	return m.markRefusalsSeen()

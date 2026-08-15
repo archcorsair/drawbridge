@@ -11,13 +11,13 @@
    udp    5353 │ d                  open the doctor view (runs… │
    tcp    22   │ x                  dashboard: expand / collap… │
                │ u                  refusals pane: fold repeat… │
+               │ enter              dashboard: open / close th… │
                │                                                │
                │ SCROLLING                                      │
                │ j, down            line down (doctor view: mo… │
                │ k, up              line up (doctor view: move… │
                │ pgdn, space        page down                   │
-               │ pgup, b            page up                     │
-               │ … 1-18 of 30 · j/k scroll                      │
+               │ … 1-18 of 31 · j/k scroll                      │
                │                                                │
                │ ? or esc closes                                │
                └────────────────────────────────────────────────┘

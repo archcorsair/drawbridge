@@ -460,39 +460,48 @@ func TestResizeTransitions(t *testing.T) {
 }
 
 // Scroll keys drive whichever single region is scrollable — in T1 an
-// overflowing mirror table, and the help overlay when it is open.
+// overflowing mirror table, and the help overlay when it is open. The mirror
+// table's movement keys drive a cursor and the window follows it,
+// doctor-view style, instead of moving a bare offset.
 func TestScrollKeysDriveTheOverflowingTable(t *testing.T) {
 	m := testModel(120, 16, manyEntries())
 	if !strings.Contains(m.View(), "… +13 more") {
 		t.Fatal("an unscrolled overflow has no tail line")
 	}
 	m = press(m, "j", "j")
-	if m.scroll.offset != 2 {
-		t.Fatalf("j twice left offset %d", m.scroll.offset)
+	if m.mirrorCursorIndex() != 2 {
+		t.Fatalf("j twice left the cursor at %d", m.mirrorCursorIndex())
 	}
-	if strings.Contains(m.View(), "… +") {
-		t.Fatal("a scrolled table still shows the unscrolled tail")
+	if m.scroll.offset != 0 {
+		t.Fatalf("a cursor inside the window moved the offset to %d", m.scroll.offset)
 	}
-	if got := press(m, "k", "k", "k").scroll.offset; got != 0 {
-		t.Fatalf("k past the top left offset %d", got)
+	if !strings.Contains(m.View(), "… +") {
+		t.Fatal("a cursor inside the window lost the overflow tail")
 	}
-	if got := press(m, "G").scroll; got.offset != maxOffset(20, m.scrollVisible()) || !got.follow {
-		t.Fatalf("G left %+v", got)
+	if got := press(m, "k", "k", "k").mirrorCursorIndex(); got != 0 {
+		t.Fatalf("k past the top left the cursor at %d", got)
 	}
-	if got := press(m, "G", "g").scroll; got.offset != 0 || got.follow {
-		t.Fatalf("g left %+v", got)
+	bottom := press(m, "G")
+	if got := bottom.mirrorCursorIndex(); got != 19 {
+		t.Fatalf("G left the cursor at %d", got)
+	}
+	if bottom.scroll.offset != maxOffset(20, bottom.scrollVisible()) {
+		t.Fatalf("G did not reveal the last row: offset %d", bottom.scroll.offset)
+	}
+	if got := press(bottom, "g"); got.mirrorCursorIndex() != 0 || got.scroll.offset != 0 {
+		t.Fatalf("g left cursor %d offset %d", got.mirrorCursorIndex(), got.scroll.offset)
 	}
 	fresh := testModel(120, 16, manyEntries())
-	if got := press(fresh, " ").scroll.offset; got != fresh.scrollVisible() {
-		t.Fatalf("space paged to %d, want %d", got, fresh.scrollVisible())
+	if got := press(fresh, " ").mirrorCursorIndex(); got != fresh.scrollVisible() {
+		t.Fatalf("space paged the cursor to %d, want %d", got, fresh.scrollVisible())
 	}
-	if got := press(m, "G", "b").scroll.offset; got == maxOffset(20, m.scrollVisible()) {
-		t.Fatal("b did not page up")
+	if got := press(bottom, "b").mirrorCursorIndex(); got == 19 {
+		t.Fatal("b did not page the cursor up")
 	}
-	// Changing daemon resets the region: the offset belonged to the old table.
+	// Changing daemon resets the region: the cursor belonged to the old table.
 	two := press(testModel(120, 16, manyEntries(), rootSnap()), "j", "j", "tab")
-	if two.scroll.offset != 0 {
-		t.Fatalf("tab kept a scroll offset of %d", two.scroll.offset)
+	if two.scroll.offset != 0 || two.mirrorCursor != 0 || two.mirrorMoved {
+		t.Fatalf("tab kept offset %d cursor %d moved %v", two.scroll.offset, two.mirrorCursor, two.mirrorMoved)
 	}
 }
 
