@@ -561,8 +561,8 @@ type preflight struct {
 	// it (docs/podman.md §7.4 results).
 	ContainersFS string
 
-	// User is the login user the provider shells in as — `core` on a podman
-	// machine — and therefore the uid a rootless engine's runtime runs as.
+	// User is the login user the provider shells in as (`core` on a podman
+	// machine), and therefore the uid a rootless engine's runtime runs as.
 	// It is what `-oci-sock-owner` is set from (docs/podman.md §6.3).
 	User string
 
@@ -681,7 +681,7 @@ func (p preflight) hasDocker() bool { return p.Engine == EngineDocker }
 // containers.conf drop-in rather than a merge (docs/podman.md §6.2).
 func (p preflight) hasPodman() bool { return p.Engine == EnginePodman }
 
-// minCrun is the floor for crun's seccomp notify listener — `listenerPath`
+// minCrun is the floor for crun's seccomp notify listener: `listenerPath`
 // and `listenerMetadata` in the OCI seccomp config, which is what makes a
 // container's bind reach the agent at all. 0.19 is where crun's NEWS
 // records it.
@@ -778,7 +778,7 @@ func checkPodmanOCI(p preflight) error {
 	case maj < minCrun[0] || (maj == minCrun[0] && min < minCrun[1]):
 		return fmt.Errorf("guest crun %s is older than %d.%d: --oci arbitrates container binds through seccomp\n"+
 			"  user-notify (listenerPath), which crun grew in %d.%d.\n"+
-			"  Update crun in the VM, or re-run without --oci — inbound mirroring, outbound and\n"+
+			"  Update crun in the VM, or re-run without --oci. Inbound mirroring, outbound and\n"+
 			"  host-process EADDRINUSE all work without it",
 			p.Crun, minCrun[0], minCrun[1], minCrun[0], minCrun[1])
 	}

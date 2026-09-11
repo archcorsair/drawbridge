@@ -7,7 +7,7 @@ package guestbin
 // its own config, so registration needs no merge into a file the user owns:
 // `up` writes one whole file that did not exist, and `down` deletes exactly
 // that file. What the state records is therefore not "what was there
-// before" but "what we wrote", as a digest — which is the only evidence
+// before" but "what we wrote", as a digest, which is the only evidence
 // that distinguishes a file still ours to delete from one the user has
 // since edited.
 //
@@ -18,7 +18,7 @@ package guestbin
 // all of them edited too; keeping the name `crun` keeps every one of those
 // lists truthful, because the wrapper execs crun.
 //
-// Everything here is pure — bytes in, bytes out — for the same reason the
+// Everything here is pure (bytes in, bytes out) for the same reason the
 // daemon.json half is: `down`'s promise ("delete it only if it is still
 // byte-for-byte what `up` wrote") is a claim about exact bytes, and a claim
 // about exact bytes is only testable against fixtures.
@@ -51,7 +51,7 @@ const dropinHeader = "# written by drawbridge up --oci; removed by drawbridge do
 //
 // The second element of the list is podman's own fallback: if the wrapper
 // ever vanishes, podman execs the real crun and containers keep starting.
-// That is also what makes `down`'s ordering forgiving — deleting the
+// That is also what makes `down`'s ordering forgiving: deleting the
 // wrapper before the drop-in would still leave a working engine.
 //
 // The path is a parameter rather than a constant even though every podman
@@ -69,7 +69,7 @@ func DropinBytes(realCrun string) ([]byte, error) {
 
 // checkRuntimePath refuses anything that would not survive being quoted
 // into a TOML string. The value comes from `command -v crun` in the guest,
-// which is the user's own VM — but a newline here would forge TOML
+// which is the user's own VM. But a newline here would forge TOML
 // directives, and a file this package promises to delete by digest must
 // never contain something it did not intend to write.
 func checkRuntimePath(p string) error {
@@ -96,7 +96,7 @@ const (
 //
 // A separate type from ProvisionState rather than more optional fields on
 // it: the two describe disjoint reverts, and sharing a struct would put a
-// `"rootful": false` into every docker guest's state file — a byte change
+// `"rootful": false` into every docker guest's state file, a byte change
 // to a file whose whole job is byte-level evidence.
 type PodmanState struct {
 	Version int    `json:"version"`
@@ -140,7 +140,7 @@ func EncodePodmanState(st PodmanState) ([]byte, error) {
 func DecodePodmanState(b []byte) (PodmanState, error) {
 	var st PodmanState
 	if err := json.Unmarshal(b, &st); err != nil {
-		return PodmanState{}, fmt.Errorf("%s is not valid JSON (%w): remove it to skip the `--oci` revert, or fix it — drawbridge will not guess what `up --oci` changed", ProvisionPath, err)
+		return PodmanState{}, fmt.Errorf("%s is not valid JSON (%w): remove it to skip the `--oci` revert, or fix it. drawbridge will not guess what `up --oci` changed", ProvisionPath, err)
 	}
 	if st.Version > MaxStateVersion {
 		return PodmanState{}, newerStateError(st.Version)
@@ -157,7 +157,7 @@ func PeekStateVersion(b []byte) (int, error) {
 		Version int `json:"version"`
 	}
 	if err := json.Unmarshal(b, &head); err != nil {
-		return 0, fmt.Errorf("%s is not valid JSON (%w): remove it to skip the `--oci` revert, or fix it — drawbridge will not guess what `up --oci` changed", ProvisionPath, err)
+		return 0, fmt.Errorf("%s is not valid JSON (%w): remove it to skip the `--oci` revert, or fix it. drawbridge will not guess what `up --oci` changed", ProvisionPath, err)
 	}
 	return head.Version, nil
 }
@@ -171,7 +171,7 @@ func newerStateError(v int) error {
 // it and say why.
 //
 // `current` is nil when the file is gone. There is deliberately no third
-// answer — no "rewrite it", no "un-merge" — because the file is ours
+// answer (no "rewrite it", no "un-merge") because the file is ours
 // whole-cloth: either it is still what we wrote, in which case removing it
 // is exact, or it is not, in which case someone made a decision and `down`
 // is not entitled to overrule it. The reason string is printed verbatim, so

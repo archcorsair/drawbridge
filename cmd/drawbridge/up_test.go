@@ -411,7 +411,6 @@ func TestUpRelabelsOnSELinuxGuestsOnly(t *testing.T) {
 	}
 }
 
-
 // A Lima guest's unit must stay byte-identical: no -gvproxy-publish, and
 // therefore no rewrite and no restart on a guest that was already correct.
 func TestUpLimaUnitIsUnchanged(t *testing.T) {
@@ -452,7 +451,7 @@ func TestUpOCIPodmanWritesTheDropin(t *testing.T) {
 		t.Fatalf("the wrapper is not installed at %s: %q", crunGuest, f.files[crunGuest])
 	}
 	if _, ok := f.files[runcGuest]; ok {
-		t.Fatal("a podman guest got the runc name too — one engine, one name")
+		t.Fatal("a podman guest got the runc name too: one engine, one name")
 	}
 	want, err := guestbin.DropinBytes("/usr/bin/crun")
 	if err != nil {
@@ -594,7 +593,7 @@ func TestUpOCIPodmanRestartTargetsTheRightManager(t *testing.T) {
 		t.Fatalf("rootless restart did not address core's manager:\n%s", strings.Join(rootless.calls, "\n"))
 	}
 	if !rootless.ran("reset-failed $U") {
-		t.Fatal("the restart skipped reset-failed — two restarts in the burst window leave the unit failed")
+		t.Fatal("the restart skipped reset-failed: two restarts in the burst window leave the unit failed")
 	}
 
 	rootful := newFakeGuest(t).withRootfulPodman()

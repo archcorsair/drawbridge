@@ -252,7 +252,7 @@ func TestCheckPreflight(t *testing.T) {
 			// podman machine image symlinks /usr/local/bin/docker to podman,
 			// so the old probe reported a Docker Engine that is not there and
 			// --oci would have edited a daemon.json nothing reads. It now
-			// takes the podman branch instead of the docker one — but still
+			// takes the podman branch instead of the docker one, but still
 			// never the docker one.
 			name:    "a podman guest with no crun",
 			p:       mutate(ok, func(p *preflight) { p.Engine = EnginePodman }),

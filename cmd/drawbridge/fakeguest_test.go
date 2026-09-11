@@ -132,8 +132,8 @@ func (f *fakeGuest) Inspect(inst string) (vmprovider.PodmanInspect, error) {
 // socket needs no ownership widening at all.
 func (f *fakeGuest) withRootfulPodman() *fakeGuest {
 	f.withFCOS()
-	// The login user stays `core` — a rootful machine is podman-as-root
-	// inside a guest you still ssh into as core — which is exactly why
+	// The login user stays `core` (a rootful machine is podman-as-root
+	// inside a guest you still ssh into as core), which is exactly why
 	// `rootful` and not the user name is what decides the socket ownership.
 	f.preflight = strings.ReplaceAll(f.preflight, "rootful=no", "rootful=yes")
 	f.podmanAPIActive = true // root's podman.service is up on a rootful machine
@@ -449,7 +449,7 @@ func (f *fakeGuest) execRestartDocker() []byte {
 
 // execRestartPodmanAPI models restartPodmanAPIScript: a marker, never an
 // exit status, and `idle` for the socket-activated unit that is simply not
-// running — which is the common case, not an edge.
+// running, which is the common case, not an edge.
 func (f *fakeGuest) execRestartPodmanAPI() []byte {
 	switch {
 	case !f.hasPodmanAPI:

@@ -390,7 +390,7 @@ func TestDownPodmanOCIWithTheDropinAlreadyGone(t *testing.T) {
 }
 
 // A state file from a build this one does not understand is refused, not
-// guessed at — the rule that has applied to daemon.json since Phase 4,
+// guessed at: the rule that has applied to daemon.json since Phase 4,
 // carried forward to the version that replaced it.
 func TestDownRefusesANewerStateFile(t *testing.T) {
 	f := newFakeGuest(t).withFCOS()

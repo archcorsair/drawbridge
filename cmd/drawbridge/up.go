@@ -41,7 +41,7 @@ const controlPort = 4777
 
 func runUp(args []string) int {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	oci := fs.Bool("oci", false, "also install the OCI runtime wrapper and register it with the guest's engine — Docker Engine's daemon.json, or podman's containers.conf.d (default off: on docker it edits a file you own and changes the default container runtime)")
+	oci := fs.Bool("oci", false, "also install the OCI runtime wrapper and register it with the guest's engine: Docker Engine's daemon.json, or podman's containers.conf.d (default off: on docker it edits a file you own and changes the default container runtime)")
 	agentBin := fs.String("agent-bin", "", "guest agent binary to push instead of the bundled one; the dev loop's escape hatch and the way to use a standalone release artifact")
 	runcBin := fs.String("runc-bin", "", "OCI runtime wrapper binary to push instead of the bundled one (--oci only); one binary for both engines, installed under the name of the runtime it stands in for")
 	instance, err := parsePositional(fs, args)
@@ -523,7 +523,7 @@ func (g *guest) enableAgent(restart bool) error {
 // One binary, two registrations. The wrapper is installed under the name of
 // the runtime the engine execs, because that name is the whole of its
 // dispatch (internal/ociruntime.RuntimeFor); what differs is how the engine
-// is told about it — a merge into a file Docker's user owns, or one whole
+// is told about it: a merge into a file Docker's user owns, or one whole
 // drop-in file podman reads and nobody else wrote.
 func provisionOCI(g *guest, wrapper []byte, pf preflight, sockOwner string) error {
 	if pf.Engine == EnginePodman {

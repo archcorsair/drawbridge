@@ -423,7 +423,7 @@ func (s *suite) runOCI() {
 		}
 		want := guestbin.WrapperPath(guestbin.EnginePodman)
 		if got != want {
-			return "", fmt.Errorf("podman runtime path is %q, want %q — run `drawbridge up %s --oci` first", got, want, s.r.VM)
+			return "", fmt.Errorf("podman runtime path is %q, want %q. Run `drawbridge up %s --oci` first", got, want, s.r.VM)
 		}
 		rootfulness := "rootless"
 		if rootful {
@@ -451,7 +451,7 @@ func (s *suite) runOCI() {
 	})
 
 	s.step("oci-container-bind-on-mac-port-is-eaddrinuse", func() (string, error) {
-		// The Mac already holds macHTTPPort — the suite's own listener,
+		// The Mac already holds macHTTPPort, the suite's own listener,
 		// running since before `install`. A container that binds it must be
 		// refused by the kernel, synchronously, with the errno the workload
 		// itself prints.
@@ -482,7 +482,7 @@ func (s *suite) runOCI() {
 			}
 		}
 		if !arbitrated {
-			return "", fmt.Errorf("the container got EADDRINUSE but the agent logged no `notify: bind %s ... -> inuse` — it was refused by something else", want)
+			return "", fmt.Errorf("the container got EADDRINUSE but the agent logged no `notify: bind %s ... -> inuse`. It was refused by something else", want)
 		}
 		return fmt.Sprintf("container bind on Mac-held :%d refused synchronously; agent logged `-> inuse`", macHTTPPort), nil
 	})
@@ -512,7 +512,7 @@ func (s *suite) machineIsRootful() bool {
 
 // writeNginxConf stages a one-server config on the given port. The stock
 // image listens on 80, which a rootless container cannot have, so the port
-// has to come from a file — and `dd of=<path>` on stdin is the one staging
+// has to come from a file, and `dd of=<path>` on stdin is the one staging
 // shape that survives a provider shell joining argv unquoted.
 func (s *suite) writeNginxConf(path string, port int) error {
 	body := fmt.Sprintf("server {\n    listen %d;\n    location / { return 200 \"drawbridge-smoke\\n\"; }\n}\n", port)
@@ -527,7 +527,7 @@ func (s *suite) writeNginxConf(path string, port int) error {
 // No sudo: on a rootful machine the provider shell is already root, and on
 // a rootless one sudo would run root's podman instead of the machine's.
 // `:ro,Z` on the mount so SELinux relabels the staged config for container
-// access — the guest runs Enforcing, and an unlabelled mount is an AVC
+// access: the guest runs Enforcing, and an unlabelled mount is an AVC
 // denial with a container that starts and serves nothing.
 func podmanRunArgs(name, conf string, detach bool) []string {
 	argv := []string{"podman", "run", "--rm"}
@@ -549,7 +549,7 @@ func (s *suite) podmanRunDetached(name, conf string) error {
 // A script on stdin rather than argv, and a marker rather than an exit
 // status, for two reasons that both bite here. The provider shell keeps
 // only the last three lines of stderr on failure, and nginx retries a
-// failed bind five times before giving up — so the line naming the errno is
+// failed bind five times before giving up, so the line naming the errno is
 // long gone by the time the command exits. And a non-zero exit is the
 // expected result of this leg, which means it must arrive as data, not as
 // an error that discards the output along with it.

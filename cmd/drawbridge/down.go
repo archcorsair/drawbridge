@@ -153,8 +153,8 @@ func revertOCI(g *guest) error {
 		return nil
 	}
 	// Dispatch on the recorded version before committing to a shape. The
-	// two schemas describe disjoint reverts — a daemon.json restore and a
-	// drop-in deletion — and reading one as the other is how a `down`
+	// two schemas describe disjoint reverts (a daemon.json restore and a
+	// drop-in deletion), and reading one as the other is how a `down`
 	// rewrites a config it never wrote.
 	version, err := guestbin.PeekStateVersion(blob)
 	if err != nil {

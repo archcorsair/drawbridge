@@ -105,7 +105,7 @@ func main() {
 	ociSockOwner := flag.String("oci-sock-owner", "",
 		"local user to give the OCI socket to, mode unchanged at 0600 (empty: root only). "+
 			"Set by `drawbridge up --oci` on a rootless podman machine, where the engine, conmon and crun all run as that user "+
-			"and a root-owned socket would leave the wrapper unable to connect — which is a silent loss of containerized bind arbitration, not an error")
+			"and a root-owned socket would leave the wrapper unable to connect, which is a silent loss of containerized bind arbitration, not an error")
 	flag.Parse()
 
 	log.Printf("drawbridge-agent: version %s", buildinfo.Version)

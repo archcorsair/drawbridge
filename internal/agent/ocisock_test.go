@@ -44,7 +44,7 @@ func TestOwnOCISocketKeepsMode0600(t *testing.T) {
 		t.Fatal(err)
 	}
 	if perm := st.Mode().Perm(); perm != 0o600 {
-		t.Fatalf("mode = %o, want 600 — the socket hands out seccomp notify fds", perm)
+		t.Fatalf("mode = %o, want 600: the socket hands out seccomp notify fds", perm)
 	}
 }
 

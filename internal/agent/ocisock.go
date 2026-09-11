@@ -19,7 +19,7 @@ import (
 // root, the socket's 0600 root is already right, and nothing calls this. On
 // a rootless machine the engine, conmon and crun all run as the machine's
 // unprivileged user, so the wrapper cannot connect to a root-owned 0600
-// socket — and its failure posture is to exec crun untouched, which means
+// socket, and its failure posture is to exec crun untouched, which means
 // containerized bind arbitration silently does not happen. Chowning widens
 // the socket to exactly one named local user, not to the world (0666, the
 // notify socket's mode, would let any process in the guest feed the

@@ -1520,7 +1520,272 @@ Nothing. Every step of 7.3 ran without sudo. The dev VM is left running with
 the agent and docker active, as 7.4 will want it.
 
 
-## 7.4 results
+## 7.4 results (2026-09-11)
+
+**Landed: `--oci` on podman, rootful and rootless, both verified live.** A
+host-network container started by podman under the wrapper gets the same bind
+arbitration a docker container has had since Phase 4: its listener is
+mirrored onto Mac localhost, and its bind onto a Mac-held port is refused
+synchronously with `EADDRINUSE`. Rootless works too, which §6.3 flagged as a
+question and is now an answer. The docker path is byte-identical, from the
+preflight's wording to the bytes of its version-1 state file, and the dev VM
+is at baseline.
+
+The plan was wrong about one thing that matters, and it is not small: on a
+podman machine `/etc/containers` is a **virtiofs mount of the Mac's own
+podman config directory**, so the "one drop-in file in the guest" is one file
+on the Mac, shared by every podman machine. Details below.
+
+### What landed
+
+| Commit | Files |
+|---|---|
+| `a00e250` guestbin | `internal/guestbin/dropin.go` + `dropin_test.go` (new): `DropinDir`, `DropinPath`, `DropinBytes`, `PodmanState`, `StateVersion*`, `PeekStateVersion`, `Encode/DecodePodmanState`, `RevertDropin` |
+| `d8f918a` agent | `internal/agent/ocisock.go` + `ocisock_test.go` (new, untagged so it tests on the Mac); `cmd/drawbridge-agent/main_linux.go` (`-oci-sock-owner`) |
+| `eb80ac9` CLI | `cmd/drawbridge/ocipodman.go` (new); `guest.go` (`crun_path`, `user`, `containers_fs` probe keys, `checkPodmanOCI`, `parseKernel` → `parseMajorMinor`); `up.go` (the podman refusal removed, `provisionOCI` dispatches, `-oci-sock-owner` rendered into the unit); `down.go` (version dispatch, both wrapper names removed); `fakeguest_test.go`, `up_test.go`, `down_test.go`, `guest_test.go` |
+| `dd0f644` smoke | `scripts/smoke-sudo/main.go` (`-oci`), `justfile` (`smoke-sudo-oci`) |
+| `0261185` smoke fix | `scripts/smoke-sudo/main.go` (the refused container's errno reaches the check) |
+
+Scope held: no `internal/bpf/` change, no wire-protocol change, no `just gen`.
+
+### Verified live
+
+Rootless, on `podman:spike` (libkrun, crun 1.28, `core` uid 501):
+
+```
+$ ./bin/drawbridge up podman:spike --oci
+drawbridge: installed /usr/local/bin/drawbridge-crun
+drawbridge: wrote /etc/containers/containers.conf.d/50-drawbridge.conf (podman's crun runtime now execs /usr/local/bin/drawbridge-crun)
+drawbridge: note: the guest's /etc/containers is a virtiofs mount of your Mac's podman config directory
+  (podman machine's own etc-containers.mount), so that drop-in is one file on the Mac, shared by
+  every podman machine and read by the Mac's podman client too. ...
+  On this Mac it is /Users/nxc/.config/containers/containers.conf.d/50-drawbridge.conf
+
+$ podman machine ssh spike -- podman info --format '{{.Host.OCIRuntime.Path}}'
+/usr/local/bin/drawbridge-crun                  # the §6.2 acceptance line
+$ podman machine ssh spike -- grep ExecStart /etc/systemd/system/drawbridge-agent.service
+ExecStart=/usr/local/bin/drawbridge-agent -gvproxy-publish 127.0.0.1:4778 -oci-sock-owner core
+$ podman machine ssh spike -- ls -l /run/drawbridge-oci.sock
+srw-------. 1 core core 0 ... /run/drawbridge-oci.sock
+
+# a host-network container, mirrored onto Mac localhost through a foreground daemon
+$ podman machine ssh spike -- podman run -d --network host --name drawbridge-smoke-web \
+    -v /tmp/db-nginx.conf:/etc/nginx/conf.d/default.conf:ro,Z docker.io/library/nginx
+$ curl -sS http://127.0.0.1:8080/
+drawbridge-smoke
+  agent: oci: supervising container 99326e92… (init pid 14882, metadata {"v":1,"source":"drawbridge-crun","hostNetwork":true})
+  agent: notify: bind 0.0.0.0:8080 pid=14882 -> unknown      # before the daemon; -> ok once a session is up
+  daemon: mirroring guest :8080 on 127.0.0.1:8080
+
+# and the feature: the Mac holds :8080, a second container tries to bind it
+$ podman machine ssh spike -- podman run --rm --network host … docker.io/library/nginx
+nginx: [emerg] bind() to 0.0.0.0:8080 failed (98: Address already in use)
+exit=1
+  agent: notify: bind 0.0.0.0:8080 pid=15303 -> inuse
+
+$ ./bin/drawbridge down podman:spike
+drawbridge: removed /etc/containers/containers.conf.d/50-drawbridge.conf
+drawbridge: removed /usr/local/bin/drawbridge-crun
+$ podman machine ssh spike -- podman info --format '{{.Host.OCIRuntime.Path}}'
+/usr/bin/crun                                   # stock, and containers still run
+```
+
+Rootful, on `podman:spike-rootful` (created for this phase; see the naming
+note below). `podman machine ssh` logs in as **root** there, `podman.service`
+is active rather than socket-idle, and the socket keeps root's 0600:
+
+```
+$ ./bin/drawbridge up podman:spike-rootful --oci
+drawbridge: wrote /etc/containers/containers.conf.d/50-drawbridge.conf …
+drawbridge: restarted podman.service (the API socket's cached runtime path)
+$ podman machine ssh spike-rootful -- cat /etc/drawbridge/provision.json
+{"version":2,"engine":"podman","runtime_path":"/usr/local/bin/drawbridge-crun",
+ "dropin_path":"/etc/containers/containers.conf.d/50-drawbridge.conf",
+ "dropin_sha256":"aecee4f1…","rootful":true,"oci_sock_owner":""}
+   (ExecStart carries no -oci-sock-owner; /run/drawbridge-oci.sock is 0600 root)
+
+$ podman machine ssh spike-rootful -- podman run -d --network host --name … nginx
+$ podman machine ssh spike-rootful -- curl -sI 127.0.0.1:80 | head -1
+HTTP/1.1 200 OK
+  agent: notify: bind 0.0.0.0:80 pid=4331 -> unknown      # and :::80, same pid
+  (the Mac leg of :80 needs a privileged daemon; :8080 from a second container
+   mirrored onto Mac 127.0.0.1:8080 through a foreground drawbridged, and a third
+   container's bind on a Mac-held :8080 logged `-> inuse` and exited 1)
+
+$ ./bin/drawbridge down podman:spike-rootful
+drawbridge: removed /etc/containers/containers.conf.d/50-drawbridge.conf
+drawbridge: restarted podman.service (the API socket's cached runtime path)
+drawbridge: removed /usr/local/bin/drawbridge-crun
+   then: podman info → /usr/bin/crun, and `podman run --network host nginx` → 200 on :80
+```
+
+Unit tests: `go test ./internal/guestbin/ ./internal/agent/ ./cmd/drawbridge/`
+green, `-race` green on all three, `go vet ./...` and the full `go test ./...`
+clean. Dev VM, the regression that matters: `just test-guest` all green,
+`just e2e` **14 pass / 2 root-gated skips / 0 fail**, the baseline, the three
+real-container docker legs included.
+
+### The §6.3 question, answered: rootless arbitration works
+
+§6.3 asked which process connects to `listenerPath` under rootless crun and
+as which uid, and warned that if it were the container init inside the user
+namespace the socket path might not be visible from its mount namespace.
+
+It is **crun itself, as the machine's login user `core` (uid 501 in the
+guest), in the host mount namespace**. The socket path is plainly visible and
+the chown is sufficient. Two connects happen as `core`, not one: the
+wrapper's own reachability probe in `tryInject`, and then crun's real fd
+handoff.
+
+The discriminator, run live rather than reasoned about: chown the socket to
+root, start the same container, and watch arbitration vanish.
+
+```
+$ sudo chown root:root /run/drawbridge-oci.sock && podman run -d --network host … nginx
+  (no `oci: supervising` line, no `notify: bind` line: the runtime could not reach the socket)
+$ sudo chown core:core /run/drawbridge-oci.sock && podman run -d --network host … nginx
+  agent: oci: supervising container … notify: bind 0.0.0.0:8080 … -> inuse
+```
+
+`journalctl -k | grep -i avc` and `ausearch -m avc -ts recent` were clean
+throughout on an Enforcing guest. So rootless is a phase deliverable, not a
+§10 question.
+
+### What the plan got wrong, and the correction
+
+1. **`/etc/containers` is not the guest's directory.** §6.2 describes the
+   drop-in as a file in the guest that `down` deletes. A podman machine image
+   ships an `etc-containers.mount` unit:
+
+   ```
+   [Mount]
+   What=9ddeaea5d41a791d2cc3bcc676b9645fee0e
+   Where=/etc/containers
+   Type=virtiofs
+   Options=context="system_u:object_r:nfs_t:s0"
+   ```
+
+   That mounts the **Mac's** `~/.config/containers` there, so podman's
+   registries, auth and policy follow the user into every machine. That is
+   podman's design, not an accident, and it means:
+   - the drop-in written "in the guest" appears on the Mac at
+     `~/.config/containers/containers.conf.d/50-drawbridge.conf` (verified:
+     same bytes, same mtime);
+   - **the same `What=` source id appears on the rootful machine**, so it is
+     one file shared by every podman machine on the Mac, and read by the
+     Mac's own podman client;
+   - `restorecon` there is a no-op. The mount carries `context=…:nfs_t`, so
+     the file's label is fixed by the mount option and `matchpathcon` says
+     `etc_t` while `ls -Z` says `nfs_t`. §5.2's relabel rule cannot apply to
+     this one path. podman read the file anyway (it is not a confined
+     service), which is why nothing failed.
+
+   What still holds, and is why this is a finding and not a redesign: the
+   registration works (`podman info` reads the wrapper path), `down` removes
+   exactly the file `up` wrote and nothing else, and the drop-in's second
+   element carries the whole cost. Verified directly: with the drop-in
+   present from `spike-rootful` and no wrapper installed on `spike`, `podman
+   info` reports `/usr/bin/crun` and containers run normally. The fallback
+   was described in §6.2 as belt-and-braces; it is in fact the thing that
+   makes a shared registration harmless.
+
+   Correction shipped: nothing about the bytes or the path changes, and `up
+   --oci` now *says* this when the preflight finds `/etc/containers` on a
+   shared filesystem (`containers_fs` probe key, `findmnt -no FSTYPE
+   --target`), naming the Mac-side path when the file is really there. What
+   is left undecided, and belongs to 7.5/7.6 rather than here: whether `up
+   --oci` on one machine should refuse or warn when another machine is
+   already registered, and whether doctor should report the shared scope.
+
+2. **The crun path cannot come from `podman info`.** §7.4's build note says
+   to take it from `podman info`'s `OCIRuntime.Path`. That value *is* the
+   acceptance line, which makes it exactly the wrong source: after the first
+   `up --oci` podman reports the wrapper there, so a second run would render
+   `crun = ["/usr/local/bin/drawbridge-crun", "/usr/local/bin/drawbridge-crun"]`
+   (a self-referential fallback, and an infinite exec if the wrapper were
+   ever reached through it). Correction: `command -v crun` in the preflight
+   (`crun_path`). The wrapper is never installed under the bare name `crun`,
+   so that probe cannot find it whatever has been provisioned, and it is the
+   same path `ociruntime`'s own probe list resolves first.
+
+3. **`DropinBytes()` takes the crun path; it is not a bare constant.** §6.2
+   fixes the bytes in a Go constant so the sha256 is checkable without a VM.
+   Keeping the fallback path a constant too would be a silent lie on a guest
+   that puts crun somewhere else. `DropinBytes(realCrun string) ([]byte,
+   error)` keeps every property the constant was for (pure, fixture-tested,
+   digest checkable on the Mac) and refuses a path that could not be quoted
+   into TOML, because a file this package promises to delete by digest must
+   never contain something `up` did not mean to write.
+
+4. **Podman's state file must be rewritten, not kept.** §6.2 says nothing
+   about this, and the obvious move is to copy the docker path, which writes
+   the state file only when there is not one already. That rule exists
+   because docker's state carries `DaemonJSONBefore`, content that only
+   existed before the first run. Podman's carries nothing but a description
+   of what we wrote, so keeping a stale one makes `down` report "edited since
+   `up`" about a file `up` itself had just replaced. The podman state is
+   written whenever it stops matching disk.
+
+5. **Version 2 needed its own struct, not more optional fields.** §6.2's JSON
+   sample has `"rootful":false`, which cannot be `omitempty`. Adding the
+   podman fields to `ProvisionState` would therefore have put a
+   `"rootful": false` into every docker guest's state file, a byte change to
+   a file whose entire job is byte-level evidence. `PodmanState` is separate
+   and `down` dispatches on a version peeked from the raw JSON;
+   `TestDockerStateStaysVersionOne` pins that none of podman's keys can leak
+   the other way.
+
+6. **A plain `up` must not drop `-oci-sock-owner`.** Not addressed by the
+   plan. Re-running `drawbridge up podman:spike` without `--oci` on a machine
+   provisioned with it would have rewritten the unit without the flag,
+   leaving the drop-in in place, the wrapper unable to reach the socket, and
+   arbitration off, with no error anywhere, because the wrapper's failure
+   posture is stock behaviour by design. `up` now carries the recorded owner
+   forward from a version-2 state file; `down` is what removes it.
+
+7. **`smoke-sudo` could not see the refused container's errno** (`0261185`,
+   found by dry-running the leg live). The provider shell keeps the last
+   three lines of stderr in its error and discards stdout, and nginx retries
+   a failed bind five times before giving up, so the line naming errno 98 is
+   long gone by the time the command exits, and the non-zero exit that *is*
+   the expected result of the leg discards the output with it. The container
+   now runs from a script on stdin behind a `drawbridge-exit=` marker, the
+   same discipline the engine restarts use.
+
+8. **`spike-root` is not an available machine name.** podman auto-creates a
+   `<machine>-root` *connection* for every machine's rootful endpoint, so
+   `podman machine init … spike-root` fails with "system connection
+   `spike-root` already exists" while `spike` exists. The rootful machine for
+   this phase is **`spike-rootful`**.
+
+### Left for the user (needs sudo)
+
+The released root daemon is installed for `colima:default` and this session
+could not `sudo`. One command, one password prompt, JSON on stdout:
+
+```
+just smoke-sudo-oci podman:spike        # expect ran 14 / passed 14 / failed 0
+```
+
+It installs the freshly built daemon for `podman:spike`, proves the three
+base semantics, then the three `--oci` container legs (podman reports the
+wrapper as its runtime; a host-network nginx on `:8080` answers on Mac
+`127.0.0.1:8080`; a second container's bind on the Mac-held `:48081` exits
+non-zero with `Address already in use` *and* the agent logs `notify: bind
+…:48081 … -> inuse`), removes both containers, uninstalls, and reinstalls the
+colima daemon that was there before. `spike` is left running and provisioned
+with `--oci`, nginx pulled, so nothing in the run touches the network.
+
+The rootful `:80` leg is the quickstart demo and needs the other machine,
+which means a machine swap (only one podman machine runs at a time):
+
+```
+podman machine stop spike && podman machine start spike-rootful
+just smoke-sudo-oci podman:spike-rootful     # same 14, at :80 instead of :8080
+podman machine stop spike-rootful && podman machine start spike
+```
+
+`spike-rootful` is left stopped and provisioned with `--oci`, nginx pulled.
 
 ## 7.5 results
 

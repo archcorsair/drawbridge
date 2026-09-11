@@ -198,8 +198,8 @@ func TestDecodePodmanStateRefusesNewer(t *testing.T) {
 	}
 }
 
-// …and the version-1 reader — which is what an older `drawbridge down` is,
-// byte for byte — refuses a version-2 file rather than misreading it as a
+// …and the version-1 reader, which is what an older `drawbridge down` is
+// byte for byte, refuses a version-2 file rather than misreading it as a
 // daemon.json revert it has no business performing.
 func TestVersionOneReaderRefusesPodmanState(t *testing.T) {
 	_, _, _, err := Revert([]byte("{}"), ProvisionState{Version: StateVersionPodman})

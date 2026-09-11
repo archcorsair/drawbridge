@@ -5,7 +5,7 @@ package main
 // The whole registration is one file that did not exist: podman reads
 // /etc/containers/containers.conf.d/*.conf, so there is no merge into
 // anything the user owns, no formatter to round-trip, and no "before" to
-// record — only a digest of what we wrote, which is what makes `down`'s
+// record: only a digest of what we wrote, which is what makes `down`'s
 // deletion exact rather than hopeful.
 //
 // What is shared with the docker path, deliberately: the wrapper binary
@@ -29,7 +29,7 @@ import (
 //
 // Ordering is the failure posture: the wrapper first, the drop-in second.
 // The reverse would leave a registration pointing at a path nothing
-// installed — harmless here, because the drop-in's second element is the
+// installed. Harmless here, because the drop-in's second element is the
 // real crun and podman falls back to it, but "harmless because of a
 // fallback" is not an ordering to rely on.
 func provisionOCIPodman(g *guest, wrapper []byte, pf preflight, sockOwner string) error {
@@ -67,7 +67,7 @@ func provisionOCIPodman(g *guest, wrapper []byte, pf preflight, sockOwner string
 	// disk, unlike the docker path, which keeps the first one.
 	//
 	// The reason those differ is not style. Docker's state carries
-	// DaemonJSONBefore — content that only existed before the first `up`, so
+	// DaemonJSONBefore, content that only existed before the first `up`, so
 	// re-recording it would overwrite the truth with the merged file.
 	// Podman's carries nothing but a description of what we wrote, so a
 	// stale one is simply wrong: it would make `down` read "edited since
@@ -108,7 +108,7 @@ func provisionOCIPodman(g *guest, wrapper []byte, pf preflight, sockOwner string
 // Rootful machines get nothing: the runtime is root and the socket's 0600
 // root is already right. Rootless machines get the machine's own login user,
 // because that is the uid podman, conmon and crun all run as, and a wrapper
-// that cannot connect execs crun untouched — silently, by design, which is
+// that cannot connect execs crun untouched, silently and by design, which is
 // exactly why this must not be left to chance.
 //
 // The `!oci` branch is the one that is easy to get wrong: re-running plain
@@ -229,8 +229,8 @@ func (g *guest) restartPodmanAPI(rootful bool, user string) podmanRestart {
 // A failure here is not fatal in either direction: the podman *CLI* reads
 // its config per invocation, so `podman run` already sees the new
 // registration (or, after `down`, the absence of it). What a stale API
-// service affects is clients of the socket — docker-compose through
-// podman's docker-compatible endpoint, Podman Desktop — so the message
+// service affects is clients of the socket (docker-compose through
+// podman's docker-compatible endpoint, Podman Desktop), so the message
 // names the one command that fixes it rather than failing the run.
 func reportPodmanRestart(g *guest, r podmanRestart, phase string) {
 	switch r {
@@ -243,7 +243,7 @@ func reportPodmanRestart(g *guest, r podmanRestart, phase string) {
 	default:
 		fmt.Fprintf(g.out, "drawbridge: WARNING: podman.service did not restart after the %s change.\n"+
 			"  `podman run` is unaffected (the CLI re-reads its config every invocation), but a client\n"+
-			"  of the API socket — docker-compose, Podman Desktop — keeps the old runtime path until it does.\n"+
+			"  of the API socket (docker-compose, Podman Desktop) keeps the old runtime path until it does.\n"+
 			"  In the guest:  systemctl --user reset-failed podman.service && systemctl --user restart podman.service\n", phase)
 	}
 }
@@ -301,7 +301,7 @@ var sharedFS = map[string]bool{"virtiofs": true, "9p": true, "nfs": true, "nfs4"
 // machine, because it is not what its path suggests.
 //
 // The file itself is unchanged and the registration works exactly as
-// designed — `podman info` reads the wrapper path, which is the acceptance
+// designed: `podman info` reads the wrapper path, which is the acceptance
 // line. What is different is scope: one file on the Mac rather than one
 // file per guest, read by every podman machine and by the Mac's own podman
 // client. That is worth a sentence at the moment it is written, because the
