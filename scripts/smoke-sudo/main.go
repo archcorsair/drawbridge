@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -435,8 +436,8 @@ func (s *suite) runOCI() {
 		if err := s.writeNginxConf(ociConf, port); err != nil {
 			return "", err
 		}
-		if out, err := s.podmanRun(true, ociWebName, ociConf); err != nil {
-			return lastLine(out), fmt.Errorf("start %s: %w", ociWebName, err)
+		if err := s.podmanRunDetached(ociWebName, ociConf); err != nil {
+			return "", fmt.Errorf("start %s: %w", ociWebName, err)
 		}
 		url := fmt.Sprintf("http://127.0.0.1:%d/", port)
 		body, err := waitHTTP(url, 25*time.Second)
@@ -457,12 +458,15 @@ func (s *suite) runOCI() {
 		if err := s.writeNginxConf(ociDupConf, macHTTPPort); err != nil {
 			return "", err
 		}
-		out, err := s.podmanRun(false, ociDupName, ociDupConf)
-		if err == nil {
-			return "", fmt.Errorf("the container bound Mac-held :%d and kept running", macHTTPPort)
+		code, log, err := s.podmanRunForeground(ociDupName, ociDupConf)
+		if err != nil {
+			return "", err
 		}
-		if !strings.Contains(string(out), "Address already in use") {
-			return lastLine(out), fmt.Errorf("container failed, but not with EADDRINUSE on :%d", macHTTPPort)
+		if code == 0 {
+			return "", fmt.Errorf("the container bound Mac-held :%d and exited 0", macHTTPPort)
+		}
+		if !strings.Contains(log, "Address already in use") {
+			return lastLine([]byte(log)), fmt.Errorf("the container exited %d, but not with EADDRINUSE on :%d", code, macHTTPPort)
 		}
 		// And the agent's own account of the same event, so a container
 		// that failed for an unrelated reason cannot pass this leg.
@@ -518,20 +522,56 @@ func (s *suite) writeNginxConf(path string, port int) error {
 	return nil
 }
 
-// podmanRun starts one container under the wrapper. Detached for the
-// listener leg, foreground for the one whose whole output is the evidence.
+// podmanRunArgs is one host-network container under the wrapper.
 //
 // No sudo: on a rootful machine the provider shell is already root, and on
 // a rootless one sudo would run root's podman instead of the machine's.
 // `:ro,Z` on the mount so SELinux relabels the staged config for container
 // access — the guest runs Enforcing, and an unlabelled mount is an AVC
 // denial with a container that starts and serves nothing.
-func (s *suite) podmanRun(detach bool, name, conf string) ([]byte, error) {
+func podmanRunArgs(name, conf string, detach bool) []string {
 	argv := []string{"podman", "run", "--rm"}
 	if detach {
 		argv = append(argv, "-d")
 	}
-	argv = append(argv, "--network", "host", "--name", name,
+	return append(argv, "--network", "host", "--name", name,
 		"-v", conf+":/etc/nginx/conf.d/default.conf:ro,Z", ociImage)
-	return s.prov.Shell(s.ref.Instance, nil, argv...)
+}
+
+func (s *suite) podmanRunDetached(name, conf string) error {
+	_, err := s.prov.Shell(s.ref.Instance, nil, podmanRunArgs(name, conf, true)...)
+	return err
+}
+
+// podmanRunForeground runs the container to completion and returns its exit
+// code and full output, for the leg whose evidence *is* that output.
+//
+// A script on stdin rather than argv, and a marker rather than an exit
+// status, for two reasons that both bite here. The provider shell keeps
+// only the last three lines of stderr on failure, and nginx retries a
+// failed bind five times before giving up — so the line naming the errno is
+// long gone by the time the command exits. And a non-zero exit is the
+// expected result of this leg, which means it must arrive as data, not as
+// an error that discards the output along with it.
+func (s *suite) podmanRunForeground(name, conf string) (int, string, error) {
+	script := strings.Join(podmanRunArgs(name, conf, false), " ") +
+		" >/tmp/drawbridge-smoke-run.log 2>&1" + "\n" +
+		"echo drawbridge-exit=$?" + "\n" +
+		"cat /tmp/drawbridge-smoke-run.log" + "\n" +
+		"rm -f /tmp/drawbridge-smoke-run.log" + "\n" +
+		"exit 0" + "\n"
+	out, err := s.prov.Shell(s.ref.Instance, strings.NewReader(script), "sh")
+	if err != nil {
+		return 0, "", fmt.Errorf("running %s in the guest: %w", name, err)
+	}
+	body := string(out)
+	marker, rest, ok := strings.Cut(body, "\n")
+	if !ok || !strings.HasPrefix(strings.TrimSpace(marker), "drawbridge-exit=") {
+		return 0, body, fmt.Errorf("no drawbridge-exit marker in %q", firstLine(out))
+	}
+	code, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(marker), "drawbridge-exit=")))
+	if err != nil {
+		return 0, rest, fmt.Errorf("unreadable exit marker %q", marker)
+	}
+	return code, rest, nil
 }
