@@ -209,32 +209,41 @@ func (s *suite) run() {
 		return "", fmt.Errorf("guest never reached the Mac listener (last: %q)", last)
 	})
 
-	s.step("guest-bind-on-mac-port-is-eaddrinuse", func() (string, error) {
-		// The supervised probe the e2e leg uses: a bind that goes through the
-		// agent's seccomp arbitration and reports the errno as one JSON line.
-		agent := guestbin.GuestPath(guestbin.NameAgent)
-		out, err := s.prov.Shell(s.ref.Instance, nil, "sudo", agent, "bindprobe",
-			"-addr", fmt.Sprintf("127.0.0.1:%d", macHTTPPort), "-hold", "0s")
-		if err != nil {
-			return lastLine(out), err
+	for _, offThread := range []bool{false, true} {
+		name := "guest-bind-on-mac-port-is-eaddrinuse"
+		argv := []string{"sudo", guestbin.GuestPath(guestbin.NameAgent), "bindprobe",
+			"-addr", fmt.Sprintf("127.0.0.1:%d", macHTTPPort), "-hold", "0s"}
+		if offThread {
+			name += "-off-thread"
+			argv = append(argv, "-off-thread")
 		}
-		var r struct {
-			Errno int    `json:"errno"`
-			Error string `json:"error,omitempty"`
-		}
-		for _, line := range strings.Split(string(out), "\n") {
-			if line = strings.TrimSpace(line); strings.HasPrefix(line, "{") {
-				if err := json.Unmarshal([]byte(line), &r); err != nil {
-					return line, err
-				}
-				if r.Errno != 98 { // Linux EADDRINUSE
-					return "", fmt.Errorf("guest bind :%d = errno %d (%s), want EADDRINUSE(98)", macHTTPPort, r.Errno, r.Error)
-				}
-				return fmt.Sprintf("guest bind :%d refused synchronously with EADDRINUSE", macHTTPPort), nil
+		s.step(name, func() (string, error) {
+			// The supervised probe the e2e leg uses: a bind that goes through
+			// the agent's seccomp arbitration and reports the errno as one JSON
+			// line. The off-thread variant binds from a non-leader thread, the
+			// placement that once degraded to CONTINUE.
+			out, err := s.prov.Shell(s.ref.Instance, nil, argv...)
+			if err != nil {
+				return lastLine(out), err
 			}
-		}
-		return "", fmt.Errorf("no probe result in %q", strings.TrimSpace(string(out)))
-	})
+			var r struct {
+				Errno int    `json:"errno"`
+				Error string `json:"error,omitempty"`
+			}
+			for _, line := range strings.Split(string(out), "\n") {
+				if line = strings.TrimSpace(line); strings.HasPrefix(line, "{") {
+					if err := json.Unmarshal([]byte(line), &r); err != nil {
+						return line, err
+					}
+					if r.Errno != 98 { // Linux EADDRINUSE
+						return "", fmt.Errorf("guest bind :%d = errno %d (%s), want EADDRINUSE(98)", macHTTPPort, r.Errno, r.Error)
+					}
+					return fmt.Sprintf("guest bind :%d refused synchronously with EADDRINUSE", macHTTPPort), nil
+				}
+			}
+			return "", fmt.Errorf("no probe result in %q", strings.TrimSpace(string(out)))
+		})
+	}
 
 	s.step("uninstall", func() (string, error) {
 		out, err := sudo(s.bin, "uninstall")

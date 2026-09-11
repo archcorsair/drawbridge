@@ -1402,6 +1402,29 @@ podman daemon came up on 4778 and the colima daemon on `vznat-leases`.
 rule on: the guest's own transport `:4777` onto Mac `:4777`, and chrony's
 udp `:323`.
 
+**Bug found by the first `just smoke-sudo` run (2026-09-11), fixed the same
+day.** The run was 8/9: install, sessions, inbound mirror, outbound sync,
+uninstall and the colima restore all passed; the supervised bind on the
+Mac-held port returned errno 0. The agent journal had one line,
+`notify: classify socket pid=10205 fd=8: pidfd_open: no such file or
+directory`, and the daemon then tried to mirror the guest's now-successful
+:48081 back onto the Mac. Cause, proven with a two-thread probe on both
+guests: the seccomp notification carries the calling thread's TID, and
+`pidfd_open` refuses a non-leader TID (ENOENT on FCOS 7.1, EINVAL on
+Ubuntu 6.8), so `IsInetStream` failed and the supervisor took its
+CONTINUE-on-doubt path. Go issues the bind from whichever OS thread the
+goroutine is on, hence intermittent; the e2e leg had always passed because
+the small probe usually binds on its main thread. Fix: `seccomp.openPidfd`
+falls back to the thread group read from `/proc/<tid>/status`
+(`internal/seccomp/tgid.go`); the probe gained `-off-thread`, which binds
+from a deliberately non-leader thread, and both
+`TestGuestBindGetsSynchronousEADDRINUSE` and the smoke run now exercise
+both placements. Verified: `just test-guest` green, the e2e leg green in
+both variants on the dev VM, and 10/10 probes (5 off-thread) refused with
+EADDRINUSE on `podman:spike` through a foreground daemon, the agent
+logging `-> inuse` for each. This was never podman-specific; it affected
+every provider. AGENTS.md gained the invariant.
+
 ## 7.3 results (2026-09-11)
 
 **Landed: the wrapper dispatches on argv[0].** One binary, built and embedded
