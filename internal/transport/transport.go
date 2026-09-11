@@ -55,6 +55,17 @@ import (
 // seam existed.
 const DefaultDialTimeout = 3 * time.Second
 
+// DefaultAgentPort is the port the guest agent's transport listens on.
+//
+// It lives here, and not only in internal/agent, because the *Mac* side has
+// to know it and cannot always infer it from the endpoint it dials. On Lima
+// and Colima the two coincide (the Mac dials the guest's own address on this
+// port). On a podman machine the Mac dials a gvproxy-published loopback port
+// that is deliberately not 4777, while the listener inside the guest is
+// still on 4777 - so a Mac side that reasons only about its endpoint's port
+// mistakes the agent's own listener for a mirrorable service.
+const DefaultAgentPort = 4777
+
 // Schemes.
 const (
 	SchemeTCP   = "tcp"

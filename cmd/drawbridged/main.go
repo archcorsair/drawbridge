@@ -220,7 +220,7 @@ func main() {
 	s := &macsync.Syncer{
 		AgentAddr: agentAddr,
 		ReResolve: reResolve,
-		Exclude:   newExclude(agentPort, skip, m.Mirrors),
+		Exclude:   newExclude(agentPort, transport.DefaultAgentPort, skip, m.Mirrors),
 		UDPPorts:  udpPorts,
 		Auth:      auth, // one config, one throttle: the daemon speaks once per cause
 		Refusals:  ring,
@@ -357,8 +357,15 @@ func portSet(ports []uint16) map[uint16]bool {
 }
 
 // newExclude builds the syncer's exclusion predicate: our own infrastructure
-// (the forwarded agent port and the mirrors of guest listeners, which would
-// bounce guest traffic through the Mac) plus the skip-list.
+// (the agent's transport, under both of the ports it can be named by, and
+// the mirrors of guest listeners, which would bounce guest traffic through
+// the Mac) plus the skip-list.
+//
+// Two agent ports, not one, for the reason mirror.Client.GuestAgentPort
+// documents: on a podman machine the endpoint this Mac dials is the
+// gvproxy-published loopback port, while the listener inside the guest is on
+// transport.DefaultAgentPort. Syncing a Mac listener onto the guest port the
+// agent itself holds would point in-guest traffic for it at the Mac.
 //
 // The skip-list's other half. The mirror direction logs every skip on the
 // spot, but this side is polled every 75ms against the Mac's whole listener
@@ -366,7 +373,7 @@ func portSet(ports []uint16) map[uint16]bool {
 // announced once per process instead. Silence here would be its own bug
 // report — "why can't my container reach the Mac's sshd" has to be
 // answerable from the log.
-func newExclude(agentPort uint16, skip map[uint16]bool, mirrored func(string, uint16) bool) func(macsync.Listener) bool {
+func newExclude(agentPort, guestAgentPort uint16, skip map[uint16]bool, mirrored func(string, uint16) bool) func(macsync.Listener) bool {
 	var (
 		mu   sync.Mutex
 		said = map[macsync.Listener]bool{}
@@ -383,7 +390,7 @@ func newExclude(agentPort uint16, skip map[uint16]bool, mirrored func(string, ui
 			}
 			return true
 		}
-		return l.Port == agentPort || mirrored(l.Proto, l.Port)
+		return l.Port == agentPort || l.Port == guestAgentPort || mirrored(l.Proto, l.Port)
 	}
 }
 

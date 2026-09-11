@@ -107,6 +107,19 @@ type Client struct {
 	// daemon-independent, and tests inject their own ring.
 	Refusals *introspect.Ring
 
+	// GuestAgentPort is the port the agent's transport listens on *inside
+	// the guest*, which is not always the port this Mac dials.
+	//
+	// On Lima and Colima they are the same number, so this changed nothing
+	// there. On a podman machine the Mac dials a gvproxy-published loopback
+	// port (4778 and up, deliberately not 4777) that forwards to the guest's
+	// 4777, so excluding only the endpoint's port left the agent's own
+	// listener looking like an ordinary guest service: the daemon mirrored
+	// guest :4777 onto Mac :4777 and, on Lima, merely lost the bind race to
+	// the SSH forward instead of being right. Zero means
+	// transport.DefaultAgentPort.
+	GuestAgentPort uint16
+
 	agentPort uint16
 	curAddr   atomic.Pointer[string] // last ReResolve result; nil ⇒ AgentAddr
 	mu        sync.Mutex
@@ -320,10 +333,10 @@ const (
 )
 
 // mirrorable: guest listeners on addresses reachable via guest loopback
-// that make sense as Mac localhost mirrors. The agent's own transport port
-// is infrastructure (and already occupied on the Mac by the Lima forward).
+// that make sense as Mac localhost mirrors. The agent's own transport is
+// infrastructure, on both of the ports it can be named by.
 func (c *Client) mirrorable(l listenerInfo) bool {
-	if l.Port == 0 || l.Port == c.agentPort {
+	if l.Port == 0 || l.Port == c.agentPort || l.Port == c.guestAgentPort() {
 		return false
 	}
 	switch l.Proto {
@@ -340,6 +353,17 @@ func (c *Client) mirrorable(l listenerInfo) bool {
 		return true
 	}
 	return false
+}
+
+// guestAgentPort is GuestAgentPort with its default applied. A method rather
+// than a constructor assignment because Client is built by field assignment
+// at three call sites (daemon, e2e, bench) and a zero value must mean the
+// default, not "mirror the agent's own listener".
+func (c *Client) guestAgentPort() uint16 {
+	if c.GuestAgentPort != 0 {
+		return c.GuestAgentPort
+	}
+	return transport.DefaultAgentPort
 }
 
 // declined reports whether the skip-list covers this listener, logging the

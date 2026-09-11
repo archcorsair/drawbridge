@@ -93,9 +93,15 @@ func TestParsePorts(t *testing.T) {
 // The sync direction's half of the skip-list rides the same Exclude seam as
 // the agent port and the mirror self-ports.
 func TestNewExclude(t *testing.T) {
-	const agentPort = 4777
+	// Deliberately different numbers: on a podman machine the endpoint this
+	// Mac dials is the gvproxy-published port and the guest listener is on
+	// 4777, and only a test that tells them apart can pin both exclusions.
+	const (
+		agentPort      = 4778
+		guestAgentPort = 4777
+	)
 	mirrored := func(proto string, port uint16) bool { return proto == "tcp" && port == 9000 }
-	ex := newExclude(agentPort, map[uint16]bool{22: true}, mirrored)
+	ex := newExclude(agentPort, guestAgentPort, map[uint16]bool{22: true}, mirrored)
 
 	l := func(proto string, port uint16) macsync.Listener {
 		return macsync.Listener{Proto: proto, Port: port, Addr: netip.MustParseAddr("127.0.0.1")}
@@ -107,7 +113,8 @@ func TestNewExclude(t *testing.T) {
 	}{
 		{l("tcp", 22), true, "skip-list"},
 		{l("udp", 22), true, "skip-list covers the port, not one protocol"},
-		{l("tcp", agentPort), true, "the transport's own port"},
+		{l("tcp", agentPort), true, "the endpoint this Mac dials"},
+		{l("tcp", guestAgentPort), true, "the port the agent listens on inside the guest"},
 		{l("tcp", 9000), true, "our own mirror, syncing it would bounce guest traffic through the Mac"},
 		{l("tcp", 5432), false, "a real Mac service"},
 		{l("udp", 9000), false, "not mirrored for udp"},
@@ -118,7 +125,7 @@ func TestNewExclude(t *testing.T) {
 	}
 
 	// An empty skip-list excludes only infrastructure.
-	ex = newExclude(agentPort, map[uint16]bool{}, mirrored)
+	ex = newExclude(agentPort, guestAgentPort, map[uint16]bool{}, mirrored)
 	if ex(l("tcp", 22)) {
 		t.Fatal("-skip \"\" still excluded :22 from the sync")
 	}

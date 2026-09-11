@@ -25,8 +25,10 @@ import (
 // gateway in the guest — any container could dial it and speak the protocol.
 const TransportAuto = "auto"
 
-// DefaultTransportPort is the port "auto" binds on both addresses.
-const DefaultTransportPort = 4777
+// DefaultTransportPort is the port "auto" binds on both addresses. An alias
+// for the transport package's constant, because the Mac side needs the same
+// number and two spellings of it would be one edit away from disagreeing.
+const DefaultTransportPort = transport.DefaultAgentPort
 
 // vzNAT bind retry schedule: the interface is DHCP-configured and may not
 // exist yet when the agent starts.
