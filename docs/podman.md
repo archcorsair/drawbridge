@@ -2057,4 +2057,172 @@ first and the skew heals.
 on the 7.5 build, including `root-doctor-has-no-failures` (sudo doctor on
 the podman machine, no `[fail]`). 7.5 accepted.
 
-## 7.6 results
+## 7.6 results (2026-09-11)
+
+**Landed: the recipe, the docs, the invariants and the release prep.** Phase
+7 is complete. Everything up to the tag is done; the push and the `v0.2.0`
+tag are the user's.
+
+### What landed
+
+| Commit | Files |
+|---|---|
+| `c756748` e2e | `internal/e2e/e2e_test.go` (provider-dispatched `guest`, `requireRunning`, `forwardedEndpoint`, `guestAgentBin`) |
+| `80e48ab` recipe | `docs/verify-podman.md` (new) |
+| `7ff70bf` docs | `README.md`, `docs/ergonomics.md` (§3.1 row, §8 Phase 7), `docs/transport.md` (§2.2 source table), `docs/doctor.md` (§4.0), `docs/tui.md` (mockups) |
+| `ab37866` invariants | `AGENTS.md` |
+| `c99eb03` handoff | `docs/HANDOFF.md` |
+| `7ccab72` release | `docs/releases/v0.2.0.md` (new), `.github/workflows/release.yml` |
+
+### The recipe, run live
+
+Every step of `docs/verify-podman.md` that needs no Mac sudo was run today on
+this Mac, in the order the file gives them. The essentials:
+
+```
+$ podman version --format '{{.Client.Version}}'      # 6.0.2
+$ env -i /bin/sh -c 'command -v podman || echo "not on PATH here"'
+not on PATH here                                     # the pkg's /etc/paths.d is login-shell only
+$ /opt/podman/bin/gvproxy -version                   # gvproxy version v0.8.9
+
+$ ./bin/drawbridge up podman:spike --oci
+drawbridge: podman:spike, linux/arm64, kernel 7.1.3-200.fc44.aarch64, SELinux Enforcing, rpm-ostree
+drawbridge: installed /usr/local/bin/drawbridge-crun
+drawbridge: wrote /etc/containers/containers.conf.d/50-drawbridge.conf (podman's crun runtime now execs /usr/local/bin/drawbridge-crun)
+drawbridge: WARNING: 2 other podman machine(s) on this Mac read that same file: podman:spike-hv, podman:spike-rootful
+drawbridge: transport tcp://127.0.0.1:4778 (source gvproxy-publish; the guest agent re-publishes it on every machine start)
+
+$ ./bin/drawbridged -vm podman:spike -introspect off
+drawbridged: skip-list: 22,323 ignored in both directions (not mirrored, not synced); …
+drawbridged: -vm podman:spike → podman machine spike (no DHCP lease: gvproxy is user-mode, so the endpoint comes from the per-VM record)
+drawbridged: agent tcp://127.0.0.1:4778 (source=gvproxy-publish); mirroring guest listeners onto 127.0.0.1; …
+drawbridged: mirror: skipping guest udp :323 (skip-list; -skip to override)
+drawbridged: mirror: skipping guest tcp :22 (skip-list; -skip to override)
+
+# the --oci legs, rootless, at :8080
+$ curl -sS http://127.0.0.1:8080/
+drawbridge-smoke
+  agent: oci: supervising container 6453158b3c0c… metadata {"v":1,"source":"drawbridge-crun","hostNetwork":true}
+  agent: notify: bind 0.0.0.0:8080 pid=12087 -> unknown
+# then with the Mac holding :8080:
+drawbridge-exit=1
+2026/09/11 22:12:01 [emerg] 1#1: bind() to 0.0.0.0:8080 failed (98: Address already in use)
+  agent: notify: bind 0.0.0.0:8080 pid=12287 -> inuse
+
+$ ./bin/drawbridge down podman:spike
+drawbridge: removed /etc/containers/containers.conf.d/50-drawbridge.conf
+drawbridge: removed /usr/local/bin/drawbridge-crun
+drawbridge: done — the guest has no drawbridge files left
+$ podman machine ssh spike -- 'ls /usr/local/bin /etc/drawbridge /etc/systemd/system \
+    /etc/containers/containers.conf.d 2>/dev/null | grep drawbridge'
+(no output, exit 1)
+```
+
+The applehv leg, after the machine swap only one machine at a time allows:
+
+```
+$ podman machine stop spike && podman machine start spike-hv
+$ ./bin/drawbridge up podman:spike-hv
+drawbridge: transport tcp://127.0.0.1:4778 (source gvproxy-publish; …)
+$ DRAWBRIDGE_E2E=1 DRAWBRIDGE_VM=podman:spike-hv DRAWBRIDGE_AGENT=tcp://127.0.0.1:4778 go test -count=1 -v -run '…' ./internal/e2e/
+--- PASS: TestGuestListenerReachableOnMacLocalhost
+--- PASS: TestForwarderHalfClose
+--- PASS: TestGuestBindGetsSynchronousEADDRINUSE
+--- PASS: TestMacListenerReachableFromGuest
+ok      4/4
+
+$ podman machine ssh spike-hv -- ip -4 addr show eth0
+Device "eth0" does not exist.
+$ podman machine ssh spike-hv -- ip -4 route get 192.168.127.1
+192.168.127.1 dev enp0s1 src 192.168.127.2
+```
+
+Doctor on applehv was identical to libkrun's: `gvproxy-publish` ok, checks 5
+and 6 skipped, coexistence ok. The 7.0 finding stands, restated because it is
+the only interface-name fact in the phase: **the guest NIC is `enp0s1` on
+applehv and `eth0` on libkrun**, and nothing in drawbridge names an
+interface, which is why it is a note rather than a bug.
+
+### What building it found
+
+**The e2e harness could not reach a podman guest at all.** `DRAWBRIDGE_VM=podman:…`
+parsed and `resolveAgent` dispatched, but every leg still went through
+`limactl shell`, so the whole suite skipped green against a podman machine:
+
+```
+$ DRAWBRIDGE_E2E=1 DRAWBRIDGE_VM=podman:spike … go test -v ./internal/e2e/
+    e2e_test.go:630: VM spike not running ("No instance matching spike found." …)
+--- SKIP: TestMacListenerReachableFromGuest
+ok      github.com/archcorsair/drawbridge/internal/e2e
+```
+
+That is the exact failure mode the 7.1 results warned about for a missing
+`DRAWBRIDGE_E2E`: a run that looks like evidence and is not. It also casts
+doubt on the 7.1 hand-off's "four legs passed" line, which cannot have been
+reaching the guest through limactl unless the Lima dev VM answered for it.
+
+Three changes fixed it, each a fact about podman rather than a
+generalisation. `guest()` dispatches on the provider, with the script on
+stdin and `sh` as the only argv word (the Lima path keeps its own limactl
+helper, because `just e2e-root` runs under sudo and the re-exec to SUDO_USER
+lives there). The running gate uses the provider's own `List`.
+`TestForwarderHalfClose` stops hardcoding `127.0.0.1:4777`, which is the Lima
+dev VM's forward: on a podman machine the user-mode forwarder is gvproxy, so
+the leg now dials the recorded endpoint and becomes a real test of the
+property the 7.0 spike existed to settle. And `guestAgentBin` returns
+`/usr/local/bin/drawbridge-agent` on podman, which is 7.2's `nfs_t` trap
+written into code: systemd may not exec the virtiofs mount, and the symptom
+is "guest sink never mirrored", which reads like a mirror bug.
+
+Result: **11 pass / 5 skip / 0 fail** against `podman:spike`. The five skips
+are the three container legs (provisioned for docker via `just vm-docker`;
+the podman equivalent is `just smoke-sudo-oci`) and the two root-gated ones.
+
+### What §11 got wrong
+
+§11 proposed an invariant saying root "supervises its own `ssh` (branch B)".
+Dropped: no ssh supervisor exists, branch B is designed and unbuilt, and an
+invariant about code nobody wrote is a rule nobody can break. AGENTS.md says
+root dials the endpoint `install` pinned into its plist, which is what the
+code does.
+
+Everything else in §11 was applied, corrected by what landed: the drop-in
+entry gained the fact that the file is on the *Mac* and shared by every
+machine (§11 was written before 7.4 found that), the restart entry names
+`idle` as the common case, and the socket entry names crun as the process
+that connects.
+
+### Release prep
+
+`just release-check` clean. `just release-snapshot` produced the two
+universal Mac binaries (verified 2-arch with `file`) and the four linux guest
+binaries, all six stamped with one version, the CLI's embedded guests intact
+(a `drawbridge up` against a missing machine still enumerates the real ones),
+and the cask rendering both the `postflight_steps` branch and the older
+`postflight` fallback.
+
+`docs/releases/v0.2.0.md` is the drafted body. `.goreleaser.yaml` has no
+notes-file knob and goreleaser's templating cannot read a file, so the
+workflow computes `--release-notes docs/releases/<tag>.md` when the tag has
+one and falls back to the generated changelog when it does not. Opt-in per
+tag, so v0.0.1 through v0.1.1 behaviour is unchanged, and the action stays
+pinned to the same SHA.
+
+### Left for the user
+
+In order:
+
+```
+git push                                  # main, at the tip of this phase
+# watch CI go green on the push
+git tag v0.2.0 && git push origin v0.2.0  # runs goreleaser, updates the cask
+```
+
+Then the brew acceptance on the released artifacts, the v0.0.1 precedent
+applied to podman: install the cask, `drawbridge up podman:NAME --oci`,
+`sudo drawbridge install -vm podman:NAME`, and the three semantics.
+
+Machines are left as the recipe wants them: `podman:spike` running and
+provisioned with `--oci` at HEAD with nginx pulled, `podman:spike-rootful`
+and `podman:spike-hv` stopped, the Lima dev VM running with agent and docker.
+
