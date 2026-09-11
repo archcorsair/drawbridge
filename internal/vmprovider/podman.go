@@ -128,23 +128,6 @@ func (p *Podman) GuestArch(inst string) (string, error) {
 	return arch, nil
 }
 
-// Forwarding is podman's half of the coexistence detector (§3.4), and in this
-// phase it is deliberately a stub that reports nothing forwarded.
-//
-// The Lima detector reads a *materialized rule list* out of `limactl list
-// --json`; podman has no such thing. Its forwards are live entries in
-// gvproxy's in-guest API (`GET http://192.168.127.1/services/forwarder/all`,
-// reachable only from inside the guest), they are created by the user's own
-// `-p` publications, and the tradeoff they represent is different in kind: a
-// published container is bridged and was never a mirror candidate, so the
-// overlap is only with a host-netns listener on the same port. Reporting that
-// needs its own wording and its own evidence, which is doctor's check 10 ,
-// docs/podman.md §7, phase 7.5. Until then this answers "no forwarder holds
-// this instance", which suppresses a warning rather than inventing one.
-func (p *Podman) Forwarding(inst string) (Forwarding, error) {
-	return Forwarding{Instance: inst}, nil
-}
-
 // remember records a machine's VMType for later env-scoped invocations.
 func (p *Podman) remember(name, vmtype string) {
 	if name == "" || vmtype == "" {

@@ -457,10 +457,29 @@ var plistStringRE = regexp.MustCompile(`<string>([^<]*)</string>`)
 // "whatever follows -vm" is the one rule that survives that. An install with
 // no -vm at all (there has never been one, but the daemon does have a
 // default) reads as unknown, which prints nothing rather than a wrong name.
-func vmFromPlist(plist string) string {
+func vmFromPlist(plist string) string { return argFromPlist(plist, "-vm") }
+
+// InstalledAgent reads the `-agent` value out of the installed plist.
+//
+// It exists for the one run that must not read the user's per-VM record:
+// `sudo drawbridge doctor` on a podman machine. The record is a user-owned
+// file, `install` pinned its endpoint into the plist precisely so root never
+// has to open it, and reporting the pin is how the root run says what the
+// daemon is actually dialing without reaching across that line.
+func InstalledAgent() (string, bool) {
+	blob, err := os.ReadFile(PlistPath)
+	if err != nil {
+		return "", false
+	}
+	v := argFromPlist(string(blob), "-agent")
+	return v, v != ""
+}
+
+// argFromPlist returns the element following a flag in ProgramArguments.
+func argFromPlist(plist, flag string) string {
 	m := plistStringRE.FindAllStringSubmatch(plist, -1)
 	for i, g := range m {
-		if g[1] == "-vm" && i+1 < len(m) {
+		if g[1] == flag && i+1 < len(m) {
 			return strings.TrimSpace(m[i+1][1])
 		}
 	}

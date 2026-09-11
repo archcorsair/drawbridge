@@ -39,6 +39,15 @@ const (
 type Forwarding struct {
 	Instance string
 
+	// Provider is who answered, because what an active forwarder *means*
+	// is provider-specific and the caller's wording turns on it. A Lima
+	// forward republishes a guest listener and races drawbridge's mirror for
+	// the Mac-side port. A podman forward is a `-p` publication of a bridged
+	// container, which was never a mirror candidate at all, so the overlap is
+	// only with a host-netns guest listener on the same port. Empty means
+	// lima/colima, the shape that existed before podman.
+	Provider string
+
 	// HostAgent reports a live forwarder process holding this instance.
 	// Rules in a stopped instance's config forward nothing, so this gates
 	// the rest.

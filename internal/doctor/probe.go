@@ -81,7 +81,28 @@ type HalfCloseProbe struct {
 	PostEOF    bool          // the agent closed its half during the window
 	Window     time.Duration // the post-FIN read window actually used
 
+	// DirectPath means the endpoint probed IS the provider's real path, not
+	// a fallback it degraded to. On a podman machine that is exactly what a
+	// loopback endpoint is (gvproxy publishes the transport there by
+	// design), so the loopback caveat ("evidence about the agent, not about
+	// the vznat-direct path") would be false: there is no other path.
+	DirectPath bool
+
 	NEFilter []string // check 7's activated extensions, for suspect ordering
+}
+
+// loopbackNote is the caveat's replacement when loopback is the real path.
+// Same fact, opposite consequence: the result is evidence about the whole
+// path, because the whole path is this one.
+const loopbackNote = "the endpoint is loopback, and on this provider that IS the transport's path (gvproxy publishes it there), " +
+	"so this is evidence about the real path and not only about the agent."
+
+// pathCaveat picks the sentence a loopback verdict earns.
+func pathCaveat(p HalfCloseProbe) string {
+	if p.DirectPath {
+		return loopbackNote
+	}
+	return loopbackCaveat
 }
 
 // HalfCloseTarget is what the live probe needs: the endpoint check 4 resolved,
@@ -297,7 +318,7 @@ func CheckHalfClose(p HalfCloseProbe) Finding {
 			f.Evidence = append(f.Evidence, "the session then ended cleanly, which is an ordinary end to an `'E'` session.")
 		}
 		if p.Loopback {
-			f.Evidence = append(f.Evidence, loopbackCaveat)
+			f.Evidence = append(f.Evidence, pathCaveat(p))
 		}
 		return f
 
@@ -311,7 +332,7 @@ func CheckHalfClose(p HalfCloseProbe) Finding {
 		f.Title = "half-close probe — the session ended at the FIN"
 		f.Evidence = append(f.Evidence, gateSkipReason+".")
 		if p.Loopback {
-			f.Evidence = append(f.Evidence, loopbackCaveat)
+			f.Evidence = append(f.Evidence, pathCaveat(p))
 		}
 		return f
 	}
@@ -323,11 +344,25 @@ func CheckHalfClose(p HalfCloseProbe) Finding {
 		"nothing arrived and the peer never closed, for the whole window — and the window outlasts the agent's "+
 			AgentPingEvery.String()+" liveness ping, so a quiet guest does not explain it.",
 		"this is finding 4's signature exactly: after shutdown(SHUT_WR) the inbound bytes are ACKed by the kernel and never delivered to the process.")
-	if p.Loopback {
+	if p.Loopback && !p.DirectPath {
 		f.Status = StatusWarn
 		f.Title = "half-close probe — starved read on a loopback endpoint"
 		f.Evidence = append(f.Evidence, loopbackCaveat)
 		f.Remedy = "loopback should never show this — check whether the agent is still alive (`drawbridge doctor` check 3) before suspecting a filter"
+		return f
+	}
+	// Loopback that IS the real path starves for a reason worth failing on:
+	// the user-mode forwarder in front of it. gvproxy's own tcpproxy learned
+	// to propagate half-close on 2025-01-21, and a bundled build from before
+	// that boundary is exactly this signature (docs/podman.md §"7.0 results").
+	if p.Loopback {
+		f.Status = StatusFail
+		f.Title = "half-close probe — the read starved on the provider's own path"
+		f.Evidence = append(f.Evidence, loopbackNote,
+			"a user-mode forwarder that does not propagate TCP half-close produces exactly this; gvproxy's tcpproxy gained it on 2025-01-21.")
+		f.Remedy = "check the gvproxy your podman bundles (`gvproxy -version`, normally /opt/podman/bin): drawbridge needs one built after\n" +
+			"2025-02-22 (podman >= 6.0 ships v0.8.9). Upgrading podman is the remedy; there is no flag for it"
+		f.Data = map[string]any{"endpoint": p.Endpoint, "source": p.Source, "window": p.Window.String()}
 		return f
 	}
 

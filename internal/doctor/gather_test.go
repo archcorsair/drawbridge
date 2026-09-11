@@ -118,7 +118,7 @@ func TestSelectTarget(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(skip, "no running vz VM") {
+		if !strings.Contains(skip, "no running VM to attach to") {
 			t.Fatalf("skip = %q", skip)
 		}
 	})

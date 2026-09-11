@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -21,17 +22,22 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/archcorsair/drawbridge/internal/guestbin"
 	"github.com/archcorsair/drawbridge/internal/install"
 	"github.com/archcorsair/drawbridge/internal/introspect"
 	"github.com/archcorsair/drawbridge/internal/limaaddr"
+	"github.com/archcorsair/drawbridge/internal/podmanaddr"
+	"github.com/archcorsair/drawbridge/internal/transport"
 	"github.com/archcorsair/drawbridge/internal/transportauth"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
+	"github.com/archcorsair/drawbridge/internal/vmrecord"
 )
 
 // Probe bounds. The global one is the caller's; these are the per-probe
@@ -74,6 +80,7 @@ type Inputs struct {
 	NEErr        string
 	Daemon       DaemonInput
 	Coexistence  CoexistenceInput
+	Podman       PodmanInput
 	LogTail      []string
 	SkipVisible  SkipInput
 	Auth         AuthInput
@@ -87,9 +94,14 @@ type Inputs struct {
 // Classify runs the catalog in report order (§4: 1–11, then the auth block).
 func Classify(in Inputs) Report {
 	r := Report{CLIVersion: in.CLIVersion, RanAt: in.RanAt, VM: in.VM, Daemon: in.Snapshot}
+	in.Providers.Podman = in.Podman
+	in.Resolution.Podman = in.Podman
+	in.Route.Podman = in.Podman.Target
+	in.LocalNetwork.Podman = in.Podman.Target
+	in.HalfClose.DirectPath = in.HalfClose.DirectPath || in.Podman.Target
 	r.add(CheckProviders(in.Providers))
-	r.add(CheckGuestPrereqs(in.Guest, in.GuestSkip))
-	r.add(CheckAgent(in.Guest, in.Bind, in.CLIVersion, in.GuestSkip))
+	r.add(CheckGuestPrereqs(in.Guest, in.GuestSkip, in.Podman))
+	r.add(CheckAgent(in.Guest, in.Bind, in.CLIVersion, in.GuestSkip, in.Podman))
 	r.add(CheckResolution(in.Resolution))
 	r.add(CheckVZNATRoute(in.Route))
 	r.add(CheckLocalNetwork(in.LocalNetwork))
@@ -144,9 +156,29 @@ if [ -e /etc/drawbridge/transport-secret ]; then
 else
   echo secret=absent
 fi
+echo "selinux=$(getenforce 2>/dev/null || true)"
+echo "unpriv_port=$(sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null || true)"
+echo "containers_fs=$(findmnt -no FSTYPE --target /etc/containers 2>/dev/null || true)"
+[ -e /etc/containers/containers.conf.d/50-drawbridge.conf ] && echo dropin=yes || echo dropin=no
+if command -v podman >/dev/null 2>&1; then
+  echo "oci_runtime=$(podman info --format '{{.Host.OCIRuntime.Path}}' 2>/dev/null || true)"
+fi
 echo ss-begin
 ss -H -ltn 2>/dev/null || true
 echo ss-end
+if command -v curl >/dev/null 2>&1; then
+  gv=$(curl -sS --max-time 3 http://192.168.127.1/services/forwarder/all 2>/dev/null) || gv=""
+  [ -n "$gv" ] || echo "gvproxy-err=gvproxy's in-guest API did not answer"
+else
+  gv=""
+  echo "gvproxy-err=no curl in the guest"
+fi
+echo gvproxy-begin
+echo "$gv"
+echo gvproxy-end
+echo journal-begin
+journalctl -u drawbridge-agent.service -n 200 --no-pager 2>/dev/null | grep -F "gvproxy:" | tail -n 3 || true
+echo journal-end
 `
 
 // target is the VM doctor is diagnosing.
@@ -177,6 +209,10 @@ func Gather(ctx context.Context, o Options) (Inputs, error) {
 	}
 
 	euid0 := os.Geteuid() == 0
+	// The installed daemon's own arguments, read before target selection so
+	// the podman branch can report root's pinned -agent without re-reading
+	// the plist. Cheap and exec-free (install.Query parses the plist).
+	st0 := install.Query()
 
 	// --- 1. providers ------------------------------------------------------
 	providers := vmprovider.Detect()
@@ -234,7 +270,7 @@ func Gather(ctx context.Context, o Options) (Inputs, error) {
 
 	running := 0
 	for _, i := range in.Providers.Instances {
-		if i.Running && strings.EqualFold(i.VMType, "vz") {
+		if i.Running && i.Attachable {
 			running++
 		}
 	}
@@ -284,7 +320,7 @@ func Gather(ctx context.Context, o Options) (Inputs, error) {
 			}
 			in.Guest = ParseGuestProbe(string(out))
 		}()
-		if f, ok := p.(vmprovider.Forwarder); ok {
+		if f, ok := p.(vmprovider.Forwarder); ok && tgt.Ref.Provider != vmprovider.ProviderPodman {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -301,13 +337,7 @@ func Gather(ctx context.Context, o Options) (Inputs, error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			res = limaaddr.ResolveTarget(limaaddr.Target{
-				VM:        tgt.Ref.Instance,
-				LeaseName: tgt.Ref.LeaseName,
-				LimaHome:  tgt.Ref.LimaHome,
-				Subnet:    o.Subnet,
-				HWAddr:    o.HWAddr,
-			}, ControlPort)
+			res = resolveTarget(tgt.Ref, o, euid0)
 			resRan = true
 		}()
 	}
@@ -319,9 +349,17 @@ func Gather(ctx context.Context, o Options) (Inputs, error) {
 	matched := matchSnapshot(snaps, tgt.Ref)
 
 	in.Bind = BindOf(in.Guest.Listeners, in.Guest.GuestIPs)
+	in.Podman = podmanInput(tgt, in.Guest, in.Providers.Instances, euid0)
 	in.NEExtensions = ParseSystemExtensions(sysext.Out)
 	if sysext.Err != "" {
 		in.NEErr = sysext.Err
+	}
+	if tgt.Ref.Provider == vmprovider.ProviderPodman {
+		// One read of gvproxy's table per run: the guest script already
+		// fetched it (check 3 wants the transport's own entry), so asking
+		// the Forwarder interface again would be a second round trip whose
+		// answer could differ from the one check 3 classified.
+		fwdKnown, fwd, fwdErr = podmanForwarding(tgt.Ref.Instance, in.Guest)
 	}
 	in.Coexistence = CoexistenceInput{Known: fwdKnown, Fwd: fwd, Err: fwdErr, Skip: skip,
 		BindFailed: entriesInState(matched, introspect.EntryBindFailed)}
@@ -364,7 +402,7 @@ func Gather(ctx context.Context, o Options) (Inputs, error) {
 	in.Route = route
 
 	// --- 5. Mac-side daemon state ------------------------------------------
-	st := install.Query()
+	st := st0
 	in.LogTail = st.LogTail
 	dv, err := install.InstalledVersion()
 	daemon := DaemonInput{Status: st, CLIVersion: o.CLIVersion, Snapshots: snaps}
@@ -408,6 +446,39 @@ func Gather(ctx context.Context, o Options) (Inputs, error) {
 	// resolved — whichever that turned out to be.
 	in.HalfClose = halfCloseInput(ctx, o, res, resRan, in)
 	return in, nil
+}
+
+// resolveTarget dispatches resolution the way the daemon does.
+//
+// A podman ref must never reach the lease db: gvproxy is user-mode and
+// writes no lease record, so limaaddr would match `lima-<name>` (Target's
+// own default) and resolve some other VM entirely, which is exactly what
+// doctor did before this branch existed, reporting the Lima dev VM's
+// forwarded 127.0.0.1:4777 as a podman machine's endpoint.
+//
+// The root run does not read the record, for the reason drawbridged does
+// not: it is a user-writable file, and `install` pinned the endpoint into
+// the plist so root never has to. Check 4 reports the pin instead.
+func resolveTarget(ref vmprovider.Ref, o Options, euid0 bool) limaaddr.Resolution {
+	if ref.Provider != vmprovider.ProviderPodman {
+		return limaaddr.ResolveTarget(limaaddr.Target{
+			VM:        ref.Instance,
+			LeaseName: ref.LeaseName,
+			LimaHome:  ref.LimaHome,
+			Subnet:    o.Subnet,
+			HWAddr:    o.HWAddr,
+		}, ControlPort)
+	}
+	if euid0 {
+		ep, _ := install.InstalledAgent()
+		return limaaddr.Resolution{
+			Endpoint: ep,
+			Source:   podmanaddr.Source,
+			Note: "running as root: the per-VM record is user-writable and is not read here; " +
+				"this is the endpoint `drawbridge install` pinned into the daemon's plist",
+		}
+	}
+	return podmanaddr.Resolve(ref)
 }
 
 // halfCloseInput runs check 8's probe, or explains why it did not. Nothing
@@ -537,13 +608,13 @@ func selectTarget(arg string, insts []vmprovider.Instance) (target, string, erro
 	if arg == "" {
 		var ok []vmprovider.Instance
 		for _, i := range insts {
-			if i.Running && strings.EqualFold(i.VMType, "vz") {
+			if i.Running && i.Attachable {
 				ok = append(ok, i)
 			}
 		}
 		switch len(ok) {
 		case 0:
-			return target{}, "no running vz VM to attach to — start one, then re-run (`drawbridge doctor -vm provider:name` names one explicitly)", nil
+			return target{}, "no running VM to attach to: start one, then re-run (`drawbridge doctor -vm provider:name` names one explicitly)", nil
 		case 1:
 			ref, err := vmprovider.ParseRef(ok[0].Provider + ":" + ok[0].Name)
 			if err != nil {
@@ -572,8 +643,9 @@ func selectTarget(arg string, insts []vmprovider.Instance) (target, string, erro
 		if !i.Running {
 			return target{Ref: ref}, fmt.Sprintf("%s:%s is not running", i.Provider, i.Name), nil
 		}
-		if !strings.EqualFold(i.VMType, "vz") {
-			return target{Ref: ref}, fmt.Sprintf("%s:%s runs on %s, which has no host-reachable guest IP", i.Provider, i.Name, i.VMType), nil
+		if !i.Attachable {
+			return target{Ref: ref}, fmt.Sprintf("%s:%s runs on %s: %s", i.Provider, i.Name, i.VMType,
+				firstNonEmpty(i.AttachNote, "no host-reachable guest IP")), nil
 		}
 		return target{Ref: ref, Inst: i}, "", nil
 	}
@@ -814,4 +886,153 @@ func shellScript(ctx context.Context, p vmprovider.Provider, inst, script string
 func sha256Of(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// ---------------------------------------------------------------------------
+// The podman half of the gather (docs/podman.md §7)
+// ---------------------------------------------------------------------------
+
+// podmanInput assembles everything the podman branches classify. Reads only:
+// the machine's own config file, the Mac-side record, and what the guest
+// script already brought back.
+//
+// Root is the case this function is shaped around. `install` pins the
+// endpoint into the plist so root never opens the user's record, and doctor
+// must not undo that by reading it here, so the euid-0 path reports the pin
+// and stops, which is also exactly what the daemon is dialing.
+func podmanInput(tgt target, g GuestProbe, insts []vmprovider.Instance, euid0 bool) PodmanInput {
+	if tgt.Ref.Provider != vmprovider.ProviderPodman {
+		return PodmanInput{}
+	}
+	pm := PodmanInput{Target: true, Instance: tgt.Ref.Instance, EUID0: euid0}
+
+	for _, i := range insts {
+		if i.Provider == vmprovider.ProviderPodman && i.Name != tgt.Ref.Instance {
+			pm.Dropin.Machines = append(pm.Dropin.Machines, i.Provider+":"+i.Name)
+		}
+	}
+
+	// The machine's own config: exec-free, and the same source `install`
+	// reads, so doctor and the install refusal cannot disagree about what
+	// the machine is.
+	home, err := machineConfigHome()
+	if err != nil {
+		pm.ConfigErr = err.Error()
+	} else if cfg, err := vmprovider.ReadPodmanMachineConfig(home, tgt.Ref.Instance); err != nil {
+		pm.ConfigErr = err.Error()
+	} else {
+		pm.Config = cfg
+	}
+
+	if euid0 {
+		if a, ok := install.InstalledAgent(); ok {
+			pm.PinnedAgent = a
+		}
+	} else {
+		pm.RecordPath, _ = vmrecord.Path(tgt.Ref)
+		rec, err := vmrecord.Read(tgt.Ref)
+		switch {
+		case err == nil:
+			pm.Record, pm.RecordPresent = rec, true
+			if pm.ConfigErr == "" {
+				pm.Disagreements = rec.Disagreements(pm.Config)
+			}
+		case errors.Is(err, vmrecord.ErrAbsent):
+		default:
+			pm.RecordErr = err.Error()
+		}
+	}
+
+	pm.Publish = publishEvidence(g)
+	pm.Dropin.Present = g.Dropin
+	pm.Dropin.Path = guestbin.DropinPath
+	pm.Dropin.WrapperPath = guestbin.WrapperPath(guestbin.EnginePodman)
+	pm.Dropin.RuntimePath = g.OCIRuntime
+	pm.Dropin.FS = strings.TrimSpace(g.ContainersFS)
+	pm.Dropin.Shared = sharedContainersFS[pm.Dropin.FS]
+	if pm.Dropin.Present && pm.Dropin.Shared {
+		if p, err := macDropinPath(); err == nil {
+			pm.Dropin.MacPath = p
+		}
+	}
+	return pm
+}
+
+// sharedContainersFS are the filesystem types that mean /etc/containers is
+// not the guest's own directory but a mount of the Mac's podman config dir
+// (docs/podman.md §"7.4 results").
+var sharedContainersFS = map[string]bool{"virtiofs": true, "9p": true, "nfs": true, "nfs4": true, "fuse.sshfs": true}
+
+// macDropinPath names the Mac-side file only when it is really there.
+// Podman's config directory can be moved, and a guessed path in a report
+// about a file the reader did not expect is worse than no path.
+func macDropinPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(home, ".config", "containers", "containers.conf.d", filepath.Base(guestbin.DropinPath))
+	if _, err := os.Stat(p); err != nil {
+		return "", err
+	}
+	return p, nil
+}
+
+// machineConfigHome is the home the machine configs live under: the invoking
+// user's, or SUDO_USER's when this run is root. Root must never read its own
+// (there is nothing there) and must never run `podman machine`.
+func machineConfigHome() (string, error) {
+	if os.Geteuid() == 0 {
+		if u := os.Getenv("SUDO_USER"); u != "" {
+			if acct, err := user.Lookup(u); err == nil {
+				return acct.HomeDir, nil
+			}
+		}
+		return "", fmt.Errorf("running as root with no SUDO_USER to resolve a home from, so the machine's own config is not readable here")
+	}
+	return os.UserHomeDir()
+}
+
+// publishEvidence pulls branch A's two pieces out of the guest script's
+// output: the agent's own journal lines, and the forward table entry that
+// carries the transport.
+func publishEvidence(g GuestProbe) PublishEvidence {
+	p := PublishEvidence{Journal: g.Journal}
+	if g.GvproxyErr != "" {
+		p.Err = g.GvproxyErr
+		return p
+	}
+	if strings.TrimSpace(g.Gvproxy) == "" {
+		p.Err = "gvproxy's forward table was empty"
+		return p
+	}
+	var entries []struct {
+		Local  string `json:"local"`
+		Remote string `json:"remote"`
+	}
+	if err := json.Unmarshal([]byte(g.Gvproxy), &entries); err != nil {
+		p.Err = "gvproxy's forward table did not parse: " + err.Error()
+		return p
+	}
+	p.Known = true
+	for _, e := range entries {
+		if _, port, err := net.SplitHostPort(e.Remote); err == nil && port == strconv.Itoa(transport.DefaultAgentPort) {
+			p.Local, p.Remote = e.Local, e.Remote
+			return p
+		}
+	}
+	return p
+}
+
+// podmanForwarding classifies the same table check 3 read, so the gvproxy
+// API is asked exactly once per doctor run.
+func podmanForwarding(inst string, g GuestProbe) (bool, vmprovider.Forwarding, string) {
+	if g.GvproxyErr != "" {
+		return false, vmprovider.Forwarding{Instance: inst, Provider: vmprovider.ProviderPodman}, g.GvproxyErr
+	}
+	fwd, err := vmprovider.ParseGvproxyForwards(inst, "drawbridge-gvproxy=ok\n"+g.Gvproxy)
+	if err != nil {
+		return false, fwd, err.Error()
+	}
+	return true, fwd, ""
 }

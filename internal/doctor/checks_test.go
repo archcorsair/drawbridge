@@ -12,12 +12,24 @@ import (
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
 )
 
+// The fixtures carry Attachable because the provider does: it is the
+// provider's own verdict on its own VMType, and the catalog reads it rather
+// than string-comparing "vz", which is Lima vocabulary a podman machine does
+// not speak (docs/podman.md §4.2).
 func vz(provider, name string, running bool) vmprovider.Instance {
-	return vmprovider.Instance{Provider: provider, Name: name, VMType: "vz", Running: running, MACAddress: "52:55:55:a5:de:d2"}
+	return vmprovider.Instance{Provider: provider, Name: name, VMType: "vz", Running: running,
+		Attachable: true, MACAddress: "52:55:55:a5:de:d2"}
 }
 
 func qemu(provider, name string) vmprovider.Instance {
 	return vmprovider.Instance{Provider: provider, Name: name, VMType: "qemu", Running: true}
+}
+
+// podmanInstance is a running podman machine as the driver reports one:
+// attachable on libkrun, no MAC (gvproxy is user-mode, there is no lease).
+func podmanInstance(name string, running bool) vmprovider.Instance {
+	return vmprovider.Instance{Provider: vmprovider.ProviderPodman, Name: name, VMType: "libkrun",
+		Running: running, Attachable: true}
 }
 
 func wantStatus(t *testing.T, f Finding, want Status) {
@@ -147,7 +159,7 @@ func TestCheckGuestPrereqs(t *testing.T) {
 			if tc.mut != nil {
 				tc.mut(&g)
 			}
-			f := CheckGuestPrereqs(g, tc.skip)
+			f := CheckGuestPrereqs(g, tc.skip, PodmanInput{})
 			wantStatus(t, f, tc.want)
 			wantContains(t, f, tc.says)
 		})
@@ -157,7 +169,7 @@ func TestCheckGuestPrereqs(t *testing.T) {
 // A guest that never answered is a skip, not a diagnosis: doctor must not
 // report "no BTF" for a VM it could not reach.
 func TestCheckGuestPrereqsUnreachable(t *testing.T) {
-	f := CheckGuestPrereqs(GuestProbe{Err: "the guest shell failed: no answer within 10s"}, "")
+	f := CheckGuestPrereqs(GuestProbe{Err: "the guest shell failed: no answer within 10s"}, "", PodmanInput{})
 	wantStatus(t, f, StatusSkip)
 	wantContains(t, f, "no answer within 10s")
 	wantNotContains(t, f, "CONFIG_DEBUG_INFO_BTF")
@@ -189,7 +201,7 @@ func TestParseKernel(t *testing.T) {
 func TestKernelCompareIsNumeric(t *testing.T) {
 	g := healthyGuest()
 	g.Kernel = "5.10.0-generic"
-	wantStatus(t, CheckGuestPrereqs(g, ""), StatusOK)
+	wantStatus(t, CheckGuestPrereqs(g, "", PodmanInput{}), StatusOK)
 }
 
 func TestParseRuncVersion(t *testing.T) {
@@ -269,7 +281,7 @@ func TestCheckAgent(t *testing.T) {
 			if tc.mut != nil {
 				tc.mut(&g)
 			}
-			f := CheckAgent(g, BindOf(g.Listeners, g.GuestIPs), "dev", "")
+			f := CheckAgent(g, BindOf(g.Listeners, g.GuestIPs), "dev", "", PodmanInput{})
 			wantStatus(t, f, tc.want)
 			wantContains(t, f, tc.says)
 		})
@@ -281,7 +293,7 @@ func TestCheckAgent(t *testing.T) {
 func TestCheckAgentNamesTheTransientUnit(t *testing.T) {
 	g := healthyGuest()
 	g.AgentTransient = true
-	f := CheckAgent(g, BindOf(g.Listeners, g.GuestIPs), "dev", "")
+	f := CheckAgent(g, BindOf(g.Listeners, g.GuestIPs), "dev", "", PodmanInput{})
 	wantStatus(t, f, StatusOK)
 	wantContains(t, f, "just agent-up")
 }

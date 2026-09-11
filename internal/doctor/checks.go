@@ -69,6 +69,11 @@ type ProvidersInput struct {
 	Instances  []vmprovider.Instance
 	ListErrors []string
 	RootScoped bool // a List() failed with vmprovider.ErrRootScoped
+
+	// Podman carries the target machine's extra facts. `podman machine list`
+	// does not report rootfulness, and rootfulness is the fact that decides
+	// what a user can expect of the machine, so it is read from the config.
+	Podman PodmanInput
 }
 
 // CheckProviders classifies the provider landscape: something to attach to,
@@ -101,52 +106,77 @@ func CheckProviders(in ProvidersInput) Finding {
 		return f
 	}
 
-	var runningVZ, runningQEMU, stopped []vmprovider.Instance
+	// Attachability is the provider's own verdict, not a VMType string
+	// compare: "vz" is Lima vocabulary, and a podman machine is attachable on
+	// libkrun and applehv, neither of which means anything to Lima
+	// (docs/podman.md §4.2, amended by the 7.0 results).
+	var attachable, unattachable, stopped []vmprovider.Instance
 	for _, i := range in.Instances {
 		switch {
 		case !i.Running:
 			stopped = append(stopped, i)
-		case strings.EqualFold(i.VMType, "vz"):
-			runningVZ = append(runningVZ, i)
+		case i.Attachable:
+			attachable = append(attachable, i)
 		default:
-			runningQEMU = append(runningQEMU, i)
+			unattachable = append(unattachable, i)
 		}
 	}
-	for _, i := range runningVZ {
+	var podmanStopped bool
+	for _, i := range attachable {
+		if i.Provider == vmprovider.ProviderPodman {
+			f.Evidence = append(f.Evidence, podmanProviderEvidence(i, in.Podman))
+			continue
+		}
 		mac := i.MACAddress
 		if mac == "" {
 			mac = "no vzNAT interface"
 		}
-		f.Evidence = append(f.Evidence, fmt.Sprintf("%s:%s running on vz, MAC %s", i.Provider, i.Name, mac))
+		f.Evidence = append(f.Evidence, fmt.Sprintf("%s:%s running on %s, MAC %s", i.Provider, i.Name, i.VMType, mac))
 	}
 	for _, i := range stopped {
 		f.Evidence = append(f.Evidence, fmt.Sprintf("%s:%s stopped (%s)", i.Provider, i.Name, i.VMType))
+		if i.Provider == vmprovider.ProviderPodman {
+			podmanStopped = true
+		}
 	}
-	for _, i := range runningQEMU {
-		f.Evidence = append(f.Evidence, fmt.Sprintf("%s:%s running on %s — no host-reachable guest IP", i.Provider, i.Name, i.VMType))
+	for _, i := range unattachable {
+		f.Evidence = append(f.Evidence, fmt.Sprintf("%s:%s running on %s: %s", i.Provider, i.Name, i.VMType,
+			firstNonEmpty(i.AttachNote, "no host-reachable guest IP")))
 	}
 
 	switch {
-	case len(runningQEMU) > 0:
+	case len(unattachable) > 0:
 		f.Status = StatusWarn
-		f.Title = fmt.Sprintf("VM providers — %d running vz, %d on qemu", len(runningVZ), len(runningQEMU))
-		f.Remedy = "qemu's user-mode networking gives the guest no address this Mac can dial, so drawbridge cannot attach:\n  " +
-			strings.Join(vzSwitchHints(runningQEMU), "\n  ")
-	case len(runningVZ) == 0:
+		f.Title = fmt.Sprintf("VM providers — %d attachable, %d not", len(attachable), len(unattachable))
+		f.Remedy = "these VMs give the guest no address this Mac can dial, so drawbridge cannot attach:\n  " +
+			strings.Join(vzSwitchHints(unattachable), "\n  ")
+	case len(attachable) == 0:
 		f.Status = StatusWarn
 		f.Title = "VM providers — installed, nothing running"
 		f.Remedy = "start a VM, then re-run:\n  " + strings.Join(startHints(stopped), "\n  ")
 	default:
 		f.Status = StatusOK
-		f.Title = fmt.Sprintf("VM providers — %d running vz instance(s)", len(runningVZ))
+		f.Title = fmt.Sprintf("VM providers — %d attachable instance(s) running", len(attachable))
+		// A stopped podman machine alongside a running one is the normal
+		// state, and a reader who sees "stopped" without this sentence has
+		// every reason to think something is wrong.
+		if podmanStopped {
+			f.Evidence = append(f.Evidence, podmanStoppedNote)
+		}
 	}
-	f.Data = map[string]any{"runningVZ": len(runningVZ), "runningQEMU": len(runningQEMU), "stopped": len(stopped)}
+	f.Data = map[string]any{"attachable": len(attachable), "unattachable": len(unattachable), "stopped": len(stopped)}
 	return f
 }
 
 func vzSwitchHints(insts []vmprovider.Instance) []string {
 	out := make([]string, 0, len(insts))
 	for _, i := range insts {
+		if i.Provider == vmprovider.ProviderPodman {
+			// Both macOS providers are attachable, so this is only ever a
+			// machine carried over from somewhere else. Recreate it.
+			out = append(out, fmt.Sprintf("podman machine rm %s && podman machine init --now %s", i.Name, i.Name))
+			continue
+		}
 		if i.Provider == vmprovider.ProviderColima {
 			profile := strings.TrimPrefix(i.Name, "colima-")
 			if profile == "colima" {
@@ -166,20 +196,24 @@ func startHints(insts []vmprovider.Instance) []string {
 		return []string{
 			"colima start --vm-type vz --cpu 4 --memory 8      # Colima (Docker CLI included)",
 			"limactl start --vm-type vz template://ubuntu-lts  # Lima",
+			"podman machine init --now                         # Podman",
 		}
 	}
 	out := make([]string, 0, len(insts))
 	for _, i := range insts {
-		if i.Provider == vmprovider.ProviderColima {
+		switch i.Provider {
+		case vmprovider.ProviderPodman:
+			out = append(out, "podman machine start "+i.Name)
+		case vmprovider.ProviderColima:
 			profile := strings.TrimPrefix(i.Name, "colima-")
 			if profile == "colima" {
 				out = append(out, "colima start")
 				continue
 			}
 			out = append(out, "colima start -p "+profile)
-			continue
+		default:
+			out = append(out, "limactl start "+i.Name)
 		}
-		out = append(out, "limactl start "+i.Name)
 	}
 	return out
 }
@@ -214,6 +248,24 @@ type GuestProbe struct {
 	Listeners []Listener
 
 	Secret GuestSecret
+
+	// The podman guest's own facts (docs/podman.md §5.1, §7 check 2). Empty
+	// on a Lima or Colima guest, where nothing reads them.
+	SELinux      string // getenforce
+	UnprivPort   string // net.ipv4.ip_unprivileged_port_start
+	ContainersFS string // the filesystem carrying /etc/containers
+	OCIRuntime   string // `podman info --format {{.Host.OCIRuntime.Path}}`
+	Dropin       bool   // the containers.conf drop-in `up --oci` writes exists
+
+	// Gvproxy is gvproxy's forward table, verbatim. One read, classified
+	// twice: check 3 wants the entry carrying the transport, check 10 wants
+	// everything that is neither that nor podman's own ssh forward.
+	Gvproxy    string
+	GvproxyErr string
+
+	// Journal is the agent's own `gvproxy:` lines, which say whether it
+	// published at its last start.
+	Journal []string
 }
 
 // GuestSecret is what the guest half of the transport secret looks like from
@@ -237,7 +289,8 @@ type Listener struct {
 // is a missing check rather than a crash — the parsePreflight discipline.
 func ParseGuestProbe(out string) GuestProbe {
 	g := GuestProbe{Ran: true}
-	inSS := false
+	var inSS, inGvproxy, inJournal bool
+	var gvproxy []string
 	for _, raw := range strings.Split(out, "\n") {
 		line := strings.TrimRight(raw, "\r")
 		switch strings.TrimSpace(line) {
@@ -246,6 +299,28 @@ func ParseGuestProbe(out string) GuestProbe {
 			continue
 		case "ss-end":
 			inSS = false
+			continue
+		case "gvproxy-begin":
+			inGvproxy = true
+			continue
+		case "gvproxy-end":
+			inGvproxy = false
+			continue
+		case "journal-begin":
+			inJournal = true
+			continue
+		case "journal-end":
+			inJournal = false
+			continue
+		}
+		if inGvproxy {
+			gvproxy = append(gvproxy, line)
+			continue
+		}
+		if inJournal {
+			if t := strings.TrimSpace(line); t != "" {
+				g.Journal = append(g.Journal, t)
+			}
 			continue
 		}
 		if inSS {
@@ -298,8 +373,21 @@ func ParseGuestProbe(out string) GuestProbe {
 			}
 		case "secret-digest":
 			g.Secret.Digest = v
+		case "selinux":
+			g.SELinux = v
+		case "unpriv_port":
+			g.UnprivPort = v
+		case "containers_fs":
+			g.ContainersFS = v
+		case "oci_runtime":
+			g.OCIRuntime = v
+		case "dropin":
+			g.Dropin = yes
+		case "gvproxy-err":
+			g.GvproxyErr = v
 		}
 	}
+	g.Gvproxy = strings.TrimSpace(strings.Join(gvproxy, "\n"))
 	return g
 }
 
@@ -338,9 +426,15 @@ var minKernel = [2]int{5, 7}
 // minRunc is the oldest runc whose OCI seccomp config carries listenerPath.
 var minRunc = [3]int{1, 1, 0}
 
+// minCrun is crun's equivalent floor, the same value `up`'s preflight
+// enforces before it will write a podman drop-in at all (docs/podman.md
+// §5.1). Doctor reports rather than refuses: the guest is already
+// provisioned by the time anyone runs this.
+var minCrun = [3]int{0, 19, 0}
+
 // CheckGuestPrereqs classifies BTF, cgroup v2, systemd, the kernel version
 // and — only when the guest was provisioned `--oci` — the runtime version.
-func CheckGuestPrereqs(g GuestProbe, skip string) Finding {
+func CheckGuestPrereqs(g GuestProbe, skip string, pm PodmanInput) Finding {
 	f := Finding{ID: IDGuestPrereqs, Title: "guest prerequisites"}
 	if skip != "" {
 		f.Status = StatusSkip
@@ -356,6 +450,7 @@ func CheckGuestPrereqs(g GuestProbe, skip string) Finding {
 	}
 
 	f.Evidence = append(f.Evidence, fmt.Sprintf("kernel %s, btf=%v cgroup2=%v systemd=%v sudo=%v", g.Kernel, g.BTF, g.CGroup2, g.Systemd, g.Sudo))
+	f.Evidence = append(f.Evidence, podmanGuestNotes(g, pm)...)
 
 	switch {
 	case !g.Systemd:
@@ -395,6 +490,20 @@ func CheckGuestPrereqs(g GuestProbe, skip string) Finding {
 
 	if g.OCI {
 		f.Evidence = append(f.Evidence, "provisioned --oci: "+runtimeLine(g))
+		// The shared-drop-in report. `info`-shaped evidence on an otherwise
+		// ok check, never a warn: the registration works, and what a reader
+		// needs is to know the file is on their Mac before they go looking
+		// for it in the guest (docs/podman.md §"7.4 results").
+		f.Evidence = append(f.Evidence, podmanOCIEvidence(pm.Dropin)...)
+		if pm.Target && g.Crun != "" {
+			if v, ok := parseRuncVersion(g.Crun); ok && olderThan(v, minCrun) {
+				f.Status = StatusWarn
+				f.Title = fmt.Sprintf("guest prerequisites — crun %d.%d.%d", v[0], v[1], v[2])
+				f.Remedy = fmt.Sprintf("the wrapper arbitrates container binds through seccomp user-notify (listenerPath), which crun grew in %d.%d.%d;\n"+
+					"upgrade crun in the guest, or re-run `drawbridge down` to remove the wrapper", minCrun[0], minCrun[1], minCrun[2])
+				return f
+			}
+		}
 		if v, ok := parseRuncVersion(g.Runc); ok && olderThan(v, minRunc) && g.Crun == "" {
 			f.Status = StatusWarn
 			f.Title = fmt.Sprintf("guest prerequisites — runc %d.%d.%d", v[0], v[1], v[2])
@@ -407,6 +516,29 @@ func CheckGuestPrereqs(g GuestProbe, skip string) Finding {
 	f.Status = StatusOK
 	f.Title = fmt.Sprintf("guest prerequisites — kernel %s, BTF, cgroup v2, systemd", g.Kernel)
 	return f
+}
+
+// podmanGuestNotes are the two facts a podman guest has that a Lima one does
+// not, both informational and neither a verdict.
+//
+// SELinux Enforcing is the Fedora CoreOS default and everything `up` installs
+// is relabelled for it; a denial would be a question for docs/podman.md §10,
+// never a reason for drawbridge to reach for setenforce. The unprivileged
+// port floor is the kernel's, and it decides whether a rootless container can
+// bind :80 long before drawbridge is involved.
+func podmanGuestNotes(g GuestProbe, pm PodmanInput) []string {
+	if !pm.Target {
+		return nil
+	}
+	var out []string
+	if g.SELinux != "" {
+		out = append(out, "SELinux is "+g.SELinux+"; every file `drawbridge up` installs is relabelled for it")
+	}
+	if g.UnprivPort != "" && g.UnprivPort != "0" && !pm.Config.Rootful {
+		out = append(out, "net.ipv4.ip_unprivileged_port_start is "+g.UnprivPort+" on a rootless machine, so a container cannot bind a port below it "+
+			"That is the guest kernel's refusal, not drawbridge's. `podman machine set --rootful` (stopped) or raising the sysctl are the user's two choices")
+	}
+	return out
 }
 
 func runtimeLine(g GuestProbe) string {
@@ -520,7 +652,7 @@ func (b AgentBind) Reachable() bool { return b.VZNAT || b.Wildcard }
 
 // CheckAgent classifies the guest agent: unit active, version matched,
 // transport bound where the Mac can reach it.
-func CheckAgent(g GuestProbe, bind AgentBind, cliVersion, skip string) Finding {
+func CheckAgent(g GuestProbe, bind AgentBind, cliVersion, skip string, pm PodmanInput) Finding {
 	f := Finding{ID: IDAgent, Title: "guest agent"}
 	if skip != "" {
 		f.Status = StatusSkip
@@ -553,6 +685,9 @@ func CheckAgent(g GuestProbe, bind AgentBind, cliVersion, skip string) Finding {
 	} else {
 		f.Evidence = append(f.Evidence, fmt.Sprintf("ss: nothing listening on :%d", ControlPort))
 	}
+	if pm.Target {
+		f.Evidence = append(f.Evidence, podmanAgentEvidence(pm.Publish)...)
+	}
 	f.Data = map[string]any{"unit": unit, "version": g.AgentVersion, "bind": bind.Addrs}
 
 	if g.AgentActive != "active" {
@@ -575,6 +710,37 @@ func CheckAgent(g GuestProbe, bind AgentBind, cliVersion, skip string) Finding {
 			"then `drawbridge up <vm>` to reinstall"
 		return f
 	}
+	// On a podman machine the reachability question is not "is it on the
+	// guest's vmnet address" (there is no vmnet) but "did the agent
+	// re-establish its own gvproxy publish at this start". The guest owns
+	// that forward by design (docs/podman.md §3.2), which is what brings it
+	// back after `podman machine stop`, and an agent that is up without it
+	// is running and unreachable.
+	if pm.Target {
+		published, known := podmanPublished(pm.Publish)
+		switch {
+		case !known:
+			f.Status = StatusWarn
+			f.Title = fmt.Sprintf("guest agent — active on :%d, publish state unknown", ControlPort)
+			f.Remedy = "gvproxy's in-guest API did not answer, so whether the Mac can reach the transport is unverified here; check 4 dials it"
+			return f
+		case !published:
+			f.Status = StatusFail
+			f.Title = "guest agent — up but not published"
+			f.Evidence = append(f.Evidence, "the agent posts its own expose to gvproxy at every start, so nothing on this Mac can reach the transport until it does")
+			f.Remedy = "`sudo journalctl -u " + AgentUnit + " -n 50` in the guest has the publish attempt and its error;\n" +
+				"`drawbridge up <vm>` re-pushes the agent and the unit's -gvproxy-publish argument"
+			return f
+		}
+		f.Status = StatusOK
+		v := g.AgentVersion
+		if v == "" {
+			v = "version unknown"
+		}
+		f.Title = fmt.Sprintf("guest agent — %s, active, published on %s", v, pm.Publish.Local)
+		return f
+	}
+
 	if !bind.Reachable() {
 		f.Status = StatusWarn
 		f.Title = fmt.Sprintf("guest agent — bound to loopback only on :%d", ControlPort)
@@ -605,6 +771,11 @@ type ResolutionInput struct {
 	AgentListening bool // check 3's ss evidence
 	RunningVMs     int
 	Skip           string
+
+	// Podman is the branch where the loopback endpoint is the design rather
+	// than a fallback, and where the record is the thing to compare against
+	// the machine.
+	Podman PodmanInput
 }
 
 // CheckResolution prints Endpoint/Source/Note verbatim and adds the
@@ -625,6 +796,30 @@ func CheckResolution(in ResolutionInput) Finding {
 		f.Evidence = append(f.Evidence, "Note:     "+in.Res.Note)
 	}
 	f.Data = map[string]any{"endpoint": in.Res.Endpoint, "source": in.Res.Source, "note": in.Res.Note}
+
+	// The podman branch. A gvproxy-published loopback endpoint is not a
+	// fallback: it is the only path a podman machine has, chosen at design
+	// time (docs/podman.md §3.2), so the `warn` a Lima run earns for landing
+	// on the forwarder would be wrong here. There is nothing better it
+	// failed to reach.
+	if in.Podman.Target {
+		f.Evidence = append(f.Evidence, podmanResolutionEvidence(in.Podman)...)
+		if len(in.Podman.Disagreements) > 0 {
+			f.Status = StatusFail
+			f.Title = "endpoint resolution — the record no longer matches the machine"
+			f.Remedy = podmanRecordRemedy
+			return f
+		}
+		if !in.Podman.EUID0 && !in.Podman.RecordPresent {
+			f.Status = StatusWarn
+			f.Title = "endpoint resolution — no per-VM record"
+			f.Remedy = "`drawbridge up <vm>` writes the record that names this machine's endpoint; without it the daemon has nothing to dial"
+			return f
+		}
+		f.Status = StatusOK
+		f.Title = "endpoint resolution — " + in.Res.Endpoint + " (" + in.Res.Source + ")"
+		return f
+	}
 
 	// Both vznat sources are the direct path — the dial connected to the
 	// guest's vmnet address; they differ only in where the address came from.
@@ -666,6 +861,11 @@ func CheckResolution(in ResolutionInput) Finding {
 
 // RouteInput is the parsed-in-place view of `netstat -rn -f inet` and `arp`.
 type RouteInput struct {
+	// Podman means there is no vmnet route to have an opinion about: a
+	// podman machine's transport is a loopback port gvproxy publishes, and
+	// this check's whole subject does not exist for it.
+	Podman bool
+
 	Subnet      netip.Prefix
 	NetstatOut  string
 	NetstatErr  string
@@ -696,6 +896,13 @@ type RouteInput struct {
 // the softer missing-ARP state.
 func CheckVZNATRoute(in RouteInput) Finding {
 	f := Finding{ID: IDVZNATRoute, Title: "vzNAT route"}
+	if in.Podman {
+		f.Status = StatusSkip
+		f.Title = "vzNAT route — not applicable to a podman machine"
+		f.Evidence = append(f.Evidence,
+			"gvproxy is user-mode: there is no vmnet interface, no /24 route and no guest IP this Mac dials, so there is nothing here to be deleted.")
+		return f
+	}
 	subnet := in.Subnet
 	if !subnet.IsValid() {
 		subnet = netip.MustParsePrefix(limaaddr.DefaultSubnet)
@@ -996,6 +1203,11 @@ type LocalNetworkInput struct {
 	EUID0           bool
 	AgentListening  bool
 	Skip            string
+
+	// Podman means loopback, which is not subject to the Local Network gate
+	// at all, so this check has nothing to discriminate and must not print
+	// the sudo instruction for a run that cannot learn anything from it.
+	Podman bool
 }
 
 // CheckLocalNetwork is §4 check 6: pure over (userProbe, rootEvidence,
@@ -1004,6 +1216,14 @@ type LocalNetworkInput struct {
 // verdict lives only on the branches that have root evidence.
 func CheckLocalNetwork(in LocalNetworkInput) Finding {
 	f := Finding{ID: IDLocalNetwork, Title: "Local Network permission"}
+	if in.Podman {
+		f.Status = StatusSkip
+		f.Title = "Local Network permission — not applicable to a podman machine"
+		f.Evidence = append(f.Evidence,
+			"the transport is a gvproxy-published loopback port, and loopback is not subject to the Local Network gate (TN3179); "+
+				"the root/user discriminator would compare two runs of the same answer.")
+		return f
+	}
 	subnet := in.Subnet
 	if !subnet.IsValid() {
 		subnet = netip.MustParsePrefix(limaaddr.DefaultSubnet)
@@ -1539,6 +1759,9 @@ func CheckCoexistence(in CoexistenceInput) Finding {
 		return f
 	}
 
+	if in.Fwd.Provider == vmprovider.ProviderPodman {
+		return checkPodmanCoexistence(f, in, bf)
+	}
 	f.Evidence = append(f.Evidence, fmt.Sprintf("hostagent=%v, guest loopback %s, guest wildcard %s",
 		in.Fwd.HostAgent, in.Fwd.Loopback, in.Fwd.Wildcard))
 	f.Evidence = append(f.Evidence, bf...)
@@ -1571,6 +1794,31 @@ func CheckCoexistence(in CoexistenceInput) Finding {
 		"      ignore: true\n" +
 		"a bare `ignore: true` matches guest loopback binds only (lima#4403) — verify after the restart"
 	f.Data = map[string]any{"loopback": in.Fwd.Loopback.String(), "wildcard": in.Fwd.Wildcard.String()}
+	return f
+}
+
+// checkPodmanCoexistence is check 10 for a podman machine: the same check,
+// a different tradeoff, and neither the Lima evidence line nor the Lima
+// remedy would be true here.
+//
+// The forward table is already filtered to user publications: podman's own
+// ssh forward and drawbridge's own transport publish are excluded by
+// vmprovider.ParseGvproxyForwards, so an empty table is the baseline rather
+// than a machine with nothing running.
+func checkPodmanCoexistence(f Finding, in CoexistenceInput, bindFailed []string) Finding {
+	f.Evidence = append(f.Evidence, fmt.Sprintf("gvproxy forwards: loopback %s, wildcard %s (podman's own ssh forward and drawbridge's transport publish excluded)",
+		in.Fwd.Loopback, in.Fwd.Wildcard))
+	f.Evidence = append(f.Evidence, bindFailed...)
+	if !in.Fwd.Active() {
+		f.Status = StatusOK
+		f.Title = "provider forwarder coexistence — nothing published"
+		return f
+	}
+	f.Status = StatusWarn
+	f.Title = "provider forwarder coexistence — this machine has published ports"
+	f.Evidence = append(f.Evidence, podmanCoexistenceNote...)
+	f.Remedy = podmanCoexistenceRemedy
+	f.Data = map[string]any{"loopback": in.Fwd.Loopback.String(), "wildcard": in.Fwd.Wildcard.String(), "provider": in.Fwd.Provider}
 	return f
 }
 
@@ -1619,7 +1867,7 @@ type SkipInput struct {
 func CheckSkipVisibility(in SkipInput) Finding {
 	f := Finding{
 		ID:     IDSkipVisible,
-		Title:  "skip-list — guest :22 is not mirrored by default",
+		Title:  "skip-list — guest " + install.DefaultSkip + " is not mirrored by default",
 		Status: StatusInfo,
 	}
 	if in.Known {
