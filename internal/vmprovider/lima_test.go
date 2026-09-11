@@ -56,10 +56,11 @@ func TestDecodeListIsAStream(t *testing.T) {
 
 func TestListLima(t *testing.T) {
 	got := instances(t, "lima-list.json", ProviderLima)
+	qemu, qemuNote := Attachability(ProviderLima, "qemu")
 	want := []Instance{
-		{ProviderLima, "drawbridge", "vz", "lima-drawbridge", true, "52:55:55:a5:de:d2"},
-		{ProviderLima, "default", "qemu", "lima-default", false, ""},
-		{ProviderLima, "stock-vz", "vz", "lima-stock-vz", true, "52:55:55:11:22:33"},
+		{Provider: ProviderLima, Name: "drawbridge", VMType: "vz", LeaseName: "lima-drawbridge", Running: true, MACAddress: "52:55:55:a5:de:d2", Attachable: true},
+		{Provider: ProviderLima, Name: "default", VMType: "qemu", LeaseName: "lima-default", Attachable: qemu, AttachNote: qemuNote},
+		{Provider: ProviderLima, Name: "stock-vz", VMType: "vz", LeaseName: "lima-stock-vz", Running: true, MACAddress: "52:55:55:11:22:33", Attachable: true},
 	}
 	assertInstances(t, got, want)
 }
@@ -72,8 +73,8 @@ func TestListLima(t *testing.T) {
 func TestListColima(t *testing.T) {
 	got := instances(t, "colima-list.json", ProviderColima)
 	want := []Instance{
-		{ProviderColima, "colima", "vz", "colima", true, "52:55:55:0a:de:02"},
-		{ProviderColima, "colima-work", "vz", "colima-work", false, "52:55:55:0a:de:03"},
+		{Provider: ProviderColima, Name: "colima", VMType: "vz", LeaseName: "colima", Running: true, MACAddress: "52:55:55:0a:de:02", Attachable: true},
+		{Provider: ProviderColima, Name: "colima-work", VMType: "vz", LeaseName: "colima-work", MACAddress: "52:55:55:0a:de:03", Attachable: true},
 	}
 	assertInstances(t, got, want)
 
@@ -122,12 +123,6 @@ func TestRootIsRefusedBeforeExec(t *testing.T) {
 		return
 	}
 	t.Skip("not root: ErrRootScoped is asserted by inspection of the one seam (limactl)")
-}
-
-func TestShellNeedsACommand(t *testing.T) {
-	if _, err := NewLima().Shell("drawbridge", nil); err == nil {
-		t.Fatal("Shell with no argv was accepted")
-	}
 }
 
 func TestStderrTailIsBounded(t *testing.T) {

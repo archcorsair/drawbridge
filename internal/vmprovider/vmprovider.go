@@ -38,21 +38,63 @@ import (
 const (
 	ProviderLima   = "lima"
 	ProviderColima = "colima"
+	ProviderPodman = "podman"
 )
 
 // Instance is one VM as the provider reports it.
 type Instance struct {
-	Provider  string // ProviderLima | ProviderColima
+	Provider  string // ProviderLima | ProviderColima | ProviderPodman
 	Name      string // provider-scoped instance name
-	VMType    string // "vz" | "qemu" | ...
-	LeaseName string // dhcpd_leases match: "lima-<name>" for lima, "<name>" for colima
+	VMType    string // "vz" | "qemu" | "libkrun" | "applehv" | ...
+	LeaseName string // dhcpd_leases match: "lima-<name>" for lima, "<name>" for colima, "" for podman
 	Running   bool
 
 	// MACAddress is the vzNAT interface's hardware address — the value
 	// `drawbridge install -vm-mac` pins, and the one field of a DHCP lease
 	// record a guest cannot choose (leases.go). Empty when the instance has
-	// no vzNAT network, which is also how a qemu instance reads.
+	// no vzNAT network, which is also how a qemu instance reads, and always
+	// empty for podman (gvproxy is user-mode: there is no vmnet lease).
 	MACAddress string
+
+	// Attachable is the provider's own verdict on this VMType, and the half
+	// of `up`'s eligibility test that is not "is it running" (docs/podman.md
+	// §4.2). It is a provider fact rather than a CLI one because "vz" is Lima
+	// vocabulary: a podman machine is attachable on libkrun and applehv, and
+	// neither word means anything to Lima.
+	Attachable bool
+
+	// AttachNote says why not, in the user's terms. Empty when Attachable.
+	// The remediation command is the caller's to spell — it is per-provider
+	// and per-instance, and lives with the other user-facing text.
+	AttachNote string
+}
+
+// Attachability is the per-provider verdict on a VMType: whether drawbridge
+// can attach to a guest of that kind, and why not when it cannot.
+//
+// Pure and exported so the CLI, doctor and their tests all reach the same
+// answer instead of each reimplementing "is it vz".
+func Attachability(provider, vmType string) (bool, string) {
+	t := strings.ToLower(strings.TrimSpace(vmType))
+	switch provider {
+	case ProviderPodman:
+		// Both macOS providers are attachable: the transport is gvproxy
+		// either way, and the 7.0 spike ran end to end on libkrun (podman 6's
+		// default) with the applehv cross-check showing the same shape.
+		switch t {
+		case "libkrun", "applehv":
+			return true, ""
+		case "":
+			return false, "podman did not report a machine type for this machine"
+		default:
+			return false, "podman machine type " + t + " is not a macOS provider: drawbridge attaches to libkrun and applehv machines"
+		}
+	default:
+		if t == "vz" {
+			return true, ""
+		}
+		return false, "runs on " + t + ", which has no host-reachable guest IP (user-mode networking)"
+	}
 }
 
 // Provider is the driver surface. List and Shell are user-scoped: see the
@@ -101,10 +143,10 @@ func ParseRef(s string) (Ref, error) {
 		provider, name = strings.TrimSpace(p), strings.TrimSpace(n)
 	}
 	switch provider {
-	case ProviderLima, ProviderColima:
+	case ProviderLima, ProviderColima, ProviderPodman:
 	default:
-		return Ref{}, fmt.Errorf("unknown VM provider %q in %q: want %s: or %s: (a bare name means a Lima instance)",
-			provider, s, ProviderLima, ProviderColima)
+		return Ref{}, fmt.Errorf("unknown VM provider %q in %q: want %s:, %s: or %s: (a bare name means a Lima instance)",
+			provider, s, ProviderLima, ProviderColima, ProviderPodman)
 	}
 	if !instanceNameRE.MatchString(name) || len(name) > maxNameLen {
 		return Ref{}, fmt.Errorf("invalid %s instance name %q in %q: expected letters, digits, '.', '_' or '-'", provider, name, s)
@@ -163,11 +205,23 @@ func ColimaInstance(profile string) string {
 // guarantee: a user who sets a hostname by hand invalidates it. What makes a
 // matched record trustworthy is the subnet gate and the MAC pin in
 // internal/limaaddr/leases.go.
+//
+//   - podman: the empty string. A podman machine's networking is gvproxy,
+//     which is user-mode and writes no vmnet DHCP lease at all, so there is
+//     no record to match and nothing for limaaddr to resolve. Resolution for
+//     podman goes through internal/podmanaddr instead (docs/podman.md §3.2);
+//     the empty name is the statement that a podman ref has no business
+//     reaching the lease db, and the dispatch that keeps it out is pinned by
+//     a test in cmd/drawbridged.
 func LeaseName(provider, instance string) string {
-	if provider == ProviderColima {
+	switch provider {
+	case ProviderColima:
 		return instance
+	case ProviderPodman:
+		return ""
+	default:
+		return "lima-" + instance
 	}
-	return "lima-" + instance
 }
 
 // LimaHome is Lima's own state directory: $LIMA_HOME when set, else
@@ -265,6 +319,9 @@ func colimaHome(home string) string {
 // reports Running per instance. A Mac with neither gets an empty slice,
 // which is the "no candidate VM" case the attach path prints creation
 // instructions for.
+// Podman adds a second gate: the binary. Its machine directory can outlive
+// an uninstalled podman, and listing instances no command can reach would
+// turn a leftover directory into a menu of VMs that cannot be attached.
 func Detect() []Provider {
 	var out []Provider
 	if dirExists(LimaHome()) {
@@ -273,7 +330,18 @@ func Detect() []Provider {
 	if dirExists(ColimaHome()) {
 		out = append(out, NewColima())
 	}
+	if _, err := PodmanBin(); err == nil && dirExists(PodmanMachineDir()) {
+		out = append(out, NewPodman())
+	}
 	return out
+}
+
+// ForRef returns the driver a parsed -vm value names.
+func ForRef(r Ref) Provider {
+	if r.Provider == ProviderPodman {
+		return NewPodman()
+	}
+	return NewLimaHome(r.Provider, r.LimaHome)
 }
 
 func dirExists(path string) bool {

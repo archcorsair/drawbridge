@@ -103,7 +103,7 @@ func TestPickInstance(t *testing.T) {
 		wantErr: []string{"invalid lima instance name"},
 	}, {
 		name:    "an unknown provider is named as such",
-		arg:     "podman:default",
+		arg:     "docker:desktop",
 		wantErr: []string{"unknown VM provider"},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {

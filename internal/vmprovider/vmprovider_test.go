@@ -34,6 +34,11 @@ func TestParseRef(t *testing.T) {
 		{"colima:work", ProviderColima, "colima-work", "colima-work", true},
 		{"colima:colima-work", ProviderColima, "colima-work", "colima-work", true},
 
+		// podman machines have no vmnet DHCP lease at all, so the lease name
+		// is empty and resolution goes through internal/podmanaddr instead.
+		{"podman:spike", ProviderPodman, "spike", "", false},
+		{"podman:podman-machine-default", ProviderPodman, "podman-machine-default", "", false},
+
 		{"  drawbridge  ", ProviderLima, "drawbridge", "lima-drawbridge", false},
 	} {
 		t.Run(tc.in, func(t *testing.T) {
@@ -70,9 +75,10 @@ func TestParseRefRejects(t *testing.T) {
 	for _, bad := range []string{
 		"",
 		"   ",
-		"podman:machine", // Phase 7, and until then not a silent lima
+		"docker:machine", // an unknown provider is never a silent lima
 		"lima",           // bare "lima" is a Lima instance named lima — see below
 		"colima:",        // an empty profile is not the default profile
+		"podman:",        // …and an empty podman machine name is not a default either
 		":drawbridge",    // empty provider
 		"lima:my vm",
 		"lima:-rf",
@@ -130,6 +136,9 @@ func TestLeaseName(t *testing.T) {
 		{ProviderLima, "default", "lima-default"},
 		{ProviderColima, "colima", "colima"},
 		{ProviderColima, "colima-work", "colima-work"},
+		// podman: no vmnet lease record exists to match.
+		{ProviderPodman, "spike", ""},
+		{ProviderPodman, "podman-machine-default", ""},
 	} {
 		if got := LeaseName(tc.provider, tc.in); got != tc.want {
 			t.Fatalf("LeaseName(%q, %q) = %q, want %q", tc.provider, tc.in, got, tc.want)
@@ -295,13 +304,16 @@ func TestForRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := ForRef(r)
+	p, ok := ForRef(r).(*Lima)
+	if !ok {
+		t.Fatal("ForRef(colima:…) did not return the lima driver")
+	}
 	if p.Provider() != ProviderColima || p.Home() != r.LimaHome {
 		t.Fatalf("ForRef = provider %q home %q, want %q %q", p.Provider(), p.Home(), ProviderColima, r.LimaHome)
 	}
 	// The Lima driver deliberately keeps the ambient LIMA_HOME rather than
 	// resolving it: a user who sets the variable per shell must keep working.
-	if p := ForRef(mustRef(t, "drawbridge")); p.Home() != "" {
+	if p := ForRef(mustRef(t, "drawbridge")).(*Lima); p.Home() != "" {
 		t.Fatalf("ForRef(lima).Home() = %q, want ambient", p.Home())
 	}
 }

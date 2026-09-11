@@ -1,0 +1,38 @@
+[
+    {
+        "Name": "spike",
+        "Default": true,
+        "Created": "2026-09-11T00:38:34.675105-07:00",
+        "Running": true,
+        "Starting": false,
+        "LastUp": "2026-09-11T00:48:32.737291-07:00",
+        "Stream": "default",
+        "VMType": "libkrun",
+        "CPUs": 2,
+        "Memory": "2147483648",
+        "Swap": "0",
+        "DiskSize": "21474836480",
+        "Port": 57446,
+        "RemoteUsername": "core",
+        "IdentityPath": "/Users/u/.local/share/containers/podman/machine/machine",
+        "UserModeNetworking": true
+    },
+    {
+        "Name": "spike-hv",
+        "Default": false,
+        "Created": "2026-09-11T00:47:34.238287-07:00",
+        "Running": false,
+        "Starting": false,
+        "LastUp": "2026-09-11T00:48:46.391153-07:00",
+        "Stream": "default",
+        "VMType": "applehv",
+        "CPUs": 2,
+        "Memory": "2147483648",
+        "Swap": "0",
+        "DiskSize": "21474836480",
+        "Port": 65054,
+        "RemoteUsername": "core",
+        "IdentityPath": "/Users/u/.local/share/containers/podman/machine/machine",
+        "UserModeNetworking": true
+    }
+]

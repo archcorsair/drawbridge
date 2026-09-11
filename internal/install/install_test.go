@@ -165,6 +165,8 @@ func TestValidateProviderRefs(t *testing.T) {
 		"colima:colima",
 		"colima:work",
 		"colima:colima-work",
+		"podman:spike",
+		"podman:podman-machine-default",
 	} {
 		if err := (Config{VM: vm}).Validate(); err != nil {
 			t.Fatalf("Validate(%q) = %v, want ok", vm, err)
@@ -179,8 +181,8 @@ func TestValidateProviderRefs(t *testing.T) {
 		}
 	}
 	for _, vm := range []string{
-		"podman:machine", // Phase 7; until then it must not install as a lima
-		"docker:desktop",
+		"docker:desktop", // an unknown provider must not install as a lima
+		"podman:",
 		"colima:",
 		":drawbridge",
 		"colima:a:b",

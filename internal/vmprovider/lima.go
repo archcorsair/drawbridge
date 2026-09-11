@@ -45,9 +45,6 @@ func NewColima() *Lima { return &Lima{provider: ProviderColima, home: ColimaHome
 // turns into, and what tests use.
 func NewLimaHome(provider, home string) *Lima { return &Lima{provider: provider, home: home} }
 
-// ForRef returns the driver a parsed -vm value names.
-func ForRef(r Ref) *Lima { return NewLimaHome(r.Provider, r.LimaHome) }
-
 // Provider is the tag this driver stamps on the instances it reports.
 func (l *Lima) Provider() string { return l.provider }
 
@@ -73,10 +70,31 @@ func (l *Lima) List() ([]Instance, error) {
 
 // Shell runs argv inside the guest. stdin may be nil.
 func (l *Lima) Shell(inst string, stdin io.Reader, argv ...string) ([]byte, error) {
-	if len(argv) == 0 {
-		return nil, fmt.Errorf("vmprovider: Shell(%q): no command given", inst)
+	if err := checkArgv(inst, argv); err != nil {
+		return nil, err
 	}
 	return l.limactl(stdin, append([]string{"shell", inst, "--"}, argv...)...)
+}
+
+// checkArgv enforces the single-space-free-word rule every provider shell
+// imposes: `limactl shell NAME -- a b c` and `podman machine ssh NAME -- a b
+// c` both join argv into one remote command string without quoting, so an
+// element with whitespace is re-split in the guest. Anything with structure
+// goes on stdin (AGENTS.md; docs/podman.md §"7.0 results", argv joining).
+//
+// The fake guest in cmd/drawbridge fails a test on the same condition. This
+// is the runtime half of that pin, so a caller that grows a space is a
+// refusal here rather than a mysterious command in the guest.
+func checkArgv(inst string, argv []string) error {
+	if len(argv) == 0 {
+		return fmt.Errorf("vmprovider: Shell(%q): no command given", inst)
+	}
+	for _, a := range argv {
+		if strings.ContainsAny(a, " \t\n") {
+			return fmt.Errorf("vmprovider: Shell(%q): argv element %q contains whitespace; provider shells join argv unquoted, so it would be re-split in the guest — put the script on stdin", inst, a)
+		}
+	}
+	return nil
 }
 
 // GuestArch reports the guest's own `uname -m`. It is the guest kernel's
@@ -158,6 +176,7 @@ type limaJSON struct {
 }
 
 func (li limaJSON) instance(provider string) Instance {
+	attachable, note := Attachability(provider, li.VMType)
 	return Instance{
 		Provider:   provider,
 		Name:       li.Name,
@@ -165,6 +184,8 @@ func (li limaJSON) instance(provider string) Instance {
 		LeaseName:  LeaseName(provider, li.Name),
 		Running:    li.running(),
 		MACAddress: li.macAddress(),
+		Attachable: attachable,
+		AttachNote: note,
 	}
 }
 

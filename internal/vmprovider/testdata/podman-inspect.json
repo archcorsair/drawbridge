@@ -1,0 +1,31 @@
+[
+     {
+          "ConfigDir": {
+               "Path": "/Users/u/.config/containers/podman/machine/libkrun"
+          },
+          "ConnectionInfo": {
+               "PodmanSocket": {
+                    "Path": "/var/folders/xx/T/podman/spike-api.sock"
+               },
+               "PodmanPipe": null
+          },
+          "Created": "2026-09-11T00:38:34.675105-07:00",
+          "LastUp": "2026-09-11T00:48:32.737291-07:00",
+          "Name": "spike",
+          "Resources": {
+               "CPUs": 2,
+               "DiskSize": 20,
+               "Memory": 2048,
+               "USBs": []
+          },
+          "SSHConfig": {
+               "IdentityPath": "/Users/u/.local/share/containers/podman/machine/machine",
+               "Port": 57446,
+               "RemoteUsername": "core"
+          },
+          "State": "running",
+          "UserModeNetworking": true,
+          "Rootful": false,
+          "Rosetta": false
+     }
+]
