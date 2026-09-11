@@ -119,3 +119,10 @@ spike-halfclose:
     mkdir -p bin
     go build -o bin/halfclose-probe ./scripts/halfclose-probe
     GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/halfclose-probe-linux-arm64 ./scripts/halfclose-probe
+
+# every root-needing acceptance step as one run: install the freshly built
+# daemon for VM, prove the three semantics through it, uninstall, reinstall
+# whatever daemon was there before. One sudo prompt; JSON on stdout to paste
+# back, progress on stderr. Exit 1 when any check failed.
+smoke-sudo vm: build
+    go run ./scripts/smoke-sudo -vm {{vm}}
