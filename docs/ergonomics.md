@@ -1160,7 +1160,7 @@ management by brew, `sudo drawbridge install` still the only root-daemon
 path. The cask `service` stanza exists and is deliberately unused. One thing
 a formula would not have needed: these binaries are ad-hoc (linker-)signed,
 not Developer-ID signed or notarized, and Homebrew quarantines everything a
-cask downloads, so a `postflight` strips `com.apple.quarantine` from both
+cask downloads, so a `postflight_steps` stanza (with a `postflight` fallback for brew < 6.0.16) strips `com.apple.quarantine` from both
 binaries — without it the first command after `brew install` is a Gatekeeper
 kill. Real signing needs an Apple developer identity; out of scope.
 
@@ -1183,6 +1183,46 @@ Left to the operator, in order:
    the release trigger.
 4. Verify `brew install archcorsair/drawbridge/drawbridge` on a clean brew
    prefix and run the quickstart end-to-end — this phase's acceptance test.
+
+#### Cask maintenance: `postflight` → `postflight_steps` (2026-09-10)
+
+Homebrew 6.0.16 (2026-08-05, Homebrew/brew#23366) deprecated the Ruby
+`postflight` stanza in favour of the declarative `postflight_steps`, and
+every brew command that loads the cask now prints "Calling `postflight` is
+deprecated" at the user. goreleaser ≤ 2.18 can only render `postflight`
+from `hooks.post.install`; the `hooks.post.install_steps` option that
+renders `postflight_steps` is goreleaser#6873, slated for v2.19.0, and
+mise's newest available goreleaser is 2.18.1. So the stanza is written by
+hand in `.goreleaser.yaml`'s `custom_block` for now, branched on
+`respond_to?(:postflight_steps)`: brew ≥ 6.0.16 takes the steps path,
+older brews keep the exact `postflight` block v0.0.1..v0.1.1 shipped. The
+full rationale (stanza order, template escaping of `{{staged_path}}`,
+`must_succeed`) is in the yaml comment beside the block.
+
+*Verified* (`just release-snapshot`, `0.1.2-snapshot-2fd296c`, Homebrew
+6.0.22): `goreleaser check` clean; the rendered cask carries the literal
+`{{staged_path}}` token (goreleaser's template pass did not eat it); loaded
+under brew's own Ruby via a throwaway local tap, the cask yields two
+`Cask::Artifact::Binary` plus one `Cask::Artifact::PostflightSteps` whose
+steps are the two `xattr -dr` runs — the steps branch was taken.
+`brew style` flags `Cask/InstallSteps` on the fallback branch by design
+(that is the old stanza, kept for old brews) and `Cask/Desc` on "macOS" in
+the description, pre-existing; both are style-only, not load-time.
+
+Two brew changes surfaced by the same verification, both benign for the
+documented install path: Homebrew's tap trust enforcement (brew commit
+`c6f3723`, 2026-05-30) refuses to load a cask from an untrusted third-party tap
+unless the user ran `brew trust`, **but a fully qualified name on the
+`brew install` command line trusts it implicitly** — so
+`brew install archcorsair/drawbridge/drawbridge` keeps working unprompted,
+while a bare `brew install drawbridge` after `brew tap` does not. The README
+already uses the qualified form; keep it that way. And `brew audit` on a
+path outside a tap is disabled (support-tier gate), so the load test above
+is the substitute.
+
+Exit condition: when mise can pin goreleaser ≥ 2.19, move the steps branch
+to `hooks.post.install_steps`, delete `custom_block`, and re-run the same
+snapshot + brew-ruby load check.
 
 ### Phase 7 — Podman machine + crun (fast-follow)
 

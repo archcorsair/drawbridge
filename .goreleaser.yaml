@@ -162,18 +162,49 @@ homebrew_casks:
       - drawbridge
       - drawbridged
     # These binaries are ad-hoc (linker-)signed, not Developer-ID signed or
-    # notarized — we have no Apple developer identity. Homebrew quarantines
-    # everything a cask downloads, and Gatekeeper kills a quarantined ad-hoc
-    # binary on first exec, so without this the very first command after
-    # `brew install` fails. Strip the attribute at install time, the way
-    # goreleaser's own cask documentation prescribes.
-    hooks:
-      post:
-        install: |
+    # notarized (no Apple developer identity). Homebrew quarantines everything
+    # a cask downloads, and Gatekeeper kills a quarantined ad-hoc binary on
+    # first exec, so without this the very first command after `brew install`
+    # fails. Strip the attribute at install time.
+    #
+    # Why custom_block rather than hooks.post.install: Homebrew 6.0.16
+    # (2026-08-05, Homebrew/brew#23366) deprecated the Ruby `postflight`
+    # stanza in favour of the declarative `postflight_steps`, and every brew
+    # command that loads the cask now prints "Calling `postflight` is
+    # deprecated" at the user. goreleaser <= 2.18 can only render `postflight`
+    # from hooks.post.install; the hooks.post.install_steps option that renders
+    # `postflight_steps` is goreleaser#6873, slated for v2.19.0. Until mise
+    # pins a goreleaser that has it, the stanza is written by hand here:
+    #   - custom_block lands verbatim at the top of the cask body. Stanza
+    #     order is a `brew style` rule, not a load-time one.
+    #   - The body is instance_eval'd on Cask::DSL, whose stanza methods are
+    #     public define_methods and whose method_missing raises, so
+    #     `respond_to?` is the version check: brew >= 6.0.16 takes the
+    #     `postflight_steps` branch, older brews (auto-update disabled) keep
+    #     the exact `postflight` block v0.0.1..v0.1.1 shipped. Do not collapse
+    #     the branches until 6.0.16 is old enough to assume.
+    #   - goreleaser runs the rendered cask through its template engine once,
+    #     so Homebrew's `{{staged_path}}` token (expanded by the step runner at
+    #     install time) must be emitted through a Go string literal. The Ruby
+    #     `#{staged_path}` in the fallback is not template syntax and passes.
+    #   - `run` is in Homebrew's CASK_ALLOWED_STEP_METHODS; `xattr -dr` exits
+    #     0 when the attribute is already absent, so must_succeed stays on.
+    # When goreleaser 2.19 is pinned, move the steps branch to
+    # hooks.post.install_steps and drop this block.
+    custom_block: |
+      if respond_to?(:postflight_steps)
+        postflight_steps do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/drawbridge"]
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/drawbridged"]
+        end
+      else
+        postflight do
           if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/drawbridge"]
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/drawbridged"]
           end
+        end
+      end
     # Snapshots never touch the tap.
     skip_upload: auto
     commit_author:
