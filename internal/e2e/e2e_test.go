@@ -24,6 +24,7 @@ import (
 	"github.com/archcorsair/drawbridge/internal/limaaddr"
 	"github.com/archcorsair/drawbridge/internal/macsync"
 	"github.com/archcorsair/drawbridge/internal/mirror"
+	"github.com/archcorsair/drawbridge/internal/podmanaddr"
 	"github.com/archcorsair/drawbridge/internal/transport"
 	"github.com/archcorsair/drawbridge/internal/transportauth"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
@@ -95,10 +96,28 @@ const (
 	// UDP-only in the mirror, but keep both suites in the same 479xx block).
 	sinkPort = 47998
 	unitName = "dbg-e2e-http"
-	// forwardedPort is the Lima-forwarded agent port on Mac loopback — the
+	// limaForwardedPort is the Lima-forwarded agent port on Mac loopback, the
 	// fallback transport TestForwarderHalfClose pins.
-	forwardedPort = "4777"
+	limaForwardedPort = "4777"
 )
+
+// forwardedEndpoint is the user-mode forwarded transport this provider has,
+// which is what TestForwarderHalfClose exists to put a half-close through.
+//
+// On Lima and Colima that is the SSH forwarder on 127.0.0.1:4777, pinned by
+// `just vm-up`'s LIMA_SSH_PORT_FORWARDER=true. On a podman machine it is
+// gvproxy, and the port is whichever loopback port `drawbridge up` recorded,
+// so the leg tests the path that machine actually uses rather than dialing
+// the dev VM's forward with the wrong VM's secret.
+func forwardedEndpoint() string {
+	if vmRef.Provider == vmprovider.ProviderPodman {
+		if ep := os.Getenv("DRAWBRIDGE_AGENT"); ep != "" {
+			return ep
+		}
+		return podmanaddr.Resolve(vmRef).Endpoint
+	}
+	return "tcp://127.0.0.1:" + limaForwardedPort
+}
 
 // agentAddr is resolved by requireE2E: vzNAT direct TCP when reachable,
 // else the SSH-forwarded loopback.
@@ -127,8 +146,23 @@ func limactl(t *testing.T, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// guest runs a script as root inside the target guest.
+//
+// The Lima path keeps its own limactl helper rather than going through
+// vmprovider, and that is not laziness: `just e2e-root` runs the suite under
+// sudo, vmprovider's limactl half refuses euid 0 outright, and the re-exec
+// back to SUDO_USER that makes the root legs possible lives in that helper.
+//
+// Every other provider goes through vmprovider, with the script on stdin and
+// `sh` as the only argv word, because that is the shape AGENTS.md requires
+// and the shape `podman machine ssh` needs (it joins argv unquoted, so the
+// Lima path's `bash -c <script>` would be re-split in the guest).
 func guest(t *testing.T, script string) (string, error) {
 	t.Helper()
+	if vmRef.Provider != vmprovider.ProviderLima {
+		out, err := vmprovider.ForRef(vmRef).Shell(vmName, strings.NewReader(script), "sudo", "-n", "sh")
+		return strings.TrimSpace(string(out)), err
+	}
 	return limactl(t, "shell", vmName, "--", "sudo", "bash", "-c", script)
 }
 
@@ -138,11 +172,15 @@ func requireE2E(t *testing.T) {
 	if os.Getenv("DRAWBRIDGE_E2E") == "" {
 		t.Skip("set DRAWBRIDGE_E2E=1 (or run `just e2e`)")
 	}
-	if _, err := exec.LookPath("limactl"); err != nil {
-		t.Skip("limactl not on PATH")
-	}
-	if out, err := limactl(t, "list", "--format", "{{.Status}}", vmName); err != nil || out != "Running" {
-		t.Skipf("VM %s not running (%q, %v) — run `just vm-up && just agent-up`", vmName, out, err)
+	if vmRef.Provider != vmprovider.ProviderLima {
+		requireRunning(t)
+	} else {
+		if _, err := exec.LookPath("limactl"); err != nil {
+			t.Skip("limactl not on PATH")
+		}
+		if out, err := limactl(t, "list", "--format", "{{.Status}}", vmName); err != nil || out != "Running" {
+			t.Skipf("VM %s not running (%q, %v) — run `just vm-up && just agent-up`", vmName, out, err)
+		}
 	}
 	macAuth = loadMacAuth(t)
 	agentAddr = resolveAgent(t)
@@ -151,6 +189,29 @@ func requireE2E(t *testing.T) {
 		t.Fatalf("agent transport not reachable at %s — run `just agent-up`: %v", agentAddr, err)
 	}
 	c.Close()
+}
+
+// requireRunning is the non-Lima running gate: the provider's own List,
+// which is also the only one that knows what "running" means for a machine
+// type Lima has never heard of.
+//
+// A skip and not a failure, exactly like the Lima gate: a suite that cannot
+// find its VM has nothing to report about drawbridge.
+func requireRunning(t *testing.T) {
+	t.Helper()
+	insts, err := vmprovider.ForRef(vmRef).List()
+	if err != nil {
+		t.Skipf("%s: listing instances failed (%v)", vmRef.Spec, err)
+	}
+	for _, i := range insts {
+		if i.Provider == vmRef.Provider && i.Name == vmRef.Instance {
+			if !i.Running {
+				t.Skipf("%s is not running; start it, then re-run", vmRef.Spec)
+			}
+			return
+		}
+	}
+	t.Skipf("no %s instance named %q on this Mac", vmRef.Provider, vmRef.Instance)
 }
 
 // resolveAgent picks the endpoint the suite runs against, and says so: a
@@ -265,10 +326,13 @@ func TestGuestListenerReachableOnMacLocalhost(t *testing.T) {
 func TestForwarderHalfClose(t *testing.T) {
 	requireE2E(t)
 
-	const fwdAddr = "tcp://127.0.0.1:" + forwardedPort
+	fwdAddr := forwardedEndpoint()
+	if fwdAddr == "" {
+		t.Skip("no forwarded transport endpoint for this provider")
+	}
 	c, err := transport.Dial(fwdAddr)
 	if err != nil {
-		t.Skipf("forwarded agent port not answering at %s (Lima forward down?): %v", fwdAddr, err)
+		t.Skipf("forwarded agent port not answering at %s (forward down?): %v", fwdAddr, err)
 	}
 	c.Close()
 	t.Logf("agent transport: %s source=forced-forwarder", fwdAddr)
@@ -609,10 +673,24 @@ type seccompProbeResult struct {
 // linuxEADDRINUSE is the guest kernel's EADDRINUSE value (asm-generic).
 const linuxEADDRINUSE = 98
 
-// guestAgentBin is the agent binary path, identical on both sides of the
-// rw mount.
+// guestAgentBin is the agent binary to run inside the guest.
+//
+// On the Lima dev VM it is the build tree's own cross-compiled binary, at the
+// host's path, because the repo is mounted rw and running the artifact the
+// developer just built is the whole point of the dev loop.
+//
+// On a podman machine it is `/usr/local/bin/drawbridge-agent`, the one
+// `drawbridge up` installed, and the reason is the 7.2 trap: the virtiofs
+// mount carrying the build tree is labelled `nfs_t` wholesale, systemd
+// (`init_t`) may not exec that, and a `systemd-run` of the mounted path dies
+// with status=203/EXEC while an interactive `sudo <same path>` runs fine.
+// The failure then surfaces as "guest sink never mirrored", which reads like
+// a mirror bug.
 func guestAgentBin(t *testing.T) string {
 	t.Helper()
+	if vmRef.Provider == vmprovider.ProviderPodman {
+		return "/usr/local/bin/drawbridge-agent"
+	}
 	p, err := filepath.Abs("../../bin/drawbridge-agent-linux-arm64")
 	if err != nil {
 		t.Fatal(err)
