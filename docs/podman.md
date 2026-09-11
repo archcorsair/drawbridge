@@ -1211,6 +1211,11 @@ install -vm podman:spike` then `status` showed the daemon at
 `tcp://127.0.0.1:4778 (flag)`, auth ok, mirror and sync sessions up.
 Note the e2e gate: the 7.1 hand-off command omitted `DRAWBRIDGE_E2E=1`,
 without which every leg skips green; the recipe must carry it.
+Dev-VM regression the same session: `just vm-up && just agent-up && just
+e2e` at baseline, 14 pass / 2 root-gated skips / 0 fail, on the 7.1 agent
+build (`v0.1.1-14-g4f378a3`), so the Lima path is unchanged by the podman
+work. (A `just e2e` against a stopped VM prints `ok` in 0.4 s with every
+leg skipped; read the `-v` output, not the exit status.)
 
 **Lesson for 7.2 (single launchd identity).** `install` writes one plist,
 `com.archcorsair.drawbridged`, whatever `-vm` says, and `uninstall`
