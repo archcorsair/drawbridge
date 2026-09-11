@@ -1794,6 +1794,263 @@ the Mac-held :8080 refused synchronously, containers removed, colima
 daemon restored. `just smoke-sudo-oci podman:spike-rootful` (rootful, after the machine
 swap) 14/14 as well, nginx at :80 through the root daemon. 7.4 accepted.
 
-## 7.5 results
+## 7.5 results (2026-09-11)
+
+**Landed: doctor speaks podman, and the two mirror decisions 7.1 and 7.2
+deferred here.** The catalog numbering is unchanged and a Lima or Colima run
+prints byte-identical text; what changed is that several checks now have two
+vocabularies, because "vz" and "vzNAT" are Lima words a podman machine does
+not speak. Building it found one real bug in doctor itself (it resolved a
+podman ref through the lease db and reported another VM's endpoint) and one
+in the daemon that had been hiding behind a lost bind race on Lima since
+Phase 2.
+
+### What landed
+
+| Commit | Files |
+|---|---|
+| `9a1f9f2` mirror | `internal/mirror/mirror.go` (`GuestAgentPort`), `agentport_test.go` (new); `internal/transport/transport.go` (`DefaultAgentPort`), `internal/agent/listen.go` (alias); `cmd/drawbridged/main.go` + `main_test.go` (`newExclude` takes both ports) |
+| `889f32d` skip-list | `internal/install/plist.go` (`DefaultSkip`, set-wise `samePorts`), `install_test.go`; `cmd/drawbridged/main.go` + `main_test.go`; `docs/ergonomics.md` §7 |
+| `87494f9` doctor | `internal/doctor/podman.go` + `podman_test.go` (new), `checks.go`, `gather.go`, `probe.go`, `checks_test.go`, `gather_test.go`; `internal/vmprovider/podmanforward.go` + `podmanforward_test.go` (new), `forwarding.go` (`Provider`), `podman.go` (the stub removed); `internal/install/plist.go` (`InstalledAgent`) |
+| `0a23745` up + smoke | `cmd/drawbridge/ocipodman.go`, `up.go`, `up_test.go`, `fakeguest_test.go`; `scripts/smoke-sudo/main.go` + `doctor_test.go` (new); `internal/vmprovider/podman.go` (`ErrPodmanRootScoped` wraps `ErrRootScoped`) |
+| `25b6fb1` docs | `docs/doctor.md`, `docs/HANDOFF.md`, `internal/e2e/skip_test.go` (header only) |
+
+Scope held: no `internal/bpf/` change, no wire-protocol change, no `just gen`.
+
+### The catalog, check by check
+
+1. **`providers`** reads the provider's own `Attachable` verdict instead of
+   comparing `VMType` to `"vz"`. libkrun is podman 6's default and both it
+   and applehv are attachable, so the "no host-reachable guest IP" wording a
+   qemu instance earns never appears for one. A running machine is evidenced
+   with its rootfulness and ssh port, read from the machine's own config
+   file rather than exec'd. A stopped sibling gets the sentence that keeps it
+   from reading as trouble: only one podman machine runs at a time, so
+   stopped siblings are the normal state on every correctly configured Mac.
+2. **`guest-prereqs`** reports the crun floor (0.19, the listenerPath
+   contract), the guest's SELinux mode, the unprivileged-port floor on a
+   rootless machine, and the shared drop-in: where it really is, its Mac-side
+   path when that file is there, and which other machines read it. Info-grade
+   throughout, because the registration works and `podman info` is the
+   acceptance line. The one state it says loudly is a drop-in present while
+   `podman info` reports some other runtime, which looks done and is not.
+3. **`agent`** gains branch A's evidence. The agent being active and the Mac
+   being able to reach it are two claims on a podman machine: the guest owns
+   its own gvproxy publish and re-posts it at every start, so an agent that
+   is up without one is running and unreachable. That is a `fail` ("up but
+   not published"), and a table that could not be read is a `warn`, not a
+   verdict.
+4. **`resolution`** stops calling a gvproxy-published loopback endpoint a
+   fallback: it is the only path a podman machine has, chosen at design time,
+   and there is nothing better it failed to reach. It surfaces
+   `vmrecord.Record.Disagreements` (the 7.2 comparison `install` refuses on)
+   as a `fail` naming the field that moved, and under euid 0 it reports the
+   plist's pinned `-agent` instead of reading the user's record.
+5. **`vznat-route`** and 6. **`local-network`** skip. There is no vmnet
+   interface and loopback is not subject to the Local Network gate, so the
+   sudo discriminator is not printed for a run that could learn nothing from
+   it.
+7. **`ne-filter`** is untouched, as §7 says.
+8. **`half-close-probe`** flips its loopback caveat. On this provider
+   loopback *is* the transport's path, so "evidence about the agent, not
+   about the vznat-direct path" would be false; and a starve there is a
+   `fail` naming gvproxy's tcpproxy half-close boundary (2025-01-21) with
+   "check the gvproxy your podman bundles" as the remedy, rather than the
+   "loopback should never show this" warn a Lima fallback earns.
+9. **`daemon`** is untouched.
+10. **`coexistence`** gets podman's real detector and podman's own tradeoff.
+    `vmprovider.Podman.Forwarding` is no longer the 7.1 stub: it reads
+    gvproxy's in-guest table and filters out podman's own ssh forward and
+    drawbridge's own transport publish by their guest-side port, so what is
+    left is exactly the user's `-p` publications. The wording says what makes
+    this different in kind from Lima: a published container is bridged, has
+    its own netns, is excluded by the tracker's `host_netns_inum` check, and
+    was never a mirror candidate. The remedy is the honest one, which is not
+    an opt-out: with drawbridge attached, `--network host` needs no `-p`.
+11. **`skip-visibility`** is untouched except that its title now follows
+    `install.DefaultSkip` rather than spelling `22`.
+
+### The two mirror decisions
+
+**(a) The daemon never mirrors the guest's own transport listener.** The
+exclusion compared a guest listener against the port *this Mac dials*, which
+on Lima and Colima is also the port the agent listens on in the guest. On a
+podman machine it is not: the Mac dials a gvproxy-published loopback port,
+4778 and up by construction, while the listener inside the guest is still on
+4777. So the daemon mirrored the agent's own transport onto Mac `:4777`,
+visible in the podman log as a mirror that then lost the bind race and, on
+Lima, hidden behind the SSH forward that happens to hold that port already.
+Losing a race is not the same thing as being right.
+
+`mirror.Client` gains `GuestAgentPort` (zero meaning
+`transport.DefaultAgentPort`) and the syncer's `Exclude` takes both ports, so
+a Mac listener is never synced onto the port the guest's agent holds either.
+The constant moved to `internal/transport`, which both sides already import;
+`agent.DefaultTransportPort` is now an alias, so the agent's own spelling is
+unchanged and the two cannot drift.
+
+**(b) chrony's udp `:323` joins the default skip-list.** Every podman machine
+guest runs chrony and binds udp/323 on loopback, so the default mirror set on
+a podman machine carried a Mac-side listener for the guest's own clock
+daemon. Nothing on the Mac dials it, and the guest clock is the guest's
+business in either direction. The list stays a set of ports rather than
+protocol/port pairs, so this covers tcp/323 too; nothing assigned uses it.
+On Lima and Colima nothing changes visibly unless the guest runs chrony.
+
+Two entries also make a second spelling of the default possible, so
+`samePorts` now compares as a set: `-skip 323,22` asks for exactly the
+shipped behaviour and must not pin it into the plist any more than
+`-skip 22,323` does.
+
+**(c) The shared drop-in warns.** `up --oci` on a podman machine names the
+other machines that read the same registration. A warning and never a
+refusal: the registration is correct for every machine that has the wrapper,
+a machine that does not falls back to the real crun, and there is nothing
+here to stop. There is only a fact a user cannot discover from the path they
+were shown.
+
+### Verified live
+
+All of it on `podman:spike` (libkrun, rootless, provisioned with `--oci`),
+with the released colima root daemon installed and running throughout:
+
+```
+$ ./bin/drawbridge doctor -vm podman:spike -v
+[ok]   VM providers — 1 attachable instance(s) running
+         podman:spike running on libkrun, rootless, ssh port 57446
+         podman:spike-rootful stopped (libkrun)
+         podman:spike-hv stopped (applehv)
+         only one podman machine runs at a time, so other machines being stopped is the normal state, not a fault
+[ok]   guest prerequisites — kernel 7.1.3-200.fc44.aarch64, BTF, cgroup v2, systemd
+         SELinux is Enforcing; every file `drawbridge up` installs is relabelled for it
+         net.ipv4.ip_unprivileged_port_start is 1024 on a rootless machine, so a container cannot bind a port below it.
+         --oci: /etc/containers/containers.conf.d/50-drawbridge.conf registers /usr/local/bin/drawbridge-crun as podman's crun runtime
+         `podman info` runtime path: /usr/local/bin/drawbridge-crun
+         that path is on a virtiofs mount of this Mac's own podman config directory … ONE file on the Mac …
+         on this Mac: /Users/nxc/.config/containers/containers.conf.d/50-drawbridge.conf
+         podman machines that therefore also see it: podman:spike-rootful, podman:spike-hv
+[ok]   guest agent — v0.1.1-…, active, published on 127.0.0.1:4778
+         gvproxy: published 127.0.0.1:4778 -> 192.168.127.2:4777 (the Mac dials tcp://127.0.0.1:4778)
+         gvproxy: 127.0.0.1:4778 -> 192.168.127.2:4777 (the endpoint this Mac dials)
+[ok]   endpoint resolution — tcp://127.0.0.1:4778 (gvproxy-publish)
+         record: …/vm-podman-spike.json -> tcp://127.0.0.1:4778 (source gvproxy-publish)
+[skip] vzNAT route — not applicable to a podman machine
+[skip] Local Network permission — not applicable to a podman machine
+[ok]   provider forwarder coexistence — nothing published
+[info] skip-list — guest 22,323 is not mirrored by default
+```
+
+The four fault injections the phase was specified against:
+
+```
+# -probe, agent up (20 s, the post-FIN window)
+[ok]   half-close probe — the agent kept streaming after the client's FIN
+         the endpoint is loopback, and on this provider that IS the transport's path
+         (gvproxy publishes it there), so this is evidence about the real path and not only about the agent.
+
+# agent stopped in the guest
+[fail] guest agent — drawbridge-agent.service is inactive
+         ss: nothing listening on :4777
+
+# the record's ssh port edited by hand, then restored
+[fail] endpoint resolution — the record no longer matches the machine
+         record vs `podman machine inspect`: ssh port: recorded 61000, now 57446
+           (the port is assigned at `podman machine init`, so a new one means the machine was recreated)
+       → re-run `drawbridge up <vm>` and then `sudo drawbridge install -vm <vm>`
+
+# podman run -d -p 8081:80 nginx, then removed
+[warn] provider forwarder coexistence — this machine has published ports
+         gvproxy forwards: loopback none, wildcard 8081 (podman's own ssh forward and drawbridge's transport publish excluded)
+         … A published container is bridged … was never a mirror candidate.
+       → nothing to fix unless a port collides … drop the `-p` and the listener is mirrored with full semantics
+
+# and the shared-drop-in warning, at the moment `up --oci` writes the file
+drawbridge: WARNING: 2 other podman machine(s) on this Mac read that same file: podman:spike-rootful, podman:spike-hv
+  They will exec /usr/local/bin/drawbridge-crun too, and fall back to the real crun where it is not installed.
+  `drawbridge down` on ANY machine removes the registration for all of them.
+```
+
+Lima, unchanged and checked the same session: resolution `vznat-direct`, the
+vzNAT route check ok on `192.168.64.0/24`, Local Network ok ("not blocking
+this binary"), and no podman vocabulary anywhere in the report.
+
+Unit: `go test ./internal/doctor/ ./internal/vmprovider/ ./internal/mirror/
+./internal/install/ ./cmd/drawbridge/ ./scripts/smoke-sudo/` green with
+fixtures for every new branch, `-race` green on all six, `go vet ./...` and
+the full `go test ./...` clean. Dev VM: `just e2e` **14 pass / 2 root-gated
+skips / 0 fail**, the skip-list legs included (they run their own `-skip`
+list naming a test port, which is also the override path, so the default's
+second entry does not reach them).
+
+### What the plan got wrong, and what building it found
+
+1. **Doctor resolved a podman machine through the lease db.** Not a §7
+   omission so much as an omission nobody noticed: `Gather` called
+   `limaaddr.ResolveTarget` for every target. A podman ref has no lease
+   record, so `Target.leaseName()` filled in `lima-spike`, found nothing, and
+   fell through to the loopback probe, which connected to the Lima dev VM's
+   own forwarded `127.0.0.1:4777`. Doctor therefore reported `tcp://127.0.0.1:4777
+   (ssh-forwarder)` as `podman:spike`'s endpoint: another VM's transport,
+   presented as this machine's, on a check whose entire job is to say what
+   the daemon will dial. Resolution now dispatches on the provider the way
+   `drawbridged` does. The unit test that would have caught it exists on the
+   daemon side (`TestPodmanRefsNeverReachTheLeaseDb`) and had no counterpart
+   here.
+2. **`Instance.Attachable` was not enough on its own.** Switching check 1
+   and target selection from a `VMType == "vz"` compare to the provider's
+   verdict is right, and it made every doctor fixture that had not set
+   `Attachable` read as unattachable. That is the correct failure (a fixture
+   that omits a field the product fills is a fixture that lies), but it is
+   worth recording that the field is not self-enforcing: nothing stops a new
+   provider from leaving it false.
+3. **`ErrPodmanRootScoped` did not answer `errors.Is(err, ErrRootScoped)`.**
+   Check 1 distinguishes "no instances" from "instances are not listable as
+   root" by that predicate, and podman's refusal was a separate sentinel. On
+   this Mac lima and colima are also installed, so the flag was set anyway
+   and the bug was invisible; on a podman-only Mac `sudo drawbridge doctor`
+   would have reported "installed, nothing running". It now wraps.
+4. **§7's check 10 could not be built as one read.** The design has check 3
+   reading gvproxy's table through an in-guest GET and check 10 reading it
+   through `vmprovider.Forwarder`. Doing both is two round trips to the same
+   API in one run, whose answers can differ by a container start. The guest
+   script fetches the table once, fenced, and both checks classify that text
+   through `vmprovider.ParseGvproxyForwards`, which stays the `Forwarder`
+   implementation for `up`.
+5. **`Forwarding` needed a `Provider` field.** §7 has check 10 branching on
+   the provider, but the value it classifies did not carry one, and the
+   caller had stopped knowing which provider it came from by then. One
+   additive field, empty meaning lima/colima.
+6. **The finding titles keep their em dash.** It is the catalog's display
+   format, shared with every check this phase did not touch, and changing it
+   only for the new branches would make the report inconsistent with itself.
+   Every line of prose written for this phase (comments, evidence sentences,
+   remedies, commit messages, this section) has none.
+
+### Left for the user (needs sudo)
+
+One command, one password prompt, JSON on stdout:
+
+```
+just smoke-sudo podman:spike        # expect ran 11 / passed 11 / failed 0
+```
+
+Eleven rather than ten: the run gains `root-doctor-has-no-failures` between
+the bind legs and `uninstall`. It runs `sudo <bin> doctor -vm podman:spike`
+and asserts the report has no `[fail]` finding, recording the summary line as
+its detail. Warnings are not failures, deliberately: a Mac with a content
+filter installed warns on check 7 forever.
+
+The `--oci` container legs are still one flag away and still 14:
+
+```
+just smoke-sudo-oci podman:spike    # expect ran 14 / passed 14 / failed 0
+```
+
+Note the one coupling: the check compares the guest agent's version against
+the CLI's, so the guest has to be provisioned from the same commit the smoke
+run builds. `spike` was left provisioned at the tip of this phase with a
+clean tree, so a `just smoke-sudo` from that commit matches. If the tree is
+dirty or the commit has moved, run `./bin/drawbridge up podman:spike --oci`
+first and the skew heals.
 
 ## 7.6 results
