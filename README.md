@@ -258,10 +258,12 @@ authentication, `up`/`down` provisioning for Lima and Colima, `doctor`, and the
 TUI. `docker run --network host nginx` in the guest really does serve
 `http://localhost:80` on the Mac.
 
-v0.0.1 is the current release: tagged through goreleaser, universal binaries,
-installed via the Homebrew tap, and acceptance-tested end to end against a
-Colima VM with the released artifacts. Next: Podman machine + crun, and row
-detail in the TUI. Current state always lives in
+v0.1.1 is the current release (v0.1.0 on 2026-08-15 froze the TUI keybinding
+map and shipped the row-detail and refusal-grouping work; v0.1.1 fixed a
+bare-`drawbridge` panic the same day). Releases are tagged through goreleaser
+as universal binaries, installed via the Homebrew tap, and the quickstart was
+acceptance-tested end to end against a Colima VM on the released v0.0.1
+artifacts. Next: Podman machine + crun. Current state always lives in
 [docs/HANDOFF.md](docs/HANDOFF.md).
 
 ## Development

@@ -412,7 +412,9 @@ is the contract; the TUI adds no posture of its own):
 
 This section is the Phase 6 contract: the quickstart cites these keys, and
 changing them after v0.1.0 is a documented breaking change to muscle
-memory. Keys were chosen to survive small keyboards and SSH (no function
+memory. **v0.1.0 shipped 2026-08-15, so the map below is frozen**: any
+change from here on is a breaking change that must be called out in the
+release notes. Keys were chosen to survive small keyboards and SSH (no function
 keys, no alt/meta chords, no ctrl beyond `ctrl+c`).
 
 ### 4.1 The map
