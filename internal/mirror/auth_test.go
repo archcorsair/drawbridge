@@ -86,7 +86,7 @@ func TestMutualAuthAllConnTypes(t *testing.T) {
 	secret := newSecret(t)
 	guestPort := freeTCPPort(t)
 	fa := newFakeAgent(t, []listenerInfo{{Proto: "tcp", Port: guestPort, Addr: "0.0.0.0"}})
-	fa.secret = secret
+	fa.setSecret(secret)
 
 	m := runClient(t, fa, macConfig(t, secret))
 
@@ -137,7 +137,8 @@ func TestSessionRefusesWrongAgentProof(t *testing.T) {
 	secret, squatter := newSecret(t), newSecret(t)
 	guestPort := freeTCPPort(t)
 	fa := newFakeAgent(t, []listenerInfo{{Proto: "tcp", Port: guestPort, Addr: "0.0.0.0"}})
-	fa.secret, fa.answerWith = secret, squatter
+	fa.setSecret(secret)
+	fa.setAnswerWith(squatter)
 
 	m := runClient(t, fa, macConfig(t, secret))
 
@@ -160,14 +161,14 @@ func TestSpliceGatesClientBytesOnProof(t *testing.T) {
 	secret, squatter := newSecret(t), newSecret(t)
 	guestPort := freeTCPPort(t)
 	fa := newFakeAgent(t, []listenerInfo{{Proto: "tcp", Port: guestPort, Addr: "0.0.0.0"}})
-	fa.secret = secret
+	fa.setSecret(secret)
 
 	m := runClient(t, fa, macConfig(t, secret))
 	waitFor(t, "the mirror", func() bool { return m.Mirrors("tcp", guestPort) })
 
 	// The peer turns hostile between the session and the splice: from now on
 	// it answers with a proof it minted from its own secret.
-	fa.answerWith = squatter
+	fa.setAnswerWith(squatter)
 
 	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", guestPort))
 	if err != nil {
@@ -197,7 +198,7 @@ func TestSessionDiagnosesMismatchOnClose(t *testing.T) {
 	sink := captureLog(t)
 	guestPort := freeTCPPort(t)
 	fa := newFakeAgent(t, []listenerInfo{{Proto: "tcp", Port: guestPort, Addr: "0.0.0.0"}})
-	fa.secret = newSecret(t) // not the Mac's
+	fa.setSecret(newSecret(t)) // not the Mac's
 
 	m := runClient(t, fa, macConfig(t, newSecret(t)))
 
@@ -217,7 +218,7 @@ func TestSessionDiagnosesMismatchOnClose(t *testing.T) {
 func TestUnauthenticatedClientDiagnosesEarlyClose(t *testing.T) {
 	sink := captureLog(t)
 	fa := newFakeAgent(t, nil)
-	fa.closeAfterFrame = true
+	fa.setCloseAfterFrame(true)
 
 	auth := macConfig(t, nil)
 	auth.SecretFile = filepath.Join(t.TempDir(), "transport-secret-colima-colima")

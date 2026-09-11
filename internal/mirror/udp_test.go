@@ -30,6 +30,11 @@ type fakeAgent struct {
 	// answer from a different secret — a squatter that verified nothing.
 	// closeAfterFrame hangs up the moment the hello lands, which is how a
 	// secretful guest treats an unauthenticated peer (§7 row 1).
+	//
+	// Tests set these after serve is already accepting, and one of them
+	// (answerWith) flips mid-session, so every access goes through mu:
+	// writers via the set* methods, the accept path via authState.
+	mu              sync.Mutex
 	secret          *transportauth.Secret
 	answerWith      *transportauth.Secret
 	closeAfterFrame bool
@@ -66,11 +71,36 @@ func newFakeAgent(t *testing.T, listeners []listenerInfo) *fakeAgent {
 	return a
 }
 
+func (a *fakeAgent) setSecret(s *transportauth.Secret) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.secret = s
+}
+
+func (a *fakeAgent) setAnswerWith(s *transportauth.Secret) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.answerWith = s
+}
+
+func (a *fakeAgent) setCloseAfterFrame(v bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.closeAfterFrame = v
+}
+
+// authState snapshots the auth knobs for one accepted conn.
+func (a *fakeAgent) authState() (secret, answerWith *transportauth.Secret, closeAfterFrame bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.secret, a.answerWith, a.closeAfterFrame
+}
+
 // handshake is the agent half of the mutual proof. Reports false when the
 // conn was refused (and closed).
-func (a *fakeAgent) handshake(c net.Conn, frame [4]byte) bool {
+func (a *fakeAgent) handshake(c net.Conn, frame [4]byte, secret, answerWith *transportauth.Secret) bool {
 	auth := frame[1]
-	if a.secret == nil {
+	if secret == nil {
 		if auth != transportauth.AuthNone {
 			a.note("peer requires auth, this agent has no secret")
 			c.Close()
@@ -88,14 +118,14 @@ func (a *fakeAgent) handshake(c net.Conn, frame [4]byte) bool {
 		c.Close()
 		return false
 	}
-	if !transportauth.Verify(a.secret.MacProof(frame), got[:]) {
+	if !transportauth.Verify(secret.MacProof(frame), got[:]) {
 		a.note("invalid transport secret")
 		c.Close()
 		return false
 	}
-	answer := a.secret
-	if a.answerWith != nil {
-		answer = a.answerWith
+	answer := secret
+	if answerWith != nil {
+		answer = answerWith
 	}
 	p := answer.AgentProof(frame)
 	if _, err := c.Write(p[:]); err != nil {
@@ -123,6 +153,7 @@ func (a *fakeAgent) serve() {
 }
 
 func (a *fakeAgent) handle(c net.Conn) {
+	secret, answerWith, closeAfterFrame := a.authState()
 	var frame [4]byte // type frame: {type, auth, 0, 0}
 	if _, err := io.ReadFull(c, frame[:]); err != nil {
 		c.Close()
@@ -132,12 +163,12 @@ func (a *fakeAgent) handle(c net.Conn) {
 		c.Close()
 		return
 	}
-	if a.closeAfterFrame {
+	if closeAfterFrame {
 		a.note("closed right after the frame")
 		c.Close()
 		return
 	}
-	if !a.handshake(c, frame) {
+	if !a.handshake(c, frame, secret, answerWith) {
 		return
 	}
 	switch frame[0] {

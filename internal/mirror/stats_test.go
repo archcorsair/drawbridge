@@ -19,7 +19,7 @@ func TestSpliceAccounting(t *testing.T) {
 	secret := newSecret(t)
 	guestPort := freeTCPPort(t)
 	fa := newFakeAgent(t, []listenerInfo{{Proto: "tcp", Port: guestPort, Addr: "0.0.0.0"}})
-	fa.secret = secret
+	fa.setSecret(secret)
 	m := runClient(t, fa, macConfig(t, secret))
 	waitFor(t, "the mirror", func() bool { return m.Mirrors("tcp", guestPort) })
 
