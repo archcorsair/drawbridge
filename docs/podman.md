@@ -1393,8 +1393,12 @@ through the root daemon. `uninstall` then `sudo drawbridge install -vm
 colima:default` (brew CLI) restored the previous daemon on
 `vznat-leases`. Caveat: the binary used was `v0.1.1-14-g4f378a3`, built
 by `just e2e` before the 7.2 commits, so the replacement line was not
-exercised live in that run; `bin/` is rebuilt at `f2c4367` and the line
-is re-checked below. Two things the podman daemon mirrored that 7.5 must
+exercised live in that run; `bin/` was rebuilt at `f2c4367` and the
+install re-run: both directions printed the notice ("replacing the
+installed daemon for colima:default with podman:spike; the old VM's
+mirror and sync sessions stop", and the converse on the way back), the
+podman daemon came up on 4778 and the colima daemon on `vznat-leases`.
+7.2 accepted. Two things the podman daemon mirrored that 7.5 must
 rule on: the guest's own transport `:4777` onto Mac `:4777`, and chrony's
 udp `:323`.
 
