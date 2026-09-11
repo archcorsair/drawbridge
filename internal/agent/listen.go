@@ -306,10 +306,27 @@ type TransportListeners struct {
 	serve func(net.Listener)
 	logf  func(string, ...any)
 
-	mu     sync.Mutex
-	lns    []net.Listener
-	closed bool
-	done   chan struct{}
+	// publisher, when set, publishes the guest NIC listener's address through
+	// gvproxy's in-guest API once it is bound (docs/podman.md §3.2). nil on
+	// every provider but podman.
+	publisher *Publisher
+
+	mu        sync.Mutex
+	lns       []net.Listener
+	closed    bool
+	done      chan struct{}
+	published bool
+}
+
+// Option configures ListenTransport. Variadic so the agent's one call site
+// grows a flag without every other caller having to name a parameter it does
+// not use.
+type Option func(*TransportListeners)
+
+// WithPublisher publishes the guest NIC address through gvproxy once the
+// transport is listening on it, and unexposes it on Close.
+func WithPublisher(p *Publisher) Option {
+	return func(t *TransportListeners) { t.publisher = p }
 }
 
 // ListenTransport binds the agent's transport listeners for spec and serves
@@ -324,7 +341,7 @@ type TransportListeners struct {
 // allowSpec is the -transport-allow value (comma-separated CIDRs) added to
 // the built-in allowlist: guest loopback, and the Mac's address on the vzNAT
 // subnet.
-func ListenTransport(spec, allowSpec string, serve func(net.Listener), logf func(string, ...any)) (*TransportListeners, error) {
+func ListenTransport(spec, allowSpec string, serve func(net.Listener), logf func(string, ...any), opts ...Option) (*TransportListeners, error) {
 	extra, err := parseAllowCIDRs(allowSpec)
 	if err != nil {
 		return nil, err
@@ -337,6 +354,9 @@ func ListenTransport(spec, allowSpec string, serve func(net.Listener), logf func
 		serve: serve,
 		logf:  logf,
 		done:  make(chan struct{}),
+	}
+	for _, o := range opts {
+		o(t)
 	}
 	// Seed the Mac's source address for every mode, not just auto: an
 	// explicit or wildcard -transport must stay reachable from the Mac.
@@ -386,7 +406,7 @@ func (t *TransportListeners) autoVZNAT(port string) {
 				if h, ok := firstHost(p); ok {
 					t.allow.add(hostPrefix(h))
 				}
-				if !t.start(ln, "vzNAT") {
+				if !t.start(ln, "guest NIC") {
 					ln.Close()
 				}
 				return
@@ -423,7 +443,66 @@ func (t *TransportListeners) start(ln net.Listener, why string) bool {
 	t.mu.Unlock()
 	t.logf("drawbridge-agent: transport listening on %s (%s; sources: %s)", ln.Addr(), why, t.allow)
 	go t.serve(g)
+	t.publish(ln.Addr().String())
 	return true
+}
+
+// publish points gvproxy's forward at the guest NIC listener, once it exists.
+//
+// Only a concrete non-loopback address is publishable: the loopback listener
+// is not reachable from gvproxy's forwarder, and a wildcard bind (the
+// debugging `-transport :4777`) names no address to forward to. Publishing is
+// therefore attached to whichever listener first satisfies that, which on the
+// auto path is the guest NIC one and on an explicit -transport is the
+// endpoint the operator named.
+func (t *TransportListeners) publish(addr string) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil || !ip.IsValid() || ip.IsLoopback() || ip.IsUnspecified() {
+		return
+	}
+
+	t.mu.Lock()
+	p := t.publisher
+	if p == nil || t.published || t.closed {
+		t.mu.Unlock()
+		return
+	}
+	t.published = true
+	t.mu.Unlock()
+
+	// The NIC-bind schedule, for the same reason: gvproxy answers as soon as
+	// the guest has a network, which is roughly when the NIC appears, and a
+	// gateway that is not answering yet is worth retrying rather than failing.
+	go func() {
+		for i := 0; ; i++ {
+			err := p.Publish(addr)
+			if err == nil {
+				t.logf("drawbridge-agent: gvproxy: published %s -> %s (the Mac dials tcp://%s)", p.Local, addr, p.Local)
+				return
+			}
+			// First failure, then one line when the retries slow down. In
+			// between, silence: 30 attempts a minute in the journal is the
+			// same as no diagnosis at all.
+			if i == 0 || i == vznatFastRetries {
+				t.logf("drawbridge-agent: gvproxy: publishing %s -> %s failed (%v), retrying", p.Local, addr, err)
+			}
+			d := vznatFastDelay
+			if i >= vznatFastRetries {
+				d = vznatSlowDelay
+			}
+			tm := time.NewTimer(d)
+			select {
+			case <-t.done:
+				tm.Stop()
+				return
+			case <-tm.C:
+			}
+		}
+	}()
 }
 
 // Addrs reports the bound listener addresses (test/diagnostic helper).
@@ -437,7 +516,8 @@ func (t *TransportListeners) Addrs() []string {
 	return out
 }
 
-// Close stops the retry loop and closes every bound listener.
+// Close stops the retry loops, removes the gvproxy forward, and closes every
+// bound listener.
 func (t *TransportListeners) Close() error {
 	t.mu.Lock()
 	if !t.closed {
@@ -445,8 +525,12 @@ func (t *TransportListeners) Close() error {
 		close(t.done)
 	}
 	lns := t.lns
+	p := t.publisher
 	t.lns = nil
 	t.mu.Unlock()
+	if p != nil {
+		p.Unpublish()
+	}
 	var err error
 	for _, ln := range lns {
 		if e := ln.Close(); e != nil && err == nil {

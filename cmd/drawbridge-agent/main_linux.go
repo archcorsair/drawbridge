@@ -94,6 +94,11 @@ func main() {
 		"extra CIDRs allowed to open transport conns, comma-separated (built-in: guest loopback + the Mac's address on the vzNAT subnet)")
 	secretFile := flag.String("secret-file", transportauth.GuestPath,
 		"transport secret file (64 hex characters, mode 0600), written by `drawbridge up`; when it is absent the transport is unauthenticated")
+	gvproxyPublish := flag.String("gvproxy-publish", "",
+		"Mac-side host:port to publish the transport on through gvproxy's in-guest API (podman machines; empty disables it). "+
+			"The publish is re-established on every agent start, which is what brings the forward back after `podman machine stop`")
+	gvproxyGateway := flag.String("gvproxy-gateway", agent.DefaultGvproxyGateway,
+		"gvproxy's in-guest forwarding API base URL, used by -gvproxy-publish")
 	notifySock := flag.String("notify-sock", "/run/drawbridge-notify.sock", "seccomp notify-fd handoff socket (Phase 4)")
 	ociSock := flag.String("oci-sock", "/run/drawbridge-oci.sock", "OCI seccomp-agent listenerPath socket (runc/crun handoffs)")
 	flag.Parse()
@@ -133,7 +138,18 @@ func main() {
 	defer os.Remove(*sock)
 	go a.ServeControl(ln)
 
-	tset, err := agent.ListenTransport(*transportEP, *transportAllow, a.ServeTransport, log.Printf)
+	// The gvproxy publish is a startup side effect behind a flag, not a wire
+	// change: it points a forward at the listener the agent already binds
+	// (docs/podman.md §3.2). Close() unexposes it on the way out.
+	var topts []agent.Option
+	if *gvproxyPublish != "" {
+		topts = append(topts, agent.WithPublisher(&agent.Publisher{
+			Gateway: *gvproxyGateway,
+			Local:   *gvproxyPublish,
+			Logf:    log.Printf,
+		}))
+	}
+	tset, err := agent.ListenTransport(*transportEP, *transportAllow, a.ServeTransport, log.Printf, topts...)
 	if err != nil {
 		log.Fatalf("drawbridge-agent: transport: %v", err)
 	}
