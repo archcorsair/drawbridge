@@ -550,6 +550,17 @@ type preflight struct {
 	Crun     string
 	CrunPath string
 
+	// ContainersFS is the filesystem type carrying /etc/containers.
+	//
+	// It exists because of a live finding, not a design decision: a podman
+	// machine mounts the *Mac's* ~/.config/containers there over virtiofs
+	// (an `etc-containers.mount` unit in the image), so the drop-in `up
+	// --oci` writes "in the guest" is a file on the Mac, shared by every
+	// podman machine and read by the Mac's own podman client. Nothing about
+	// what is written changes; what changes is what `up` has to say about
+	// it (docs/podman.md §7.4 results).
+	ContainersFS string
+
 	// User is the login user the provider shells in as — `core` on a podman
 	// machine — and therefore the uid a rootless engine's runtime runs as.
 	// It is what `-oci-sock-owner` is set from (docs/podman.md §6.3).
@@ -584,6 +595,7 @@ command -v restorecon >/dev/null 2>&1 && echo restorecon=yes || echo restorecon=
 echo "selinux=$(getenforce 2>/dev/null || true)"
 echo "crun=$(crun --version 2>/dev/null | head -1 | awk '{print $3}')"
 echo "crun_path=$(command -v crun 2>/dev/null || true)"
+echo "containers_fs=$(findmnt -no FSTYPE --target /etc/containers 2>/dev/null || true)"
 echo "user=$(id -un 2>/dev/null || true)"
 echo "unpriv_port=$(sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null || true)"
 [ -S /run/podman/podman.sock ] && echo rootful=yes || echo rootful=no
@@ -647,6 +659,8 @@ func parsePreflight(out string) preflight {
 			p.CrunPath = v
 		case "user":
 			p.User = v
+		case "containers_fs":
+			p.ContainersFS = v
 		case "unpriv_port":
 			p.UnprivPort = v
 		}

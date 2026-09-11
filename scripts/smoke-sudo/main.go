@@ -6,6 +6,7 @@
 // progress goes to stderr.
 //
 //	just smoke-sudo vm=podman:spike
+//	just smoke-sudo-oci podman:spike     # the same, plus the --oci container legs
 //
 // Every step is a named check with ok/detail; a failed step does not skip
 // the cleanup steps, so the machine is left the way it was found. Exit
@@ -42,6 +43,7 @@ type check struct {
 
 type report struct {
 	VM         string  `json:"vm"`
+	OCI        bool    `json:"oci"`
 	PreviousVM string  `json:"previous_vm,omitempty"`
 	Binary     string  `json:"binary"`
 	Version    string  `json:"version,omitempty"`
@@ -57,10 +59,27 @@ const (
 	guestHTTPPort = 48080 // guest listener, expected on Mac 127.0.0.1
 	macHTTPPort   = 48081 // Mac listener, expected inside the guest
 	guestUnit     = "drawbridge-smoke"
+
+	// The --oci legs run real containers under the wrapper. nginx because
+	// it is the quickstart demo's own image and because a container that
+	// fails to bind says so on stderr and exits non-zero, which is the
+	// synchronous refusal seen from the workload's side.
+	ociImage   = "docker.io/library/nginx"
+	ociWebName = "drawbridge-smoke-web"
+	ociDupName = "drawbridge-smoke-dup"
+	ociConf    = "/tmp/drawbridge-smoke-nginx.conf"
+	ociDupConf = "/tmp/drawbridge-smoke-nginx-dup.conf"
+
+	// The rootless port. :80 cannot work there and it is not drawbridge
+	// that stops it: FCOS ships net.ipv4.ip_unprivileged_port_start=1024,
+	// so the kernel refuses the bind long before the wrapper is involved.
+	ociRootlessPort = 8080
+	ociRootfulPort  = 80
 )
 
 func main() {
 	vm := flag.String("vm", "", "VM to install the daemon for (provider:name)")
+	oci := flag.String("oci", "", "also run the --oci container legs (\"1\"/\"true\"): the guest must already be provisioned with `drawbridge up <vm> --oci`, and the image must already be pulled")
 	bin := flag.String("bin", "bin/drawbridge", "drawbridge CLI whose sibling drawbridged gets installed")
 	restoreBin := flag.String("restore-bin", "", "CLI used to reinstall the previous daemon (default: `drawbridge` on PATH if it differs from -bin, else -bin)")
 	flag.Parse()
@@ -74,7 +93,7 @@ func main() {
 		os.Exit(2)
 	}
 	binAbs, _ := filepath.Abs(*bin)
-	r := &report{VM: *vm, Binary: binAbs}
+	r := &report{VM: *vm, Binary: binAbs, OCI: *oci == "1" || *oci == "true"}
 	if out, err := exec.Command(binAbs, "version").Output(); err == nil {
 		r.Version = strings.TrimSpace(string(out))
 	}
@@ -83,7 +102,7 @@ func main() {
 	}
 	r.RestoreBin = pickRestoreBin(*restoreBin, binAbs)
 
-	s := &suite{r: r, ref: ref, bin: binAbs, prov: vmprovider.ForRef(ref)}
+	s := &suite{r: r, ref: ref, bin: binAbs, prov: vmprovider.ForRef(ref), oci: *oci == "1" || *oci == "true"}
 	s.run()
 
 	enc := json.NewEncoder(os.Stdout)
@@ -112,6 +131,7 @@ type suite struct {
 	ref  vmprovider.Ref
 	bin  string
 	prov vmprovider.Provider
+	oci  bool
 }
 
 func (s *suite) step(name string, f func() (string, error)) bool {
@@ -148,6 +168,18 @@ func (s *suite) run() {
 
 	// Cleanup runs no matter what happened in between.
 	defer s.restore()
+	if s.oci {
+		defer s.step("oci-containers-stop", func() (string, error) {
+			// Unconditional and tolerant: a leg that failed halfway is
+			// exactly when a container is left running, and the machine has
+			// to be left the way it was found either way.
+			for _, n := range []string{ociWebName, ociDupName} {
+				s.prov.Shell(s.ref.Instance, nil, "podman", "rm", "-f", n)
+			}
+			s.prov.Shell(s.ref.Instance, nil, "rm", "-f", ociConf, ociDupConf)
+			return "removed " + ociWebName + ", " + ociDupName, nil
+		})
+	}
 	defer s.step("guest-listener-stop", func() (string, error) {
 		_, err := s.prov.Shell(s.ref.Instance, nil, "sudo", "systemctl", "stop", guestUnit)
 		return "unit " + guestUnit + " stopped", err
@@ -243,6 +275,10 @@ func (s *suite) run() {
 			}
 			return "", fmt.Errorf("no probe result in %q", strings.TrimSpace(string(out)))
 		})
+	}
+
+	if s.oci {
+		s.runOCI()
 	}
 
 	s.step("uninstall", func() (string, error) {
@@ -351,4 +387,151 @@ func firstLine(b []byte) string {
 func lastLine(b []byte) string {
 	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	return lines[len(lines)-1]
+}
+
+// ---------------------------------------------------------------------------
+// The --oci legs (docs/podman.md §6, §7.4)
+// ---------------------------------------------------------------------------
+
+// runOCI proves the one semantic the wrapper exists for, from a real
+// container rather than a probe: a host-network container's listener
+// appears on Mac localhost, and its bind onto a Mac-held port fails
+// synchronously with EADDRINUSE.
+//
+// It assumes the guest is already provisioned (`drawbridge up <vm> --oci`)
+// and the image already pulled. Both are `up`'s job and the network's, and
+// a smoke run that pulled a 70 MB image would be measuring the registry.
+func (s *suite) runOCI() {
+	rootful := s.machineIsRootful()
+	port := ociRootlessPort
+	if rootful {
+		// The quickstart's own demo. It works here and only here: a
+		// rootless container's :80 is refused by the kernel's
+		// ip_unprivileged_port_start long before drawbridge sees it.
+		port = ociRootfulPort
+	}
+
+	// The acceptance line from §6.2: podman itself reports the wrapper as
+	// the runtime it will exec. Everything below depends on it, so it is
+	// checked first and by asking podman rather than by reading our file.
+	s.step("oci-runtime-is-the-wrapper", func() (string, error) {
+		out, err := s.prov.Shell(s.ref.Instance, nil, "podman", "info", "--format", "{{.Host.OCIRuntime.Path}}")
+		got := strings.TrimSpace(lastLine(out))
+		if err != nil {
+			return got, err
+		}
+		want := guestbin.WrapperPath(guestbin.EnginePodman)
+		if got != want {
+			return "", fmt.Errorf("podman runtime path is %q, want %q — run `drawbridge up %s --oci` first", got, want, s.r.VM)
+		}
+		rootfulness := "rootless"
+		if rootful {
+			rootfulness = "rootful"
+		}
+		return got + " (" + rootfulness + " machine, container port " + fmt.Sprint(port) + ")", nil
+	})
+
+	s.step("oci-container-listener-mirrored-on-mac", func() (string, error) {
+		if err := s.writeNginxConf(ociConf, port); err != nil {
+			return "", err
+		}
+		if out, err := s.podmanRun(true, ociWebName, ociConf); err != nil {
+			return lastLine(out), fmt.Errorf("start %s: %w", ociWebName, err)
+		}
+		url := fmt.Sprintf("http://127.0.0.1:%d/", port)
+		body, err := waitHTTP(url, 25*time.Second)
+		if err != nil {
+			return "", err
+		}
+		if !strings.Contains(body, "drawbridge-smoke") {
+			return "", fmt.Errorf("unexpected body %q from %s", firstLine([]byte(body)), url)
+		}
+		return "host-net container :" + fmt.Sprint(port) + " answered on Mac " + url, nil
+	})
+
+	s.step("oci-container-bind-on-mac-port-is-eaddrinuse", func() (string, error) {
+		// The Mac already holds macHTTPPort — the suite's own listener,
+		// running since before `install`. A container that binds it must be
+		// refused by the kernel, synchronously, with the errno the workload
+		// itself prints.
+		if err := s.writeNginxConf(ociDupConf, macHTTPPort); err != nil {
+			return "", err
+		}
+		out, err := s.podmanRun(false, ociDupName, ociDupConf)
+		if err == nil {
+			return "", fmt.Errorf("the container bound Mac-held :%d and kept running", macHTTPPort)
+		}
+		if !strings.Contains(string(out), "Address already in use") {
+			return lastLine(out), fmt.Errorf("container failed, but not with EADDRINUSE on :%d", macHTTPPort)
+		}
+		// And the agent's own account of the same event, so a container
+		// that failed for an unrelated reason cannot pass this leg.
+		jrn, jerr := s.prov.Shell(s.ref.Instance, nil, "sudo", "journalctl", "-u", "drawbridge-agent", "--since", "-90s", "--no-pager")
+		if jerr != nil {
+			return "", fmt.Errorf("reading the agent journal: %w", jerr)
+		}
+		want := fmt.Sprintf(":%d", macHTTPPort)
+		var arbitrated bool
+		for _, line := range strings.Split(string(jrn), "\n") {
+			if strings.Contains(line, "notify: bind") && strings.Contains(line, want) && strings.HasSuffix(strings.TrimSpace(line), "-> inuse") {
+				arbitrated = true
+			}
+		}
+		if !arbitrated {
+			return "", fmt.Errorf("the container got EADDRINUSE but the agent logged no `notify: bind %s ... -> inuse` — it was refused by something else", want)
+		}
+		return fmt.Sprintf("container bind on Mac-held :%d refused synchronously; agent logged `-> inuse`", macHTTPPort), nil
+	})
+}
+
+// machineIsRootful asks the provider, not the guest: `podman machine
+// inspect` is the authority on what the machine was created as, and the
+// in-guest answer would be one more thing to get wrong on a machine that
+// has been `podman machine set --rootful`'d since.
+//
+// A driver that cannot answer is treated as rootless, which is the podman
+// default and the conservative choice: the rootless port works on a rootful
+// machine, and :80 on a rootless one does not.
+func (s *suite) machineIsRootful() bool {
+	insp, ok := s.prov.(interface {
+		Inspect(string) (vmprovider.PodmanInspect, error)
+	})
+	if !ok {
+		return false
+	}
+	got, err := insp.Inspect(s.ref.Instance)
+	if err != nil {
+		return false
+	}
+	return got.Rootful
+}
+
+// writeNginxConf stages a one-server config on the given port. The stock
+// image listens on 80, which a rootless container cannot have, so the port
+// has to come from a file — and `dd of=<path>` on stdin is the one staging
+// shape that survives a provider shell joining argv unquoted.
+func (s *suite) writeNginxConf(path string, port int) error {
+	body := fmt.Sprintf("server {\n    listen %d;\n    location / { return 200 \"drawbridge-smoke\\n\"; }\n}\n", port)
+	if _, err := s.prov.Shell(s.ref.Instance, strings.NewReader(body), "dd", "of="+path, "status=none"); err != nil {
+		return fmt.Errorf("staging %s: %w", path, err)
+	}
+	return nil
+}
+
+// podmanRun starts one container under the wrapper. Detached for the
+// listener leg, foreground for the one whose whole output is the evidence.
+//
+// No sudo: on a rootful machine the provider shell is already root, and on
+// a rootless one sudo would run root's podman instead of the machine's.
+// `:ro,Z` on the mount so SELinux relabels the staged config for container
+// access — the guest runs Enforcing, and an unlabelled mount is an AVC
+// denial with a container that starts and serves nothing.
+func (s *suite) podmanRun(detach bool, name, conf string) ([]byte, error) {
+	argv := []string{"podman", "run", "--rm"}
+	if detach {
+		argv = append(argv, "-d")
+	}
+	argv = append(argv, "--network", "host", "--name", name,
+		"-v", conf+":/etc/nginx/conf.d/default.conf:ro,Z", ociImage)
+	return s.prov.Shell(s.ref.Instance, nil, argv...)
 }

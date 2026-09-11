@@ -126,3 +126,12 @@ spike-halfclose:
 # back, progress on stderr. Exit 1 when any check failed.
 smoke-sudo vm: build
     go run ./scripts/smoke-sudo -vm {{vm}}
+
+# smoke-sudo plus the --oci container legs: a host-network container's
+# listener mirrored onto Mac localhost, and a second container's bind on a
+# Mac-held port refused synchronously with EADDRINUSE (the agent's own
+# `notify: bind ... -> inuse` is checked too, so a container that failed for
+# an unrelated reason cannot pass). Podman only, and the guest must already
+# be provisioned: `drawbridge up VM --oci`, with the nginx image pulled.
+smoke-sudo-oci vm: build
+    go run ./scripts/smoke-sudo -vm {{vm}} -oci 1

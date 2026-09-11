@@ -17,6 +17,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/archcorsair/drawbridge/internal/guestbin"
@@ -58,6 +60,7 @@ func provisionOCIPodman(g *guest, wrapper []byte, pf preflight, sockOwner string
 			return err
 		}
 		fmt.Fprintf(g.out, "drawbridge: wrote %s (podman's crun runtime now execs %s)\n", guestbin.DropinPath, wrapperPath)
+		noteSharedContainersConf(g, pf)
 	}
 
 	// The state file is rewritten whenever it no longer describes what is on
@@ -284,4 +287,54 @@ func revertOCIPodman(g *guest, st guestbin.PodmanState) error {
 	// Rootful sends the restart at the system manager instead.
 	reportPodmanRestart(g, g.restartPodmanAPI(st.Rootful, st.OCISockOwner), "revert")
 	return nil
+}
+
+// sharedFS are the filesystem types that mean /etc/containers is not the
+// guest's own directory. A podman machine image ships an
+// `etc-containers.mount` unit that virtiofs-mounts the Mac's podman config
+// directory there, which is podman's own design (registries, auth and
+// policy follow the user into every machine) and was not anticipated by
+// §6.2.
+var sharedFS = map[string]bool{"virtiofs": true, "9p": true, "nfs": true, "nfs4": true, "fuse.sshfs": true}
+
+// noteSharedContainersConf says what the drop-in actually is on a podman
+// machine, because it is not what its path suggests.
+//
+// The file itself is unchanged and the registration works exactly as
+// designed — `podman info` reads the wrapper path, which is the acceptance
+// line. What is different is scope: one file on the Mac rather than one
+// file per guest, read by every podman machine and by the Mac's own podman
+// client. That is worth a sentence at the moment it is written, because the
+// next person to wonder where it came from will be looking at their Mac.
+//
+// The Mac-side path is named only when it is actually found there. Podman's
+// config directory can be moved, and a guessed path in a message about a
+// file you did not expect is worse than no path at all.
+func noteSharedContainersConf(g *guest, pf preflight) {
+	if !sharedFS[strings.TrimSpace(pf.ContainersFS)] {
+		return
+	}
+	fmt.Fprintf(g.out, "drawbridge: note: the guest's %s is a %s mount of your Mac's podman config directory\n"+
+		"  (podman machine's own etc-containers.mount), so that drop-in is one file on the Mac, shared by\n"+
+		"  every podman machine and read by the Mac's podman client too. `drawbridge down` on any of them\n"+
+		"  removes it, and a machine without the wrapper falls back to the drop-in's second entry, the real crun.\n",
+		"/etc/containers", pf.ContainersFS)
+	if p, err := macContainersDropin(); err == nil {
+		fmt.Fprintf(g.out, "  On this Mac it is %s\n", p)
+	}
+}
+
+// macContainersDropin returns the Mac-side path of the drop-in when it is
+// where podman's conventional config directory would put it, and an error
+// otherwise. Existence is the whole test: this is evidence, not a guess.
+func macContainersDropin() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	p := filepath.Join(home, ".config", "containers", "containers.conf.d", filepath.Base(guestbin.DropinPath))
+	if _, err := os.Stat(p); err != nil {
+		return "", err
+	}
+	return p, nil
 }
