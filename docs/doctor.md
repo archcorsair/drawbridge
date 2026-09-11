@@ -192,7 +192,7 @@ that predates the endpoint degrades to exactly today's output.
   "mirror": {
     "sessionUp": true, "since": "2026-08-01T18:00:02Z", "lastEventAt": "2026-08-01T18:22:10Z",
     "entries": [{"proto": "tcp", "port": 8080, "state": "bound", "since": "…"}],
-    "skip": [22]
+    "skip": [22, 323]
   },
   "sync": {
     "sessionUp": true, "since": "2026-08-01T18:00:02Z",
@@ -425,8 +425,10 @@ and the warning to verify after restart. Never suggests auto-disable.
 
 **11. `skip-visibility` — the default exclusion, discoverable.** Inputs:
 snapshot `mirror.skip` + `skipped` entries when available, else log-tail
-skip lines. Always `ok`/`info`-grade: "guest :22 is not mirrored (default
+skip lines. Always `ok`/`info`-grade: "guest 22,323 is not mirrored (default
 skip-list; `-skip ""` or `-skip "…"` on drawbridged/install to override)" —
+the title follows `install.DefaultSkip`, so growing the list cannot leave the
+report saying something the daemon stopped doing —
 placed exactly where a confused user will look, per the §7 policy that skips
 are logged and discoverable.
 

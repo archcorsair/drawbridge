@@ -3,14 +3,15 @@
 // port is declined (audibly) instead of mirrored, and a Mac listener on a
 // skipped port is never synced into the guest's mac_ports.
 //
-// The default list is {22}, but :22 is the one port these legs cannot use:
-// the guest's real sshd holds it and the harness itself reaches the VM over
-// SSH, so a test that fought it would be testing the fixture, not the
+// The default list is {22, 323}, and neither is a port these legs can use:
+// the guest's real sshd holds :22 and the harness itself reaches the VM over
+// SSH, and :323 is chrony's, held by the guest's own clock daemon wherever
+// one runs. A test that fought either would be testing the fixture, not the
 // mechanism. Every leg below therefore runs the daemon's own wiring with an
-// explicit -skip list naming a test port — which is also the override path
+// explicit -skip list naming a test port, which is also the override path
 // (`-skip` replaces the list), so the flag and the mechanism are covered
-// together. That the default list is exactly {22} is pinned by unit tests in
-// cmd/drawbridged and internal/install.
+// together. That the default list is exactly {22, 323} is pinned by unit
+// tests in cmd/drawbridged and internal/install.
 package e2e
 
 import (
