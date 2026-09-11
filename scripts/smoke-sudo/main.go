@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -278,6 +279,25 @@ func (s *suite) run() {
 		})
 	}
 
+	// The root doctor run, always: the one vantage a user cannot get from an
+	// unprivileged `drawbridge doctor`, and the one that exercises the euid-0
+	// branches (the lease-db resolution root actually uses, the pinned -agent
+	// a podman machine reports instead of reading the user's record). A
+	// `[fail]` here is a real finding about the installed daemon, so the
+	// check is the absence of one rather than the exit status, which also
+	// counts a version skew between a dev CLI and a released daemon.
+	s.step("root-doctor-has-no-failures", func() (string, error) {
+		out, _ := sudo(s.bin, "doctor", "-vm", s.r.VM)
+		summary, failures := parseDoctorText(string(out))
+		if len(failures) > 0 {
+			return summary, fmt.Errorf("doctor reported %d failing check(s): %s", len(failures), strings.Join(failures, "; "))
+		}
+		if summary == "" {
+			return firstLine(out), errors.New("doctor printed no summary line")
+		}
+		return summary, nil
+	})
+
 	if s.oci {
 		s.runOCI()
 	}
@@ -375,6 +395,35 @@ func waitHTTP(url string, d time.Duration) (string, error) {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return "", fmt.Errorf("%s not reachable within %s: %v", url, d, last)
+}
+
+// doctorFindingRE matches one rendered finding line: `[status] title`. The
+// text form is the contract here rather than -json, because the text is what
+// a user pastes back and a check that parses what they see cannot disagree
+// with it.
+var doctorFindingRE = regexp.MustCompile(`^\[(ok|warn|fail|skip|info)\]\s+(.*)$`)
+
+// doctorSummaryRE matches the closing count line.
+var doctorSummaryRE = regexp.MustCompile(`^\d+ checks: .*$`)
+
+// parseDoctorText returns the summary line and the titles of every failing
+// check. Warnings are not failures: a Mac with a content filter installed
+// warns on check 7 forever, and a smoke run that treated that as broken
+// would be unusable on the machine it was written for.
+func parseDoctorText(out string) (summary string, failures []string) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if m := doctorFindingRE.FindStringSubmatch(line); m != nil {
+			if m[1] == "fail" {
+				failures = append(failures, m[2])
+			}
+			continue
+		}
+		if doctorSummaryRE.MatchString(line) {
+			summary = line
+		}
+	}
+	return summary, failures
 }
 
 func firstLine(b []byte) string {

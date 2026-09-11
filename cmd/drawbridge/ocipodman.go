@@ -32,7 +32,7 @@ import (
 // installed. Harmless here, because the drop-in's second element is the
 // real crun and podman falls back to it, but "harmless because of a
 // fallback" is not an ordering to rely on.
-func provisionOCIPodman(g *guest, wrapper []byte, pf preflight, sockOwner string) error {
+func provisionOCIPodman(g *guest, wrapper []byte, pf preflight, sockOwner string, otherPodmanMachines []string) error {
 	wrapperPath := guestbin.WrapperPath(EnginePodman)
 	changedWrapper, err := g.pushBinary(wrapper, wrapperPath)
 	if err != nil {
@@ -60,7 +60,7 @@ func provisionOCIPodman(g *guest, wrapper []byte, pf preflight, sockOwner string
 			return err
 		}
 		fmt.Fprintf(g.out, "drawbridge: wrote %s (podman's crun runtime now execs %s)\n", guestbin.DropinPath, wrapperPath)
-		noteSharedContainersConf(g, pf)
+		noteSharedContainersConf(g, pf, otherPodmanMachines)
 	}
 
 	// The state file is rewritten whenever it no longer describes what is on
@@ -310,7 +310,7 @@ var sharedFS = map[string]bool{"virtiofs": true, "9p": true, "nfs": true, "nfs4"
 // The Mac-side path is named only when it is actually found there. Podman's
 // config directory can be moved, and a guessed path in a message about a
 // file you did not expect is worse than no path at all.
-func noteSharedContainersConf(g *guest, pf preflight) {
+func noteSharedContainersConf(g *guest, pf preflight, others []string) {
 	if !sharedFS[strings.TrimSpace(pf.ContainersFS)] {
 		return
 	}
@@ -322,6 +322,25 @@ func noteSharedContainersConf(g *guest, pf preflight) {
 	if p, err := macContainersDropin(); err == nil {
 		fmt.Fprintf(g.out, "  On this Mac it is %s\n", p)
 	}
+	warnOtherMachines(g, others)
+}
+
+// warnOtherMachines says who else this registration reaches.
+//
+// A warning and never a refusal. The registration is correct for every
+// machine that has the wrapper, and a machine that does not falls back to
+// the drop-in's second entry, the real crun (verified live, 7.4). So there
+// is nothing here to stop; there is only a fact a user cannot discover from
+// the path they were shown, and being told it once at the moment it becomes
+// true is the whole remedy.
+func warnOtherMachines(g *guest, others []string) {
+	if len(others) == 0 {
+		return
+	}
+	fmt.Fprintf(g.out, "drawbridge: WARNING: %d other podman machine(s) on this Mac read that same file: %s\n"+
+		"  They will exec %s too, and fall back to the real crun where it is not installed.\n"+
+		"  `drawbridge down` on ANY machine removes the registration for all of them.\n",
+		len(others), strings.Join(others, ", "), guestbin.WrapperPath(EnginePodman))
 }
 
 // macContainersDropin returns the Mac-side path of the drop-in when it is

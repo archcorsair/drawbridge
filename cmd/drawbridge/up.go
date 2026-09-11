@@ -166,11 +166,41 @@ func up(g *guest, sel selection, o upOptions) error {
 
 	// --- step 5: --oci -----------------------------------------------------
 	if o.oci {
-		if err := provisionOCI(g, runc, pf, sockOwner); err != nil {
+		if err := provisionOCI(g, runc, pf, sockOwner, otherPodmanMachines(sel)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// otherPodmanMachines names the podman machines on this Mac that are not the
+// one being provisioned.
+//
+// They matter because the `--oci` drop-in is not the guest file its path
+// suggests: /etc/containers is a virtiofs mount of this Mac's own podman
+// config directory, so one write registers the wrapper for every machine
+// (docs/podman.md §"7.4 results"). A user who provisioned one machine has no
+// way to discover that from the path they were shown.
+//
+// A listing failure is silence, not an error: this produces a warning line,
+// and a warning that cannot be produced is not worth failing a provisioning
+// run over.
+func otherPodmanMachines(sel selection) []string {
+	if sel.Ref.Provider != vmprovider.ProviderPodman {
+		return nil
+	}
+	p := vmprovider.ForRef(sel.Ref)
+	insts, err := p.List()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, i := range insts {
+		if i.Provider == vmprovider.ProviderPodman && i.Name != sel.Ref.Instance {
+			out = append(out, i.Provider+":"+i.Name)
+		}
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -525,9 +555,9 @@ func (g *guest) enableAgent(restart bool) error {
 // dispatch (internal/ociruntime.RuntimeFor); what differs is how the engine
 // is told about it: a merge into a file Docker's user owns, or one whole
 // drop-in file podman reads and nobody else wrote.
-func provisionOCI(g *guest, wrapper []byte, pf preflight, sockOwner string) error {
+func provisionOCI(g *guest, wrapper []byte, pf preflight, sockOwner string, others []string) error {
 	if pf.Engine == EnginePodman {
-		return provisionOCIPodman(g, wrapper, pf, sockOwner)
+		return provisionOCIPodman(g, wrapper, pf, sockOwner, others)
 	}
 	return provisionOCIDocker(g, wrapper, pf.Engine)
 }
@@ -751,9 +781,18 @@ func handoff(g *guest, sel selection, out io.Writer) {
 	// silently degrading is the thing worth a warning.
 	if f, ok := g.p.(vmprovider.Forwarder); ok {
 		if fw, err := f.Forwarding(g.inst); err == nil && fw.Active() {
-			fmt.Fprintf(out, "drawbridge: note: this VM's own port forwarder is active (guest loopback %s, wildcard %s).\n"+
-				"  Ports it claims first will mirror without drawbridge's synchronous bind arbitration on the Mac side.\n"+
-				"  `drawbridge doctor` explains the tradeoff and the opt-out.\n", fw.Loopback, fw.Wildcard)
+			if fw.Provider == vmprovider.ProviderPodman {
+				// A different tradeoff, so a different sentence: these are
+				// `-p` publications of bridged containers, which were never
+				// mirror candidates at all (docs/podman.md §7 check 10).
+				fmt.Fprintf(out, "drawbridge: note: this machine has published ports (loopback %s, wildcard %s).\n"+
+					"  Those are bridged containers and were never mirrored; they only matter if a host-netns listener wants the same port.\n"+
+					"  `drawbridge doctor` explains it. With drawbridge attached, `--network host` needs no `-p` at all.\n", fw.Loopback, fw.Wildcard)
+			} else {
+				fmt.Fprintf(out, "drawbridge: note: this VM's own port forwarder is active (guest loopback %s, wildcard %s).\n"+
+					"  Ports it claims first will mirror without drawbridge's synchronous bind arbitration on the Mac side.\n"+
+					"  `drawbridge doctor` explains the tradeoff and the opt-out.\n", fw.Loopback, fw.Wildcard)
+			}
 		}
 	}
 

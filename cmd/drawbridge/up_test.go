@@ -622,3 +622,44 @@ func TestUpOCIPodmanRefusesOldCrun(t *testing.T) {
 		t.Fatalf("the guest was mutated despite a failed preflight: %v", f.files)
 	}
 }
+
+// The shared drop-in, warned about at the moment it becomes true. A warning
+// and never a refusal: the registration is correct for every machine that
+// has the wrapper, and a machine that does not falls back to the real crun.
+func TestUpOCIPodmanWarnsAboutOtherMachines(t *testing.T) {
+	f := newFakeGuest(t).withFCOS()
+	f.preflight = strings.ReplaceAll(f.preflight, "containers_fs=", "containers_fs=virtiofs")
+	t.Setenv("HOME", t.TempDir())
+	sel := testSelection(t, "podman:spike")
+	sel.Instance.VMType = "libkrun"
+	var out strings.Builder
+	g := &guest{p: f, inst: sel.Ref.Instance, out: &out}
+	if err := up(g, sel, upOptions{
+		oci: true, agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "wrapper"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The fake guest cannot list machines, so the plain shared note is what
+	// this run prints; the per-machine line is exercised below as a unit.
+	if !strings.Contains(out.String(), "virtiofs mount of your Mac's podman config directory") {
+		t.Fatalf("the shared-mount note did not print:\n%s", out.String())
+	}
+
+	var w strings.Builder
+	warnOtherMachines(&guest{p: f, inst: "spike", out: &w}, []string{"podman:spike-rootful", "podman:spike-hv"})
+	for _, want := range []string{
+		"WARNING", "2 other podman machine(s)", "podman:spike-rootful", "podman:spike-hv",
+		"fall back to the real crun", "removes the registration for all of them",
+	} {
+		if !strings.Contains(w.String(), want) {
+			t.Fatalf("the warning does not mention %q:\n%s", want, w.String())
+		}
+	}
+
+	// One machine on the Mac is the ordinary case and says nothing.
+	var quiet strings.Builder
+	warnOtherMachines(&guest{p: f, inst: "spike", out: &quiet}, nil)
+	if quiet.String() != "" {
+		t.Fatalf("a lone machine was warned about nothing:\n%s", quiet.String())
+	}
+}

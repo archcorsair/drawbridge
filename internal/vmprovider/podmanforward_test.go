@@ -1,6 +1,7 @@
 package vmprovider
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -109,5 +110,17 @@ func TestParseGvproxyForwardsFailureModes(t *testing.T) {
 				t.Fatalf("a failed read reported a forwarder: %+v", f)
 			}
 		})
+	}
+}
+
+// The podman refusal has to answer errors.Is for the general one, or a
+// caller asking "is this absence just scoping" (doctor's check 1) reads an
+// empty machine list under sudo as "nothing is running".
+func TestPodmanRootRefusalIsARootScopedError(t *testing.T) {
+	if !errors.Is(ErrPodmanRootScoped, ErrRootScoped) {
+		t.Fatal("ErrPodmanRootScoped does not wrap ErrRootScoped")
+	}
+	if !strings.Contains(ErrPodmanRootScoped.Error(), "podman machine") {
+		t.Fatalf("the wrapped message lost podman's own words: %v", ErrPodmanRootScoped)
 	}
 }

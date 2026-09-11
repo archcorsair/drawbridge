@@ -104,7 +104,7 @@ func (f *fakeGuest) withFCOS() *fakeGuest {
 		"arch=aarch64", "kernel=7.1.3-200.fc44.aarch64", "btf=yes",
 		"cgroup2=yes", "systemd=yes", "sudo=yes", "engine=podman",
 		"restorecon=yes", "ostree=yes", "selinux=Enforcing", "crun=1.28",
-		"crun_path=/usr/bin/crun", "user=core",
+		"crun_path=/usr/bin/crun", "user=core", "containers_fs=",
 		"unpriv_port=1024", "rootful=no",
 	}, "\n")
 	f.inspect = vmprovider.PodmanInspect{

@@ -24,9 +24,13 @@ import (
 // euid 0. Like the limactl refusal it fails before exec, so the message can
 // say what to do instead: podman's own error would be an empty machine list,
 // which diagnoses nothing.
-var ErrPodmanRootScoped = errors.New("vmprovider: `podman machine` is user-scoped and must not run under euid 0 " +
-	"(machine state lives in the invoking user's home; as root podman looks in /var/root and reports no machines); " +
-	"run this as your own user, the root daemon dials the endpoint `drawbridge install` pinned into its plist")
+// It wraps ErrRootScoped so a caller that only wants to know "is this
+// absence just scoping" (doctor's check 1, which otherwise reads an empty
+// list as `nothing running`) does not have to enumerate every provider's own
+// spelling of the same refusal.
+var ErrPodmanRootScoped = fmt.Errorf("%w: `podman machine` is user-scoped and must not run under euid 0 "+
+	"(machine state lives in the invoking user's home; as root podman looks in /var/root and reports no machines); "+
+	"run this as your own user, the root daemon dials the endpoint `drawbridge install` pinned into its plist", ErrRootScoped)
 
 // PodmanFallbackBin is where the official podman `.pkg` puts the binary. It
 // is on PATH only in a login shell (the pkg installs /etc/paths.d/podman-pkg),
