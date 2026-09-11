@@ -2,11 +2,14 @@ package main
 
 import (
 	"io"
+	"net"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/archcorsair/drawbridge/internal/guestbin"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
+	"github.com/archcorsair/drawbridge/internal/vmrecord"
 )
 
 const (
@@ -274,4 +277,172 @@ func writeTempBinary(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// --- the podman branch (docs/podman.md §3.2, §3.4, §5.2, §5.4) -------------
+
+func runUpOnPodman(t *testing.T, f *fakeGuest, o upOptions) (selection, error) {
+	t.Helper()
+	// The Mac-side record lands under the user's home (docs/podman.md §3.4).
+	// No test may touch the real one.
+	t.Setenv("HOME", t.TempDir())
+	return upPodman(t, f, o)
+}
+
+// upPodman is runUpOnPodman without the home fixture, for a test that runs
+// `up` twice against the same Mac-side state.
+func upPodman(t *testing.T, f *fakeGuest, o upOptions) (selection, error) {
+	t.Helper()
+	sel := testSelection(t, "podman:spike")
+	sel.Instance.VMType = "libkrun"
+	return sel, up(&guest{p: f, inst: sel.Ref.Instance, out: io.Discard}, sel, o)
+}
+
+// A podman guest gets the same agent, the same unit path and the same secret
+// as a Lima one; what differs is the ExecStart line (the Mac cannot reach the
+// transport without the gvproxy publish) and the Mac-side record that
+// remembers which port that was.
+func TestUpPodmanPublishesAndRecords(t *testing.T) {
+	f := newFakeGuest(t).withFCOS()
+	sel, err := runUpOnPodman(t, f, upOptions{agentBin: writeTempBinary(t, "agent-bytes")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := vmrecord.Read(sel.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Transport != vmrecord.TransportGvproxyPublish {
+		t.Fatalf("transport = %q, want %q", rec.Transport, vmrecord.TransportGvproxyPublish)
+	}
+	port := recordedPort(rec)
+	if port < publishPortLo || port > publishPortHi {
+		t.Fatalf("recorded endpoint %q is outside %d-%d", rec.Endpoint, publishPortLo, publishPortHi)
+	}
+	// 4777 is deliberately excluded: a Lima dev VM's SSH forward holds it.
+	if port == controlPort {
+		t.Fatalf("chose %d, the port a Lima dev VM's SSH forward holds", controlPort)
+	}
+	// The ssh coordinates come from `machine inspect`, so doctor can compare
+	// them against a live one and catch a machine recreated under the name.
+	if rec.SSH.Port != 57446 || rec.SSH.User != "core" || rec.SSH.Identity == "" {
+		t.Fatalf("ssh coordinates not recorded: %+v", rec.SSH)
+	}
+	if rec.VMType != "libkrun" {
+		t.Fatalf("vmtype = %q, want libkrun", rec.VMType)
+	}
+
+	unit := f.files[guestbin.UnitPath]
+	want := "ExecStart=" + agentPath + " -gvproxy-publish 127.0.0.1:" + strconv.Itoa(port) + "\n"
+	if !strings.Contains(unit, want) {
+		t.Fatalf("unit does not publish through gvproxy:\n%s", unit)
+	}
+}
+
+// The recorded port is reused as-is on a re-run, without a bind probe: by
+// then gvproxy is holding it, so probing would find it busy, move the
+// endpoint, rewrite the unit and restart a perfectly healthy agent.
+func TestUpPodmanIsIdempotent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	f := newFakeGuest(t).withFCOS()
+	agent := writeTempBinary(t, "agent-bytes")
+	sel, err := upPodman(t, f, upOptions{agentBin: agent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := vmrecord.Read(sel.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hold the recorded port, exactly as gvproxy does once the agent has
+	// published it.
+	ln, err := net.Listen("tcp", strings.TrimPrefix(first.Endpoint, "tcp://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	f.calls = nil
+	if _, err := upPodman(t, f, upOptions{agentBin: agent}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := vmrecord.Read(sel.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Endpoint != first.Endpoint {
+		t.Fatalf("the re-run moved the endpoint from %s to %s while gvproxy held it", first.Endpoint, second.Endpoint)
+	}
+	if f.ran("install -m 0644") {
+		t.Fatal("the re-run rewrote the unit although nothing about it changed")
+	}
+	if f.ran("dd of=/tmp/usr-local-bin-drawbridge-agent.new") {
+		t.Fatal("the re-run streamed an agent the guest already had")
+	}
+}
+
+// Fedora CoreOS runs SELinux Enforcing. Every file installed into the guest
+// gets its label restored, and on a guest without restorecon nothing is
+// attempted at all — not even the round trip to find out.
+func TestUpRelabelsOnSELinuxGuestsOnly(t *testing.T) {
+	f := newFakeGuest(t).withFCOS()
+	if _, err := runUpOnPodman(t, f, upOptions{agentBin: writeTempBinary(t, "agent")}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{agentPath, guestbin.UnitPath, guestbin.SecretPath} {
+		var found bool
+		for _, p := range f.relabelled {
+			if p == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s was installed without a restorecon: %v", want, f.relabelled)
+		}
+	}
+
+	lima := newFakeGuest(t)
+	if err := runUpOn(t, lima, upOptions{agentBin: writeTempBinary(t, "agent")}); err != nil {
+		t.Fatal(err)
+	}
+	if len(lima.relabelled) != 0 || lima.ran("restorecon -F") {
+		t.Fatalf("a guest with no restorecon was asked to relabel anyway: %v", lima.relabelled)
+	}
+}
+
+// --oci on podman would register a runc wrapper in a daemon.json no engine
+// reads. It is refused before the guest is touched at all.
+func TestUpPodmanRefusesOCI(t *testing.T) {
+	f := newFakeGuest(t).withFCOS()
+	_, err := runUpOnPodman(t, f, upOptions{
+		oci:      true,
+		agentBin: writeTempBinary(t, "agent"),
+		runcBin:  writeTempBinary(t, "runc"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "7.4") {
+		t.Fatalf("up --oci on podman = %v, want a refusal naming the phase it lands in", err)
+	}
+	if len(f.calls) != 0 {
+		t.Fatalf("the guest was shelled into despite the refusal: %v", f.calls)
+	}
+}
+
+// A Lima guest's unit must stay byte-identical: no -gvproxy-publish, and
+// therefore no rewrite and no restart on a guest that was already correct.
+func TestUpLimaUnitIsUnchanged(t *testing.T) {
+	f := newFakeGuest(t)
+	if err := runUpOn(t, f, upOptions{agentBin: writeTempBinary(t, "agent")}); err != nil {
+		t.Fatal(err)
+	}
+	want, err := guestbin.Unit(agentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.files[guestbin.UnitPath] != want {
+		t.Fatalf("the Lima unit changed:\n--- got ---\n%s\n--- want ---\n%s", f.files[guestbin.UnitPath], want)
+	}
+	if strings.Contains(f.files[guestbin.UnitPath], "gvproxy") {
+		t.Fatal("a Lima guest's unit carries a podman flag")
+	}
 }

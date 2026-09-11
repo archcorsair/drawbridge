@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/archcorsair/drawbridge/internal/guestbin"
+	"github.com/archcorsair/drawbridge/internal/vmrecord"
 )
 
 func writeFileForTest(path, content string) error {
@@ -237,5 +240,48 @@ func TestDownWithoutStateLeavesDaemonJSON(t *testing.T) {
 	}
 	if f.files[guestbin.DaemonJSONPath] != devProvisioned {
 		t.Fatalf("down changed a daemon.json it has no record of writing:\n%s", f.files[guestbin.DaemonJSONPath])
+	}
+}
+
+// `down` on a podman guest removes what `up` put there — the unit, the
+// binary, the state directory — plus the one thing that lives on the Mac and
+// would otherwise name a port nothing publishes any more.
+//
+// And it never goes near docker: the revert path ends in a docker restart,
+// which on a guest whose only engine is podman is a command aimed at nothing.
+func TestDownPodmanRemovesTheRecordAndNeverTouchesDocker(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	f := newFakeGuest(t).withFCOS()
+
+	sel, err := upPodman(t, f, upOptions{agentBin: writeTempBinary(t, "agent")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := vmrecord.Read(sel.Ref); err != nil {
+		t.Fatal(err)
+	}
+
+	f.calls = nil
+	var out strings.Builder
+	if err := down(&guest{p: f, inst: sel.Ref.Instance, out: &out}, sel); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := vmrecord.Read(sel.Ref); !errors.Is(err, vmrecord.ErrAbsent) {
+		t.Fatalf("the Mac-side record survived `down`: %v", err)
+	}
+	for _, p := range []string{guestbin.UnitPath, agentPath, guestbin.SecretPath} {
+		if _, ok := f.files[p]; ok {
+			t.Fatalf("%s survived `down`", p)
+		}
+	}
+	if f.ran("docker") {
+		t.Fatalf("`down` on a podman guest went near docker:\n%s", strings.Join(f.calls, "\n"))
+	}
+
+	// Idempotent in both halves: a second run removes nothing and fails at
+	// nothing, including the record that is already gone.
+	if err := down(&guest{p: f, inst: sel.Ref.Instance, out: io.Discard}, sel); err != nil {
+		t.Fatalf("a second `down` failed: %v", err)
 	}
 }

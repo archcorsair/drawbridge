@@ -86,6 +86,48 @@ func TestUnitGolden(t *testing.T) {
 	}
 }
 
+// Unit takes a whole ExecStart line so a podman guest's agent can carry the
+// flags a Lima one does not (docs/podman.md §5.4). The property that matters
+// is the one in the other direction: a bare binary path must still render the
+// exact bytes it always did, or every existing guest's `up` rewrites a unit
+// that did not change and restarts an agent that did not need it.
+func TestUnitWithFlagsLeavesTheBarePathByteIdentical(t *testing.T) {
+	bare, err := Unit(GuestPath(NameAgent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	golden(t, "unit-agent.golden", bare)
+
+	withFlags, err := Unit(GuestPath(NameAgent) + " -gvproxy-publish 127.0.0.1:4778")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(withFlags, "ExecStart="+GuestPath(NameAgent)+" -gvproxy-publish 127.0.0.1:4778\n") {
+		t.Fatalf("the flags did not reach ExecStart:\n%s", withFlags)
+	}
+	// Everything but that one line is the same file.
+	if a, b := withoutExecStart(bare), withoutExecStart(withFlags); a != b {
+		t.Fatalf("the ExecStart argument changed more than ExecStart:\n--- bare ---\n%s\n--- with flags ---\n%s", a, b)
+	}
+
+	// The unit is line-oriented: a newline in the argument would forge
+	// directives systemd would then honour.
+	if _, err := Unit(GuestPath(NameAgent) + "\nExecStartPost=/bin/sh"); err == nil {
+		t.Fatal("Unit accepted a newline in its ExecStart argument")
+	}
+}
+
+func withoutExecStart(unit string) string {
+	var keep []string
+	for _, line := range strings.Split(unit, "\n") {
+		if strings.HasPrefix(line, "ExecStart=") {
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return strings.Join(keep, "\n")
+}
+
 // The provisioning script is embedded, streamed into an arbitrary user's
 // guest and run as root there. Two properties are worth pinning: it is the
 // same file the dev flow runs (so the dev wrapper must reference it), and it

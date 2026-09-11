@@ -516,3 +516,68 @@ func TestParseVersionOutput(t *testing.T) {
 		}
 	}
 }
+
+// A podman machine has no vmnet lease and no host-dialable guest address: its
+// endpoint is the loopback port `drawbridge up` chose and the guest agent
+// republishes through gvproxy on every machine start. `install` resolves that
+// as the user and pins it, because root reading the user-writable record at
+// boot is the thing the pin exists to avoid.
+func TestPinnedAgentEndpoint(t *testing.T) {
+	cfg := Config{VM: "podman:spike", Agent: "tcp://127.0.0.1:4778"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	args := cfg.Args()
+	for i, a := range args {
+		if a == "-agent" {
+			if args[i+1] != "tcp://127.0.0.1:4778" {
+				t.Fatalf("-agent = %q, want the pinned endpoint", args[i+1])
+			}
+			break
+		}
+	}
+	plist, err := RenderPlist(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plist, "<string>tcp://127.0.0.1:4778</string>") {
+		t.Fatalf("the endpoint did not reach the plist:\n%s", plist)
+	}
+	if strings.Contains(plist, "<string>auto</string>") {
+		t.Fatalf("the plist still says -agent auto:\n%s", plist)
+	}
+
+	// Unset is the Lima and Colima posture, unchanged: `auto`, so the
+	// re-resolve hook survives a recreated VM's new vzNAT address.
+	plist, err = RenderPlist(Config{VM: "lima:drawbridge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plist, "<string>auto</string>") {
+		t.Fatalf("a Lima install stopped rendering -agent auto:\n%s", plist)
+	}
+}
+
+// The pin lands in root's ProgramArguments, so it is an allowlist of the one
+// shape `up` can produce: loopback, tcp, nothing else. A wider grammar here
+// would let an install aim the root daemon at a host on the network.
+func TestPinnedAgentEndpointIsLoopbackOnly(t *testing.T) {
+	for _, bad := range []string{
+		"tcp://192.168.64.5:4777",
+		"tcp://0.0.0.0:4778",
+		"unix:///tmp/drawbridge.sock",
+		"auto",
+		"127.0.0.1:4778", // the bare form drawbridged accepts; not what up writes
+		"tcp://127.0.0.1:4778 -mirror-ip",
+		"tcp://127.0.0.1:4778</string><string>-mirror-ip</string><string>0.0.0.0",
+		"tcp://127.0.0.1:",
+	} {
+		cfg := Config{VM: "podman:spike", Agent: bad}
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("Validate accepted -agent %q", bad)
+		}
+		if _, err := RenderPlist(cfg); err == nil {
+			t.Fatalf("RenderPlist accepted -agent %q", bad)
+		}
+	}
+}

@@ -9,9 +9,14 @@ import (
 )
 
 func inst(provider, name, vmType string, running bool) vmprovider.Instance {
+	attachable, note := vmprovider.Attachability(provider, vmType)
 	return vmprovider.Instance{
 		Provider: provider, Name: name, VMType: vmType, Running: running,
 		LeaseName: vmprovider.LeaseName(provider, name),
+		// Through the provider's own verdict, never a literal: the CLI's
+		// eligibility test and the provider's answer must not be able to
+		// disagree, which is the whole reason Attachable exists.
+		Attachable: attachable, AttachNote: note,
 	}
 }
 
@@ -24,6 +29,10 @@ var (
 	// bare name has to be checked for ambiguity rather than assumed to be
 	// Lima's (Phase 3 pinned the same hazard from the lease-db side).
 	limaNamedColima = inst(vmprovider.ProviderLima, "colima", "vz", true)
+
+	podmanSpike   = inst(vmprovider.ProviderPodman, "spike", "libkrun", true)
+	podmanHV      = inst(vmprovider.ProviderPodman, "spike-hv", "applehv", false)
+	podmanForeign = inst(vmprovider.ProviderPodman, "old", "qemu", true)
 )
 
 // Step 1 of §4.1, every branch. These messages are the entire first-run
@@ -45,7 +54,7 @@ func TestPickInstance(t *testing.T) {
 		want:  "colima:colima",
 	}, {
 		name:    "no VM at all prints how to create one",
-		wantErr: []string{"no running vz VM", "colima start", "limactl start"},
+		wantErr: []string{"no running VM", "colima start", "limactl start", "podman machine init"},
 	}, {
 		name:    "a stopped VM is named, with its own start command",
 		insts:   []vmprovider.Instance{limaHalted},
@@ -105,6 +114,33 @@ func TestPickInstance(t *testing.T) {
 		name:    "an unknown provider is named as such",
 		arg:     "docker:desktop",
 		wantErr: []string{"unknown VM provider"},
+	}, {
+		// libkrun is podman 6's default macOS provider and applehv is the
+		// other one; both attach, so a running machine is a candidate with no
+		// argument at all.
+		name:  "a running podman machine is implicit",
+		insts: []vmprovider.Instance{podmanSpike, podmanHV},
+		want:  "podman:spike",
+	}, {
+		name:  "an explicit podman machine selects",
+		arg:   "podman:spike",
+		insts: []vmprovider.Instance{limaDev, podmanSpike},
+		want:  "podman:spike",
+	}, {
+		name:    "a stopped podman machine gets podman's own start command",
+		arg:     "podman:spike-hv",
+		insts:   []vmprovider.Instance{podmanHV},
+		wantErr: []string{"is not running", "podman machine start spike-hv"},
+	}, {
+		name:    "a podman machine on a non-macOS provider is refused",
+		arg:     "podman:old",
+		insts:   []vmprovider.Instance{podmanForeign},
+		wantErr: []string{"not a macOS provider", "podman machine init"},
+	}, {
+		name:    "a bare name two providers share is still ambiguous with podman",
+		arg:     "spike",
+		insts:   []vmprovider.Instance{podmanSpike, inst(vmprovider.ProviderLima, "spike", "vz", true)},
+		wantErr: []string{"ambiguous", "drawbridge up podman:spike", "drawbridge up lima:spike"},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := pickInstance(tc.arg, tc.insts)
@@ -152,7 +188,7 @@ func TestPickInstanceKeepsUserSpelling(t *testing.T) {
 // Every preflight branch is a message someone reads instead of a stack
 // trace; each one has to name the fix.
 func TestCheckPreflight(t *testing.T) {
-	ok := preflight{Arch: "aarch64", Kernel: "6.8.0-51-generic", BTF: true, CGroup2: true, Systemd: true, Sudo: true}
+	ok := preflight{Arch: "aarch64", Kernel: "6.8.0-51-generic", BTF: true, CGroup2: true, Systemd: true, Sudo: true, Engine: EngineNone}
 	for _, tc := range []struct {
 		name    string
 		p       preflight
@@ -196,7 +232,7 @@ func TestCheckPreflight(t *testing.T) {
 		},
 		{
 			name:    "an old kernel blocks --oci",
-			p:       mutate(ok, func(p *preflight) { p.Kernel = "5.4.0-generic"; p.Docker = true }),
+			p:       mutate(ok, func(p *preflight) { p.Kernel = "5.4.0-generic"; p.Engine = EngineDocker }),
 			oci:     true,
 			wantErr: []string{"older than 5.7", "listenerPath", "Without --oci"},
 		},
@@ -208,8 +244,18 @@ func TestCheckPreflight(t *testing.T) {
 		},
 		{
 			name: "--oci is fine on a current kernel with docker",
-			p:    mutate(ok, func(p *preflight) { p.Docker = true }),
+			p:    mutate(ok, func(p *preflight) { p.Engine = EngineDocker }),
 			oci:  true,
+		},
+		{
+			// The trap this replaced a `command -v docker` check for: the
+			// podman machine image symlinks /usr/local/bin/docker to podman,
+			// so the old probe reported a Docker Engine that is not there and
+			// --oci would have edited a daemon.json nothing reads.
+			name:    "a podman guest is not a docker guest",
+			p:       mutate(ok, func(p *preflight) { p.Engine = EnginePodman }),
+			oci:     true,
+			wantErr: []string{"no docker in the guest"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -238,10 +284,29 @@ func mutate(p preflight, f func(*preflight)) preflight {
 }
 
 func TestParsePreflight(t *testing.T) {
-	got := parsePreflight("arch=x86_64\nkernel=6.1.0\nbtf=yes\ncgroup2=no\nsystemd=yes\ndocker=no\nsudo=yes\nfuture=yes\n")
-	want := preflight{Arch: "x86_64", Kernel: "6.1.0", BTF: true, CGroup2: false, Systemd: true, Docker: false, Sudo: true}
+	got := parsePreflight("arch=x86_64\nkernel=6.1.0\nbtf=yes\ncgroup2=no\nsystemd=yes\nengine=docker\nsudo=yes\nfuture=yes\n")
+	want := preflight{Arch: "x86_64", Kernel: "6.1.0", BTF: true, CGroup2: false, Systemd: true, Engine: EngineDocker, Sudo: true}
 	if got != want {
 		t.Fatalf("parsePreflight = %+v, want %+v", got, want)
+	}
+
+	// The Fedora CoreOS shape, as the 7.0 spike measured it.
+	fcos := parsePreflight(strings.Join([]string{
+		"arch=aarch64", "kernel=7.1.3-200.fc44.aarch64", "btf=yes", "cgroup2=yes",
+		"systemd=yes", "sudo=yes", "restorecon=yes", "ostree=yes",
+		"selinux=Enforcing", "crun=1.28", "unpriv_port=1024", "rootful=no",
+		"engine=podman",
+	}, "\n"))
+	if fcos.Engine != EnginePodman || !fcos.Restorecon || !fcos.OSTree ||
+		fcos.SELinux != "Enforcing" || fcos.Crun != "1.28" || fcos.UnprivPort != "1024" || fcos.Rootful {
+		t.Fatalf("parsePreflight(FCOS) = %+v", fcos)
+	}
+
+	// An answer with no engine key at all (an older probe against a newer
+	// parse) reads as "no engine", never as the zero value of a boolean that
+	// used to mean docker.
+	if got := parsePreflight("arch=aarch64").Engine; got != EngineNone {
+		t.Fatalf("Engine with no key = %q, want %q", got, EngineNone)
 	}
 }
 

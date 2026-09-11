@@ -150,16 +150,27 @@ const (
 // about.
 const ProvisionScriptPath = "/tmp/drawbridge-provision-docker.sh"
 
-// unitTmpl renders the unit. Only the binary path is substituted — the
+// unitTmpl renders the unit. Only the ExecStart line is substituted — the
 // supervision policy is not configurable, because a user who needs a
 // different one needs `systemctl edit`, which is exactly what installing to
 // /etc/systemd/system enables.
 var unitTmpl = template.Must(template.New("unit").Parse(mustAsset("assets/drawbridge-agent.service")))
 
-// Unit renders the agent unit for a binary path.
-func Unit(binPath string) (string, error) {
+// Unit renders the agent unit for a whole ExecStart line.
+//
+// The parameter is the line and not just the path because a podman guest's
+// agent takes flags the Lima one does not (`-gvproxy-publish`, docs/podman.md
+// §5.4). A caller that passes the bare binary path — every Lima and Colima
+// call — renders exactly the bytes this function always rendered, so existing
+// guests see no unit change and no restart. That byte-identity is pinned by a
+// test, because "no diff" is the property, not "looks the same".
+func Unit(execStart string) (string, error) {
+	if strings.ContainsAny(execStart, "\n\r") {
+		// The unit is line-oriented; a newline here would forge directives.
+		return "", fmt.Errorf("guestbin: ExecStart %q contains a newline", execStart)
+	}
 	var sb strings.Builder
-	if err := unitTmpl.Execute(&sb, struct{ ExecStart string }{binPath}); err != nil {
+	if err := unitTmpl.Execute(&sb, struct{ ExecStart string }{execStart}); err != nil {
 		return "", err
 	}
 	return sb.String(), nil

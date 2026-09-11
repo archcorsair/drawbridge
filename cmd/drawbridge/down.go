@@ -22,6 +22,7 @@ import (
 	"github.com/archcorsair/drawbridge/internal/guestbin"
 	"github.com/archcorsair/drawbridge/internal/transportauth"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
+	"github.com/archcorsair/drawbridge/internal/vmrecord"
 )
 
 func runDown(args []string) int {
@@ -74,8 +75,15 @@ func down(g *guest, sel selection) error {
 	g.try("systemctl daemon-reload")
 
 	// 2. Revert the --oci changes, if any, while the wrapper still exists.
-	if err := revertOCI(g); err != nil {
-		return err
+	//
+	// Never on a podman guest: `up --oci` refuses there in this release, so
+	// there is nothing this command wrote to revert — and the revert path
+	// ends in a docker restart, which on a guest whose only engine is podman
+	// would be a command aimed at nothing.
+	if sel.Ref.Provider != vmprovider.ProviderPodman {
+		if err := revertOCI(g); err != nil {
+			return err
+		}
 	}
 
 	// 3. Binaries and state last: nothing references them any more.
@@ -101,6 +109,21 @@ func down(g *guest, sel selection) error {
 	if _, err := g.sudoSh("rm -rf " + shquote(guestbin.StateDir)); err != nil {
 		return fmt.Errorf("removing %s: %w", guestbin.StateDir, err)
 	}
+	// 4. The Mac-side record, which is the other half of what `up` created
+	//    for this provider: it names a port that is now published by nothing.
+	//    The transport secret is deliberately kept (below) — the record is
+	//    not, because a stale endpoint is worse than an absent one.
+	if sel.Ref.Provider == vmprovider.ProviderPodman {
+		path, _ := vmrecord.Path(sel.Ref)
+		removed, err := vmrecord.Remove(sel.Ref)
+		if err != nil {
+			return err
+		}
+		if removed {
+			fmt.Fprintf(g.out, "drawbridge: removed %s\n", path)
+		}
+	}
+
 	fmt.Fprintf(g.out, "drawbridge: done — the guest has no drawbridge files left\n")
 	// The Mac half is deliberately kept: `down` is guest-scoped, so a
 	// recreated VM plus `up` re-adopts the same identity, and an installed

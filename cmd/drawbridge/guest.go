@@ -28,6 +28,13 @@ type guest struct {
 	p    vmprovider.Provider
 	inst string
 	out  io.Writer
+
+	// relabel is set from the preflight when the guest has `restorecon`,
+	// i.e. when it is SELinux-managed (Fedora CoreOS, the podman machine
+	// image, runs Enforcing). Every file we install then gets its label
+	// restored; on a guest without it, nothing is attempted and no round
+	// trip is spent (docs/podman.md §5.2).
+	relabel bool
 }
 
 // Every invocation below passes its argv as single, space-free words and
@@ -104,7 +111,26 @@ func (g *guest) installFile(staged, dst, mode string) error {
 	if _, err := g.sudoSh(script); err != nil {
 		return fmt.Errorf("installing %s in the guest: %w", dst, err)
 	}
+	g.relabelPath(dst)
 	return nil
+}
+
+// relabelPath restores a staged file's SELinux label.
+//
+// The install-beside-then-rename already gives the new file the destination
+// directory's type, which is why this is a belt-and-braces step rather than
+// the thing that makes the file work — but /tmp staging and a policy that
+// distinguishes `bin_t` from `user_tmp_t` are exactly the pair that produces
+// an executable systemd refuses to run, with an AVC denial as the only clue.
+//
+// A separate invocation rather than a link in installFile's `&&` chain: a
+// tolerant tail (`|| true`) on that chain would make the install itself
+// tolerant, and the install failing is not something to swallow.
+func (g *guest) relabelPath(dst string) {
+	if !g.relabel {
+		return
+	}
+	g.try("restorecon -F " + shquote(dst))
 }
 
 // sha256 reads a guest file's digest, empty when the file is absent. This is
@@ -232,20 +258,22 @@ func listAll(providers []vmprovider.Provider, out io.Writer) []vmprovider.Instan
 	return all
 }
 
-// eligible is the set `up` can attach to: running, and on vz. Both halves
-// are hard requirements — a stopped VM has no guest to provision, and qemu
-// has no host-reachable guest IP at all (§3.1).
+// eligible is the set `up` can attach to: running, and attachable. Both
+// halves are hard requirements — a stopped VM has no guest to provision, and
+// a machine type with no path from the Mac has nothing to attach over (§3.1).
+//
+// Attachability is the provider's verdict, not this package's: "vz" is Lima
+// vocabulary and means nothing to podman, whose libkrun and applehv machines
+// are reached through gvproxy instead (docs/podman.md §4.2).
 func eligible(insts []vmprovider.Instance) []vmprovider.Instance {
 	var out []vmprovider.Instance
 	for _, i := range insts {
-		if i.Running && isVZ(i) {
+		if i.Running && i.Attachable {
 			out = append(out, i)
 		}
 	}
 	return out
 }
-
-func isVZ(i vmprovider.Instance) bool { return strings.EqualFold(i.VMType, "vz") }
 
 // pickInstance is the whole of §4.1 step 1, as a pure function over what the
 // providers reported — the part worth a table test, since every branch of it
@@ -267,8 +295,8 @@ func pickInstance(arg string, insts []vmprovider.Instance) (selection, error) {
 	if !match.Running {
 		return selection{}, fmt.Errorf("%s is not running — start it first:\n  %s", qualify(match), startHint(match))
 	}
-	if !isVZ(match) {
-		return selection{}, vzSwitchError(match)
+	if !match.Attachable {
+		return selection{}, notAttachableError(match)
 	}
 	ref, err := refFor(match)
 	if err != nil {
@@ -360,7 +388,7 @@ func qualify(i vmprovider.Instance) string { return i.Provider + ":" + i.Name }
 
 func knownList(insts []vmprovider.Instance) string {
 	if len(insts) == 0 {
-		return " (no Lima or Colima instances found on this Mac)"
+		return " (no Lima, Colima or Podman VMs found on this Mac)"
 	}
 	names := make([]string, 0, len(insts))
 	for _, i := range insts {
@@ -379,13 +407,13 @@ func knownList(insts []vmprovider.Instance) string {
 // behalf, none of which drawbridge has any business deciding.
 func noCandidateError(insts []vmprovider.Instance) error {
 	var sb strings.Builder
-	sb.WriteString("no running vz VM to attach to.\n")
+	sb.WriteString("no running VM to attach to.\n")
 
-	var stopped, qemu []vmprovider.Instance
+	var stopped, unattachable []vmprovider.Instance
 	for _, i := range insts {
 		switch {
-		case !isVZ(i):
-			qemu = append(qemu, i)
+		case !i.Attachable:
+			unattachable = append(unattachable, i)
 		case !i.Running:
 			stopped = append(stopped, i)
 		}
@@ -393,16 +421,45 @@ func noCandidateError(insts []vmprovider.Instance) error {
 	for _, i := range stopped {
 		fmt.Fprintf(&sb, "\n%s exists but is stopped:\n  %s\n", qualify(i), startHint(i))
 	}
-	for _, i := range qemu {
-		fmt.Fprintf(&sb, "\n%s runs on %s, which has no host-reachable guest IP (user-mode networking):\n  %s\n",
-			qualify(i), i.VMType, vzSwitchHint(i))
+	for _, i := range unattachable {
+		fmt.Fprintf(&sb, "\n%s\n", attachRefusal(i))
 	}
-	if len(stopped) == 0 && len(qemu) == 0 {
+	if len(stopped) == 0 && len(unattachable) == 0 {
 		sb.WriteString("\nCreate one, then re-run `drawbridge up`:\n" +
 			"  colima start --vm-type vz --cpu 4 --memory 8      # Colima (Docker CLI included)\n" +
-			"  limactl start --vm-type vz template://ubuntu-lts  # Lima\n")
+			"  limactl start --vm-type vz template://ubuntu-lts  # Lima\n" +
+			"  podman machine init --now                         # Podman\n")
 	}
 	return fmt.Errorf("%s", strings.TrimRight(sb.String(), "\n"))
+}
+
+// attachRefusal is the one-instance form printed in the candidate list: what
+// is wrong with this VM, and the command that would fix it.
+//
+// Lima and Colima keep their exact wording. A qemu instance is the case this
+// text was written for, and it has been in front of users since Phase 3.
+func attachRefusal(i vmprovider.Instance) string {
+	if i.Provider == vmprovider.ProviderPodman {
+		return fmt.Sprintf("%s: %s\n  %s", qualify(i), i.AttachNote, podmanSwitchHint(i))
+	}
+	return fmt.Sprintf("%s runs on %s, which has no host-reachable guest IP (user-mode networking):\n  %s",
+		qualify(i), i.VMType, vzSwitchHint(i))
+}
+
+// notAttachableError is the named-instance form: the user asked for this VM
+// by name, so the refusal leads with what it runs on.
+func notAttachableError(i vmprovider.Instance) error {
+	if i.Provider == vmprovider.ProviderPodman {
+		return fmt.Errorf("%s: %s.\n  %s", qualify(i), i.AttachNote, podmanSwitchHint(i))
+	}
+	return vzSwitchError(i)
+}
+
+// podmanSwitchHint recreates the machine on a provider drawbridge attaches
+// to. Both macOS providers work, so this is only ever reached by a machine
+// created on something else (a qemu machine carried over from Linux).
+func podmanSwitchHint(i vmprovider.Instance) string {
+	return fmt.Sprintf("podman machine rm %s && podman machine init --now %s", i.Name, i.Name)
 }
 
 // vzSwitchError is the §3.1 rejection for a qemu instance. qemu's user-mode
@@ -427,6 +484,9 @@ func vzSwitchHint(i vmprovider.Instance) string {
 }
 
 func startHint(i vmprovider.Instance) string {
+	if i.Provider == vmprovider.ProviderPodman {
+		return "podman machine start " + i.Name
+	}
 	if i.Provider == vmprovider.ProviderColima {
 		profile := strings.TrimPrefix(i.Name, "colima-")
 		if profile == "colima" {
@@ -449,9 +509,48 @@ type preflight struct {
 	BTF     bool
 	CGroup2 bool
 	Systemd bool
-	Docker  bool
 	Sudo    bool
+
+	// Engine is the container engine that is actually there: EngineDocker,
+	// EnginePodman or EngineNone.
+	//
+	// It replaced a bare `command -v docker`, which is wrong on exactly the
+	// guest this phase adds: the podman machine image symlinks
+	// /usr/local/bin/docker to podman, so `command -v docker` succeeds on a
+	// guest with no Docker Engine anywhere (docs/podman.md §5.1).
+	Engine string
+
+	// Rootful reports an in-guest podman running as root (the root
+	// podman.socket is present). Recorded rather than acted on in this phase:
+	// it is what decides the `--oci` socket-ownership contract in 7.4.
+	Rootful bool
+
+	// SELinux is `getenforce`: Enforcing, Permissive, Disabled, or "" on a
+	// guest with no SELinux at all. Restorecon says whether labels can be
+	// restored, which is the half `up` acts on.
+	SELinux    string
+	Restorecon bool
+
+	// OSTree marks an rpm-ostree guest (Fedora CoreOS). /usr is read-only
+	// there; /usr/local is a symlink into /var and is what we write to.
+	OSTree bool
+
+	// Crun is `crun --version`'s version field, empty when absent. The `--oci`
+	// path needs >= 0.19 for the seccomp notify listener; 7.4 enforces it.
+	Crun string
+
+	// UnprivPort is net.ipv4.ip_unprivileged_port_start, "" when unreadable.
+	// It decides whether a rootless container can bind :80 at all, long
+	// before drawbridge is involved.
+	UnprivPort string
 }
+
+// The engines the preflight can find.
+const (
+	EngineNone   = "none"
+	EngineDocker = "docker"
+	EnginePodman = "podman"
+)
 
 // probeScript asks every question at once. Six `limactl shell` invocations
 // would be six ssh sessions; the answers are independent, so there is
@@ -462,8 +561,24 @@ echo "kernel=$(uname -r)"
 [ -r /sys/kernel/btf/vmlinux ] && echo btf=yes || echo btf=no
 [ -e /sys/fs/cgroup/cgroup.controllers ] && echo cgroup2=yes || echo cgroup2=no
 command -v systemctl >/dev/null 2>&1 && echo systemd=yes || echo systemd=no
-command -v docker >/dev/null 2>&1 && echo docker=yes || echo docker=no
 sudo -n true >/dev/null 2>&1 && echo sudo=yes || echo sudo=no
+command -v restorecon >/dev/null 2>&1 && echo restorecon=yes || echo restorecon=no
+[ -e /run/ostree-booted ] && echo ostree=yes || echo ostree=no
+echo "selinux=$(getenforce 2>/dev/null || true)"
+echo "crun=$(crun --version 2>/dev/null | head -1 | awk '{print $3}')"
+echo "unpriv_port=$(sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null || true)"
+[ -S /run/podman/podman.sock ] && echo rootful=yes || echo rootful=no
+engine=none
+db_docker=$(command -v docker 2>/dev/null || true)
+if [ -n "$db_docker" ]; then
+  db_real=$(readlink -f "$db_docker" 2>/dev/null || echo "$db_docker")
+  case "$db_real" in
+    */podman) engine=podman ;;
+    *) if command -v dockerd >/dev/null 2>&1 || systemctl cat docker.service >/dev/null 2>&1; then engine=docker; fi ;;
+  esac
+fi
+if [ "$engine" = none ] && command -v podman >/dev/null 2>&1; then engine=podman; fi
+echo "engine=$engine"
 `
 
 func (g *guest) probe() (preflight, error) {
@@ -495,14 +610,35 @@ func parsePreflight(out string) preflight {
 			p.CGroup2 = yes
 		case "systemd":
 			p.Systemd = yes
-		case "docker":
-			p.Docker = yes
 		case "sudo":
 			p.Sudo = yes
+		case "engine":
+			p.Engine = v
+		case "rootful":
+			p.Rootful = yes
+		case "selinux":
+			p.SELinux = v
+		case "restorecon":
+			p.Restorecon = yes
+		case "ostree":
+			p.OSTree = yes
+		case "crun":
+			p.Crun = v
+		case "unpriv_port":
+			p.UnprivPort = v
 		}
+	}
+	if p.Engine == "" {
+		p.Engine = EngineNone
 	}
 	return p
 }
+
+// hasDocker is the question `--oci` asks, and it is deliberately not "is
+// there a `docker` on PATH": on a podman machine that command is a symlink to
+// podman, and registering a runc wrapper in /etc/docker/daemon.json there
+// would edit a file no engine reads.
+func (p preflight) hasDocker() bool { return p.Engine == EngineDocker }
 
 // minKernel is the seccomp `listenerPath` contract's floor: SECCOMP_IPC
 // listener support in runc's OCI seccomp config landed against 5.7's
@@ -561,7 +697,7 @@ func checkPreflight(p preflight, oci bool) error {
 				p.Kernel, minKernel[0], minKernel[1], minKernel[0], minKernel[1])
 		}
 	}
-	if oci && !p.Docker {
+	if oci && !p.hasDocker() {
 		return fmt.Errorf("no docker in the guest: --oci registers the drawbridge runc wrapper in Docker Engine's\n" +
 			"  /etc/docker/daemon.json and has nothing to register it with.\n" +
 			"  Install Docker Engine in the VM (a Colima VM already has one), or re-run without --oci")

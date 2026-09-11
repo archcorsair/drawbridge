@@ -108,6 +108,19 @@ type Config struct {
 	// bare field assignment.
 	Skip []uint16
 
+	// Agent pins the daemon's -agent endpoint, replacing the default `auto`
+	// (omitted when empty).
+	//
+	// Pinning was rejected for Lima (privileged-daemon.md §4 option 1)
+	// because a vzNAT address moves with the VM's MAC, so a pinned endpoint
+	// would go stale behind the user's back. Podman is the opposite case:
+	// the endpoint is a loopback port `drawbridge up` chose and the guest
+	// agent republishes on every machine start, so there is nothing for a
+	// re-resolve to discover — and root resolving it itself would mean root
+	// reading a user-writable record at boot, which is the thing this field
+	// exists to avoid.
+	Agent string
+
 	// SecretFile is the transport secret's path → -secret-file (omitted when
 	// empty). A *path*, never the secret itself: ProgramArguments is
 	// ps-visible, and the bytes are file-borne only (docs/transport-auth.md
@@ -146,6 +159,14 @@ func DefaultSkipPorts() []uint16 {
 var (
 	macRE    = regexp.MustCompile(`^[0-9A-Fa-f]{1,2}(:[0-9A-Fa-f]{1,2}){5}$`)
 	subnetRE = regexp.MustCompile(`^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$`)
+
+	// agentRE is loopback-only and tcp-only, which is narrower than the
+	// endpoint grammar drawbridged accepts. That is the point: the only
+	// endpoint this command has any business pinning into a root daemon's
+	// argv is the one `up` published on this Mac's loopback. A wider
+	// allowlist here would let an install aim the root daemon at a host on
+	// the network.
+	agentRE = regexp.MustCompile(`^tcp://127\.0\.0\.1:[0-9]{1,5}$`)
 )
 
 // Validate rejects anything that would land unreviewed in root's argv.
@@ -172,6 +193,9 @@ func (c Config) Validate() error {
 	}
 	if c.Subnet != "" && !subnetRE.MatchString(c.Subnet) {
 		return fmt.Errorf("invalid vmnet subnet %q: expected an IPv4 CIDR, e.g. 192.168.64.0/24", c.Subnet)
+	}
+	if c.Agent != "" && !agentRE.MatchString(c.Agent) {
+		return fmt.Errorf("invalid agent endpoint %q: the installed daemon may only be pinned to a Mac loopback TCP endpoint, e.g. tcp://127.0.0.1:4778", c.Agent)
 	}
 	if err := validateSecretFile(c.SecretFile); err != nil {
 		return err
@@ -207,6 +231,8 @@ func validateSecretFile(p string) error {
 // endpoint is load-bearing: a pinned -agent disables drawbridged's
 // re-resolve hook, so a recreated VM (new MAC → new vzNAT IP) would leave
 // the daemon dialing a dead address until someone re-ran install (§4).
+// Config.Agent is the deliberate exception, and only podman sets it: see the
+// field's comment.
 //
 // -mirror-ip is deliberately absent: the default is 127.0.0.1 and the daemon
 // refuses any non-loopback value under root, so the installed plist has no
@@ -215,7 +241,11 @@ func validateSecretFile(p string) error {
 // the daemon's own "match by name only" default, and writing a placeholder
 // would make an unpinned install look pinned.
 func (c Config) Args() []string {
-	args := []string{BinaryPath, "-agent", "auto", "-vm", c.VM}
+	agent := "auto"
+	if c.Agent != "" {
+		agent = c.Agent
+	}
+	args := []string{BinaryPath, "-agent", agent, "-vm", c.VM}
 	if len(c.UDP) > 0 {
 		args = append(args, "-udp", joinPorts(c.UDP))
 	}

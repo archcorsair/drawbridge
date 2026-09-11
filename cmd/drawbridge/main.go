@@ -30,6 +30,7 @@ import (
 	"github.com/archcorsair/drawbridge/internal/limaaddr"
 	"github.com/archcorsair/drawbridge/internal/transportauth"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
+	"github.com/archcorsair/drawbridge/internal/vmrecord"
 )
 
 func main() {
@@ -76,12 +77,13 @@ func usage(w *os.File) {
 
 Usage:
   drawbridge up [INSTANCE] [--oci] [-agent-bin PATH] [-runc-bin PATH]
-        Install and start the guest agent in a Lima or Colima VM. No sudo on
-        the Mac; the privileged half happens inside the guest. Attach-only —
-        `+"`up`"+` never creates a VM. INSTANCE takes the same grammar as -vm:
-        a bare name is resolved across providers, provider:name selects one
-        (lima:myvm, colima:default). With one running vz VM it can be left
-        out; with several it is required.
+        Install and start the guest agent in a Lima, Colima or Podman VM. No
+        sudo on the Mac; the privileged half happens inside the guest.
+        Attach-only — `+"`up`"+` never creates a VM. INSTANCE takes the same
+        grammar as -vm: a bare name is resolved across providers,
+        provider:name selects one (lima:myvm, colima:default, podman:spike).
+        With one running attachable VM it can be left out; with several it is
+        required. --oci is not available on podman machines yet.
         --oci additionally installs the runc wrapper and registers it as
         Docker's default runtime in the guest's daemon.json — an explicit
         opt-in because it edits a file you own. Without it, mirroring,
@@ -98,10 +100,13 @@ Usage:
         Install drawbridged as a root LaunchDaemon (needs sudo).
         Ports <1024 need this; -print previews the files and writes nothing.
         -vm takes a bare Lima instance name (default `+install.DefaultVM+`) or
-        provider:name — lima:myvm, colima:default, colima:<profile>.
+        provider:name — lima:myvm, colima:default, colima:<profile>,
+        podman:<machine>. A podman install pins the transport endpoint
+        `+"`drawbridge up`"+` recorded, so run that first.
         -skip lists ports drawbridged leaves alone in both directions
         (default `+install.DefaultSkip+`; -skip "" skips nothing).
-        -vm-mac pins which VM the root daemon will trust. Without it the
+        -vm-mac pins which VM the root daemon will trust (Lima and Colima
+        only: a podman machine has no DHCP lease to pin). Without it the
         daemon matches DHCP lease records by the guest-chosen name alone, so
         any other VM on this Mac can claim the name. Read the address with
           limactl list --format json NAME
@@ -237,7 +242,36 @@ func runInstall(args []string) int {
 		}
 	}
 
-	if cfg.MAC == "" {
+	// A podman machine has no lease record and no host-dialable guest
+	// address: its endpoint is the loopback port `up` chose and recorded. The
+	// daemon cannot rediscover that as root (the record is user-writable, and
+	// root parses no such file while running), so it is resolved here, as the
+	// user, and pinned into the plist.
+	if ref.Provider == vmprovider.ProviderPodman {
+		rec, err := vmrecord.Read(ref)
+		if err != nil {
+			flushWarnings()
+			fmt.Fprintf(os.Stderr, "drawbridge install: %v\n"+
+				"  `drawbridge up %s` chooses the Mac-side transport port, records it, and installs the agent\n"+
+				"  that publishes it through gvproxy. Run it first, then re-run this install.\n", err, cfg.VM)
+			return 2
+		}
+		cfg.Agent = rec.Endpoint
+		// -vm-mac is a vmnet lease pin, and there is no lease to pin: the
+		// endpoint is loopback, and what keeps a squatter on that port from
+		// being trusted is the per-VM transport secret, not a hardware
+		// address. Accepting the flag and ignoring it would leave an operator
+		// believing the daemon is pinned when nothing is.
+		if cfg.MAC != "" {
+			flushWarnings()
+			fmt.Fprintf(os.Stderr, "drawbridge install: -vm-mac does not apply to a podman machine: gvproxy is user-mode, so there is no\n"+
+				"  DHCP lease record to pin. The daemon dials %s, and the per-VM transport secret is what\n"+
+				"  refuses anything else that answers there (docs/transport-auth.md).\n", cfg.Agent)
+			return 2
+		}
+	}
+
+	if cfg.MAC == "" && ref.Provider != vmprovider.ProviderPodman {
 		// No auto-discovery of the address: reading it for the user and
 		// pinning it silently would decide their fail-open-vs-fail-closed
 		// posture for them. Print the command instead.

@@ -35,6 +35,14 @@ type fakeGuest struct {
 
 	preflight string // what the probe script answers
 
+	// inspect is what the podman driver's `machine inspect` would answer.
+	inspect vmprovider.PodmanInspect
+
+	// hasRestorecon models an SELinux-managed guest: every installed file is
+	// relabelled, and the fake records the calls so the ordering is testable.
+	hasRestorecon bool
+	relabelled    []string
+
 	// docker, as a unit of its own: the agent's active state says nothing
 	// about the engine's, and the restart paths turn on exactly that.
 	hasDocker    bool
@@ -60,15 +68,52 @@ func newFakeGuest(t *testing.T) *fakeGuest {
 		files: map[string]string{},
 		preflight: strings.Join([]string{
 			"arch=aarch64", "kernel=6.8.0-51-generic", "btf=yes",
-			"cgroup2=yes", "systemd=yes", "docker=no", "sudo=yes",
+			"cgroup2=yes", "systemd=yes", "sudo=yes", "engine=none",
+			"restorecon=no", "ostree=no", "selinux=", "crun=", "unpriv_port=0",
+			"rootful=no",
 		}, "\n"),
 	}
 }
 
 func (f *fakeGuest) withDocker() *fakeGuest {
 	f.hasDocker, f.dockerActive = true, true
-	f.preflight = strings.ReplaceAll(f.preflight, "docker=no", "docker=yes")
+	f.preflight = strings.ReplaceAll(f.preflight, "engine=none", "engine=docker")
 	return f
+}
+
+// withFCOS is the podman machine guest as the 7.0 spike measured it: Fedora
+// CoreOS, SELinux Enforcing, restorecon present, podman as the only engine,
+// no runc, unprivileged ports from 1024 up.
+//
+// Note what it does NOT have: docker. The real image symlinks
+// /usr/local/bin/docker to podman, which is exactly why the preflight reports
+// an engine rather than a `command -v docker` boolean.
+func (f *fakeGuest) withFCOS() *fakeGuest {
+	f.hasRestorecon = true
+	f.preflight = strings.Join([]string{
+		"arch=aarch64", "kernel=7.1.3-200.fc44.aarch64", "btf=yes",
+		"cgroup2=yes", "systemd=yes", "sudo=yes", "engine=podman",
+		"restorecon=yes", "ostree=yes", "selinux=Enforcing", "crun=1.28",
+		"unpriv_port=1024", "rootful=no",
+	}, "\n")
+	f.inspect = vmprovider.PodmanInspect{
+		Name:  "spike",
+		State: "running",
+		SSH: vmprovider.PodmanSSH{
+			IdentityPath:   "/Users/u/.local/share/containers/podman/machine/machine",
+			Port:           57446,
+			RemoteUsername: "core",
+		},
+	}
+	return f
+}
+
+// Inspect is the podman driver's half the record is written from.
+func (f *fakeGuest) Inspect(inst string) (vmprovider.PodmanInspect, error) {
+	if f.inspect.Name == "" {
+		return vmprovider.PodmanInspect{}, fmt.Errorf("fakeGuest: no inspect answer configured for %q", inst)
+	}
+	return f.inspect, nil
 }
 
 // withWedgedDocker is the live finding: systemd's start rate limit leaves
@@ -167,16 +212,17 @@ func (f *fakeGuest) exec(script string) ([]byte, error) {
 }
 
 var (
-	reSha      = regexp.MustCompile(`^sha256sum '([^']*)'\s*\| cut -d' ' -f1$`)
-	rePresent  = regexp.MustCompile(`^if \[ -e '([^']*)' \]; then echo present; cat '([^']*)'; else echo absent; fi$`)
-	reInstall  = regexp.MustCompile(`^install -m (\d+) -o root -g root '([^']*)' '([^']*)'$`)
-	reMv       = regexp.MustCompile(`^mv -f '([^']*)' '([^']*)'$`)
-	reRm       = regexp.MustCompile(`^rm -(?:f|rf) '?([^' ]*)'?$`)
-	reMkdir    = regexp.MustCompile(`^mkdir -p '([^']*)'$`)
-	reCat      = regexp.MustCompile(`^cat (\S+)$`)
-	reSystemd  = regexp.MustCompile(`^systemctl (.*)$`)
-	reBash     = regexp.MustCompile(`^bash '([^']*)'(.*)$`)
-	reRuncFlag = regexp.MustCompile(`--runc '([^']*)'`)
+	reSha        = regexp.MustCompile(`^sha256sum '([^']*)'\s*\| cut -d' ' -f1$`)
+	rePresent    = regexp.MustCompile(`^if \[ -e '([^']*)' \]; then echo present; cat '([^']*)'; else echo absent; fi$`)
+	reInstall    = regexp.MustCompile(`^install -m (\d+) -o root -g root '([^']*)' '([^']*)'$`)
+	reMv         = regexp.MustCompile(`^mv -f '([^']*)' '([^']*)'$`)
+	reRm         = regexp.MustCompile(`^rm -(?:f|rf) '?([^' ]*)'?$`)
+	reMkdir      = regexp.MustCompile(`^mkdir -p '([^']*)'$`)
+	reCat        = regexp.MustCompile(`^cat (\S+)$`)
+	reSystemd    = regexp.MustCompile(`^systemctl (.*)$`)
+	reBash       = regexp.MustCompile(`^bash '([^']*)'(.*)$`)
+	reRuncFlag   = regexp.MustCompile(`--runc '([^']*)'`)
+	reRestorecon = regexp.MustCompile(`^restorecon -F '([^']*)'$`)
 )
 
 func (f *fakeGuest) one(cmd string) (string, error) {
@@ -272,6 +318,17 @@ func (f *fakeGuest) one(cmd string) (string, error) {
 		if !f.hasDocker {
 			return "", fmt.Errorf("docker: not found")
 		}
+		return "", nil
+
+	case reRestorecon.MatchString(cmd):
+		path := reRestorecon.FindStringSubmatch(cmd)[1]
+		if !f.hasRestorecon {
+			return "", fmt.Errorf("restorecon: not found")
+		}
+		if _, ok := f.files[path]; !ok {
+			return "", fmt.Errorf("restorecon: %s: no such file", path)
+		}
+		f.relabelled = append(f.relabelled, path)
 		return "", nil
 
 	case cmd == "echo restarted":

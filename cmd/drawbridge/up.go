@@ -19,15 +19,20 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/archcorsair/drawbridge/internal/buildinfo"
 	"github.com/archcorsair/drawbridge/internal/guestbin"
 	"github.com/archcorsair/drawbridge/internal/limaaddr"
+	"github.com/archcorsair/drawbridge/internal/podmanaddr"
 	"github.com/archcorsair/drawbridge/internal/transportauth"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
+	"github.com/archcorsair/drawbridge/internal/vmrecord"
 )
 
 // controlPort is the agent's transport port — the one thing `up` verifies it
@@ -77,6 +82,17 @@ type upOptions struct {
 // (step 6) is separate because it dials the guest over the network, which is
 // exactly the part a unit test cannot have.
 func up(g *guest, sel selection, o upOptions) error {
+	// --- step 1b: the flag combinations this build does not have -----------
+	// Before the probe, because the failure posture is "nothing changed" and
+	// a refusal that has already shelled into the guest reads like a failure
+	// halfway through.
+	if o.oci && sel.Ref.Provider == vmprovider.ProviderPodman {
+		return fmt.Errorf("--oci is not supported on podman machines yet: the wrapper registers itself in Docker Engine's\n" +
+			"  daemon.json, and a podman guest has no Docker Engine. podman --oci lands in 7.4 (docs/podman.md §6).\n" +
+			"  Without --oci, inbound mirroring, outbound and host-process EADDRINUSE all still work; only\n" +
+			"  containerized bind arbitration needs the wrapper")
+	}
+
 	// --- step 2: preflight -------------------------------------------------
 	pf, err := g.probe()
 	if err != nil {
@@ -89,7 +105,9 @@ func up(g *guest, sel selection, o upOptions) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(g.out, "drawbridge: %s — linux/%s, kernel %s\n", qualify(sel.Instance), arch, pf.Kernel)
+	// Every file installed from here on gets its SELinux label restored.
+	g.relabel = pf.Restorecon
+	fmt.Fprintf(g.out, "drawbridge: %s — linux/%s, kernel %s%s\n", qualify(sel.Instance), arch, pf.Kernel, guestNotes(pf))
 
 	// Resolve every artifact before touching the guest. A dev build with no
 	// bundled agent has to fail here, with the remedy, and not halfway
@@ -104,7 +122,19 @@ func up(g *guest, sel selection, o upOptions) error {
 			return err
 		}
 	}
-	unit, err := guestbin.Unit(guestbin.GuestPath(guestbin.NameAgent))
+	// The agent's command line. Lima and Colima render the bare binary path,
+	// byte-identical to every unit already installed in a guest; podman adds
+	// the gvproxy publish, which is how the Mac reaches the transport at all
+	// (docs/podman.md §5.4).
+	execStart := guestbin.GuestPath(guestbin.NameAgent)
+	if sel.Ref.Provider == vmprovider.ProviderPodman {
+		rec, err := ensureRecord(g, sel)
+		if err != nil {
+			return err
+		}
+		execStart += " -gvproxy-publish " + publishLocal(rec)
+	}
+	unit, err := guestbin.Unit(execStart)
 	if err != nil {
 		return err
 	}
@@ -145,6 +175,152 @@ func up(g *guest, sel selection, o upOptions) error {
 		}
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// The podman branch: a Mac-side port, and the record that remembers it
+// (docs/podman.md §3.2, §3.4)
+// ---------------------------------------------------------------------------
+
+// publishPortLo/publishPortHi bound the Mac-side port `up` picks for the
+// gvproxy publish.
+//
+// 4777 is deliberately excluded even though it is the obvious first choice: a
+// Lima dev VM's SSH forward holds it on this very Mac, and a podman machine
+// that silently landed on an occupied port would be a transport pointed at
+// someone else's guest. The range is small on purpose — a Mac with 22 podman
+// machines attached at once is not a case worth widening an allowlist for.
+const (
+	publishPortLo = 4778
+	publishPortHi = 4799
+)
+
+// inspector is the half of the podman driver the record is written from. An
+// interface rather than a concrete type so the fake guest can answer it.
+type inspector interface {
+	Inspect(inst string) (vmprovider.PodmanInspect, error)
+}
+
+// ensureRecord settles the Mac-side endpoint for a podman machine and writes
+// the record that remembers it.
+//
+// The recorded port is reused unconditionally when there is one, without a
+// bind probe: on a second `up` the agent is running and gvproxy is holding
+// that exact port, so probing it would find it busy and move the endpoint —
+// rewriting the unit and restarting a perfectly healthy agent every time.
+// The probe is for choosing a *new* port, which is the only moment it says
+// anything true.
+func ensureRecord(g *guest, sel selection) (vmrecord.Record, error) {
+	prev, err := vmrecord.Read(sel.Ref)
+	switch {
+	case err == nil:
+	case errors.Is(err, vmrecord.ErrAbsent):
+	default:
+		return vmrecord.Record{}, err
+	}
+
+	port, reused := recordedPort(prev), true
+	if port == 0 {
+		reused = false
+		if port, err = freePublishPort(); err != nil {
+			return vmrecord.Record{}, err
+		}
+	}
+
+	insp, ok := g.p.(inspector)
+	if !ok {
+		return vmrecord.Record{}, fmt.Errorf("internal: %s is not a podman provider", qualify(sel.Instance))
+	}
+	got, err := insp.Inspect(sel.Ref.Instance)
+	if err != nil {
+		return vmrecord.Record{}, fmt.Errorf("inspecting the podman machine: %w", err)
+	}
+
+	rec := vmrecord.Record{
+		Transport: vmrecord.TransportGvproxyPublish,
+		Endpoint:  "tcp://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		SSH: vmrecord.SSH{
+			Port:     got.SSH.Port,
+			Identity: got.SSH.IdentityPath,
+			User:     got.SSH.RemoteUsername,
+		},
+		Rootful:   got.Rootful,
+		VMType:    sel.Instance.VMType,
+		WrittenBy: buildinfo.Version,
+	}
+	if err := vmrecord.Write(sel.Ref, rec); err != nil {
+		return vmrecord.Record{}, err
+	}
+	path, _ := vmrecord.Path(sel.Ref)
+	if reused {
+		fmt.Fprintf(g.out, "drawbridge: transport port %d (recorded in %s)\n", port, path)
+	} else {
+		fmt.Fprintf(g.out, "drawbridge: chose transport port %d, recorded in %s\n", port, path)
+	}
+	return rec, nil
+}
+
+// recordedPort is the port a previous `up` chose, or 0 when there is none to
+// reuse. A recorded port outside the range this build picks from is still
+// reused: it was ours, the unit already names it, and re-deriving it would
+// move a working endpoint for no reason.
+func recordedPort(rec vmrecord.Record) int {
+	if rec.Endpoint == "" {
+		return 0
+	}
+	_, p, err := net.SplitHostPort(strings.TrimPrefix(rec.Endpoint, "tcp://"))
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(p)
+	if err != nil || port <= 0 || port > 65535 {
+		return 0
+	}
+	return port
+}
+
+// freePublishPort picks the first port in the range nothing on this Mac holds.
+//
+// Bind-probed rather than assumed: the port has to be free for *gvproxy* to
+// bind when the guest agent publishes, and the only way to know that is to
+// have held it ourselves a moment ago. It is a race, unavoidably — we release
+// it before the guest claims it — but a lost race is a publish that fails and
+// retries with the reason in the agent's journal, not a silent misroute.
+func freePublishPort() (int, error) {
+	for port := publishPortLo; port <= publishPortHi; port++ {
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			continue
+		}
+		ln.Close()
+		return port, nil
+	}
+	return 0, fmt.Errorf("no free port on 127.0.0.1 in %d-%d to publish the transport on: "+
+		"something is holding all of them (`lsof -nP -iTCP -sTCP:LISTEN | grep -E ':47[789][0-9]'`)",
+		publishPortLo, publishPortHi)
+}
+
+// publishLocal is the -gvproxy-publish value: the Mac-side address gvproxy
+// binds, which is the recorded endpoint without its scheme.
+func publishLocal(rec vmrecord.Record) string {
+	return strings.TrimPrefix(rec.Endpoint, "tcp://")
+}
+
+// guestNotes are the facts worth stating once per `up` because they change
+// what the guest will let a container do, and nothing drawbridge installs can
+// change them.
+func guestNotes(pf preflight) string {
+	var parts []string
+	if pf.SELinux != "" && !strings.EqualFold(pf.SELinux, "disabled") {
+		parts = append(parts, "SELinux "+pf.SELinux)
+	}
+	if pf.OSTree {
+		parts = append(parts, "rpm-ostree")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return ", " + strings.Join(parts, ", ")
 }
 
 // ensureSecret provisions the per-VM transport secret (docs/transport-auth.md
@@ -490,6 +666,48 @@ done
 echo timeout
 `, controlPort)
 
+// resolveEndpoint is step 6's resolution, dispatched on the provider.
+//
+// Lima and Colima probe the vzNAT address and fall back to the forwarder.
+// Podman has one path — the loopback port the agent publishes through gvproxy
+// — so the only question is whether it is live yet, and the answer arrives a
+// beat after the agent starts. Hence the wait: the same budget the in-guest
+// readiness script gives the agent, applied to the Mac side of the same
+// event, so a machine that came up correctly is never reported as one that
+// did not (docs/podman.md §3.2).
+func resolveEndpoint(sel selection) limaaddr.Resolution {
+	if sel.Ref.Provider != vmprovider.ProviderPodman {
+		return limaaddr.ResolveTarget(limaaddr.Target{
+			VM:        sel.Ref.Instance,
+			LeaseName: sel.Ref.LeaseName,
+			LimaHome:  sel.Ref.LimaHome,
+		}, controlPort)
+	}
+	deadline := time.Now().Add(publishWait)
+	for {
+		r := podmanaddr.Resolve(sel.Ref)
+		if r.Endpoint == "" || r.Note == "" || time.Now().After(deadline) {
+			return r
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// publishWait matches readyScript's ten seconds: the guest agent binds its
+// listener and then publishes, so the Mac side is ready very slightly after
+// the guest side is.
+const publishWait = 10 * time.Second
+
+// sourceNote decorates the resolution source with the one sentence a podman
+// user needs and a Lima user does not: the forward is not something they have
+// to re-create after stopping the machine (docs/podman.md §3.5).
+func sourceNote(sel selection, r limaaddr.Resolution) string {
+	if sel.Ref.Provider != vmprovider.ProviderPodman {
+		return r.Source
+	}
+	return r.Source + "; the guest agent re-publishes it on every machine start"
+}
+
 func handoff(g *guest, sel selection, out io.Writer) {
 	ready, _ := g.sh(readyScript)
 	if strings.TrimSpace(ready) == "timeout" {
@@ -507,12 +725,8 @@ func handoff(g *guest, sel selection, out io.Writer) {
 		fmt.Fprintf(out, "drawbridge: warning: the guest agent reports %s but this CLI is %s — re-run `drawbridge up` after upgrading\n", version, buildinfo.Version)
 	}
 
-	r := limaaddr.ResolveTarget(limaaddr.Target{
-		VM:        sel.Ref.Instance,
-		LeaseName: sel.Ref.LeaseName,
-		LimaHome:  sel.Ref.LimaHome,
-	}, controlPort)
-	fmt.Fprintf(out, "drawbridge: transport %s (source %s)\n", r.Endpoint, r.Source)
+	r := resolveEndpoint(sel)
+	fmt.Fprintf(out, "drawbridge: transport %s (source %s)\n", r.Endpoint, sourceNote(sel, r))
 	if r.Note != "" {
 		fmt.Fprintf(out, "drawbridge: %s\n", r.Note)
 	}
