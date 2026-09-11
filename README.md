@@ -298,9 +298,9 @@ map and shipped the row-detail and refusal-grouping work; v0.1.1 fixed a
 bare-`drawbridge` panic the same day). Releases are tagged through goreleaser
 as universal binaries, installed via the Homebrew tap, and the quickstart was
 acceptance-tested end to end against a Colima VM on the released v0.0.1
-artifacts. **v0.2.0 is pending**: Podman machine + crun, verified end to end
-on both macOS providers (`libkrun` and `applehv`), rootless and rootful, with
-[docs/verify-podman.md](docs/verify-podman.md) as the recipe. Current state
+artifacts. **v0.2.0 (2026-09-11) adds Podman machine + crun**, verified end
+to end on both macOS providers (`libkrun` and `applehv`), rootless and
+rootful, with [docs/verify-podman.md](docs/verify-podman.md) as the recipe. Current state
 always lives in [docs/HANDOFF.md](docs/HANDOFF.md).
 
 ## Development

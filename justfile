@@ -135,3 +135,10 @@ smoke-sudo vm: build
 # be provisioned: `drawbridge up VM --oci`, with the nginx image pulled.
 smoke-sudo-oci vm: build
     go run ./scripts/smoke-sudo -vm {{vm}} -oci 1
+
+# the brew acceptance on RELEASED artifacts: the CLI on PATH (the cask) runs
+# `up --oci` for VM so the guest agent matches it, then the full -oci run
+# installs that CLI's daemon, proves the semantics, and restores the previous
+# daemon with the same CLI. No repo build involved: this is what a user gets.
+smoke-sudo-brew vm:
+    go run ./scripts/smoke-sudo -vm {{vm}} -oci 1 -up 1 -bin "$(command -v drawbridge)" -restore-bin "$(command -v drawbridge)"

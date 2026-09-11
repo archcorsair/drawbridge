@@ -83,6 +83,7 @@ func main() {
 	vm := flag.String("vm", "", "VM to install the daemon for (provider:name)")
 	oci := flag.String("oci", "", "also run the --oci container legs (\"1\"/\"true\"): the guest must already be provisioned with `drawbridge up <vm> --oci`, and the image must already be pulled")
 	bin := flag.String("bin", "bin/drawbridge", "drawbridge CLI whose sibling drawbridged gets installed")
+	up := flag.String("up", "", "run `<bin> up <vm>` first (\"1\"/\"true\"; adds --oci when -oci is set), so the guest agent matches the CLI under test; this is how the brew acceptance uses a released CLI")
 	restoreBin := flag.String("restore-bin", "", "CLI used to reinstall the previous daemon (default: `drawbridge` on PATH if it differs from -bin, else -bin)")
 	flag.Parse()
 	if *vm == "" {
@@ -104,7 +105,7 @@ func main() {
 	}
 	r.RestoreBin = pickRestoreBin(*restoreBin, binAbs)
 
-	s := &suite{r: r, ref: ref, bin: binAbs, prov: vmprovider.ForRef(ref), oci: *oci == "1" || *oci == "true"}
+	s := &suite{r: r, ref: ref, bin: binAbs, prov: vmprovider.ForRef(ref), oci: *oci == "1" || *oci == "true", up: *up == "1" || *up == "true"}
 	s.run()
 
 	enc := json.NewEncoder(os.Stdout)
@@ -134,6 +135,7 @@ type suite struct {
 	bin  string
 	prov vmprovider.Provider
 	oci  bool
+	up   bool
 }
 
 func (s *suite) step(name string, f func() (string, error)) bool {
@@ -186,6 +188,22 @@ func (s *suite) run() {
 		_, err := s.prov.Shell(s.ref.Instance, nil, "sudo", "systemctl", "stop", guestUnit)
 		return "unit " + guestUnit + " stopped", err
 	})
+
+	if s.up {
+		s.step("up", func() (string, error) {
+			args := []string{"up", s.r.VM}
+			if s.oci {
+				args = append(args, "--oci")
+			}
+			c := exec.Command(s.bin, args...)
+			var buf bytes.Buffer
+			c.Stdout, c.Stderr = &buf, &buf
+			if err := c.Run(); err != nil {
+				return lastLine(buf.Bytes()), err
+			}
+			return firstLine(buf.Bytes()), nil
+		})
+	}
 
 	s.step("install", func() (string, error) {
 		out, err := sudo(s.bin, "install", "-vm", s.r.VM)
