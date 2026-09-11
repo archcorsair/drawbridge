@@ -79,11 +79,13 @@ func TestParsePorts(t *testing.T) {
 		}
 	}
 	// The shipped default has to be parseable by the code that consumes it,
-	// and it stays exactly {22}: a longer default list is not cheaply
-	// reversible once users depend on its entries.
+	// and it stays exactly {22, 323}: every entry is field evidence (the
+	// Mac's Remote Login, and chrony's command port on every podman machine
+	// guest), and a longer default list is not cheaply reversible once users
+	// depend on its entries.
 	def, err := parsePorts(defaultSkip)
-	if err != nil || len(def) != 1 || def[0] != 22 {
-		t.Fatalf("default skip-list %q = %v, %v; want [22]", defaultSkip, def, err)
+	if err != nil || len(def) != 2 || def[0] != 22 || def[1] != 323 {
+		t.Fatalf("default skip-list %q = %v, %v; want [22 323]", defaultSkip, def, err)
 	}
 	if defaultSkip != install.DefaultSkip {
 		t.Fatalf("daemon default %q != install default %q — an installed daemon would differ from an ad-hoc one", defaultSkip, install.DefaultSkip)

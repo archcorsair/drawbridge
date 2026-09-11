@@ -346,7 +346,9 @@ func TestSetSkipAndArgs(t *testing.T) {
 		want string // "" ⇒ no -skip argument at all
 	}{
 		{"default renders nothing", DefaultSkip, ""},
-		{"whitespace default renders nothing", " 22 ", ""},
+		{"whitespace default renders nothing", " 22 , 323 ", ""},
+		{"reordered default renders nothing", "323,22", ""},
+		{"a subset of the default is an override", "22", "-skip 22"},
 		{"override", "22,5353", "-skip 22,5353"},
 		{"replacing the default entirely", "8022", "-skip 8022"},
 		{"disable", "", `-skip `},
@@ -407,8 +409,8 @@ func TestSetSkipAndArgs(t *testing.T) {
 	if err := (Config{VM: DefaultVM, Skip: []uint16{0}}).Validate(); err == nil {
 		t.Fatal("Validate accepted skip port 0")
 	}
-	if ports := DefaultSkipPorts(); len(ports) != 1 || ports[0] != 22 {
-		t.Fatalf("DefaultSkipPorts() = %v, want [22]", ports)
+	if ports := DefaultSkipPorts(); len(ports) != 2 || ports[0] != 22 || ports[1] != 323 {
+		t.Fatalf("DefaultSkipPorts() = %v, want [22 323]", ports)
 	}
 }
 

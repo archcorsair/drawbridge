@@ -414,11 +414,17 @@ Mechanism:
   no allow-flag needed, replacing the list *is* the override.
 - **Install passthrough:** `drawbridge install -skip …` renders into the
   plist like `-udp` does.
-- **Default list content: `22` only.** The agent transport port is already
-  excluded structurally; UDP autobind churn is already handled at the hub.
-  Growing the default list is a one-line change once field evidence
-  arrives; shipping a long speculative list is not reversible cheaply
-  (users will depend on entries).
+- **Default list content: `22` and `323`.** The agent transport port is
+  already excluded structurally (both of the ports it can be named by:
+  the endpoint the Mac dials and `transport.DefaultAgentPort` inside the
+  guest); UDP autobind churn is already handled at the hub. Growing the
+  default list is a one-line change once field evidence arrives; shipping
+  a long speculative list is not reversible cheaply (users will depend on
+  entries). `323` is exactly that field evidence, added 2026-09-11: every
+  podman machine guest runs chrony, which binds udp/323, so without it the
+  default mirror set on a podman machine carries a Mac-side listener for
+  the guest's own clock daemon. On Lima and Colima nothing changes
+  visibly unless the guest happens to run chrony.
 
 No agent/BPF involvement: the guest tracker still tracks `:22` (refcounts
 in `guest_ports` are untouched — that map is gateway/tracker state, not

@@ -135,12 +135,22 @@ type Config struct {
 // DefaultVM matches drawbridged's own -vm default.
 const DefaultVM = "drawbridge"
 
-// DefaultSkip matches drawbridged's own -skip default (docs/ergonomics.md §7:
-// `22` only — the Mac's Remote Login must not be synced into the guest, where
-// it would steer in-guest `ssh localhost` at the Mac's sshd). Speculative
-// entries are deliberately absent: users come to depend on entries, so growing
-// this list is far cheaper than shrinking it.
-const DefaultSkip = "22"
+// DefaultSkip matches drawbridged's own -skip default (docs/ergonomics.md §7).
+// Two entries, each earned rather than speculated, because users come to
+// depend on entries and growing the list is far cheaper than shrinking it:
+//
+//   - `22`: the Mac's Remote Login must not be synced into the guest, where
+//     it would steer an in-guest `ssh localhost` at the Mac's sshd.
+//   - `323`: chrony's command port. Every podman machine guest runs chrony
+//     and binds udp/323 on loopback, so the default mirror set on a podman
+//     machine has a Mac-side udp listener in it that serves nothing a user
+//     asked for (observed live, docs/podman.md §"7.2 results"). The guest
+//     clock is the guest's business either way: nothing on the Mac dials it.
+//
+// The list is a set of ports, not of protocol/port pairs, so `323` covers
+// tcp/323 too. Nothing assigned uses it, and a single number is the shape
+// both `-skip` and the plist have always had.
+const DefaultSkip = "22,323"
 
 // DefaultSkipPorts is DefaultSkip parsed. It panics on a malformed constant,
 // which is a build-time error in practice (a unit test parses it).
@@ -393,12 +403,22 @@ func (c *Config) SetSkip(spec string) error {
 	return nil
 }
 
+// samePorts compares two lists as sets. Order-insensitive because the
+// question it answers is "does this spec merely restate the default", and
+// with more than one port in the default there are now several spellings of
+// the same answer: `-skip 323,22` asks for exactly the shipped behaviour and
+// must not pin it into the plist any more than `-skip 22,323` does.
 func samePorts(a, b []uint16) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	seen := make(map[uint16]int, len(a))
+	for _, p := range a {
+		seen[p]++
+	}
+	for _, p := range b {
+		seen[p]--
+		if seen[p] < 0 {
 			return false
 		}
 	}

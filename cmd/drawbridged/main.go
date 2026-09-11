@@ -334,12 +334,13 @@ func authState(path string) introspect.Auth {
 	return a
 }
 
-// defaultSkip is the shipped skip-list (docs/ergonomics.md §7). `22` only:
-// syncing the Mac's Remote Login into the guest's mac_ports would steer an
-// in-guest `ssh localhost` at the Mac's sshd, which is the one default worth
-// paying for. Nothing speculative goes here — a list users have come to
-// depend on is not cheap to shrink. install.DefaultSkip carries the same
-// value for the plist, exactly as install.DefaultVM mirrors -vm's default.
+// defaultSkip is the shipped skip-list (docs/ergonomics.md §7): `22`, so the
+// Mac's Remote Login is never synced into the guest where it would steer an
+// in-guest `ssh localhost` at the Mac's sshd, and `323`, chrony's command
+// port, which every podman machine guest binds and nothing on the Mac dials.
+// Nothing speculative goes here, a list users have come to depend on is not
+// cheap to shrink. install.DefaultSkip carries the same value for the plist,
+// exactly as install.DefaultVM mirrors -vm's default.
 const defaultSkip = install.DefaultSkip
 
 // parsePorts is the daemon's comma-separated port-list parser, shared by
