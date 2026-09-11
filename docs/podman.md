@@ -1402,7 +1402,98 @@ podman daemon came up on 4778 and the colima daemon on `vznat-leases`.
 rule on: the guest's own transport `:4777` onto Mac `:4777`, and chrony's
 udp `:323`.
 
-## 7.3 results
+## 7.3 results (2026-09-11)
+
+**Landed: the wrapper dispatches on argv[0].** One binary, built and embedded
+once; installed as `drawbridge-runc` it stands in for runc, as
+`drawbridge-crun` for crun. Both branches verified live, each on the guest
+that has the runtime in question. No guest-facing change: `up --oci` is still
+docker-only and installs at the path it always did, and the dev VM's whole
+suite is at baseline.
+
+### What landed
+
+| Commit | Files |
+|---|---|
+| `e0e67d0` | `internal/ociruntime/dispatch.go` + `dispatch_test.go` (new); `cmd/drawbridge-runc/main_linux.go` (thin caller); `internal/guestbin/guestbin.go` (`WrapperPath`, the engine constants) + test; `cmd/drawbridge/guest.go` (engine constants now alias guestbin's), `up.go` (`provisionOCI` installs at `WrapperPath(engine)`) |
+
+`Runtime` carries the four things that differ: the name, the environment
+variables that pin the real runtime, the probe list, and the value-flag table.
+`RuntimeFor`, `Subcommand`, `Override` and `Pick` are pure; `Real` is the one
+seam that touches the filesystem, which is what keeps every table testable on
+the Mac.
+
+### Two decisions worth recording
+
+**`RuntimeFor` requires the prefix.** §6.1 says "basename `drawbridge-crun`
+implies crun; anything else implies runc", and the obvious implementation
+(strip `drawbridge-`, compare) also answers "I am the crun wrapper" to a
+binary named plain `crun`. That is the wrong answer for the one name a real
+crun actually has, and it is how a probe list ends up pointing at us. The
+prefix is now required, and a bare `crun` reads as runc, matching the
+documented default.
+
+**Self-exclusion compares canonical paths.** The wrapper shipped comparing
+probe candidates against `os.Executable()` as literal strings, which is a
+no-op against the case that matters: `up --oci` installs the wrapper in
+`/usr/local/bin`, and a package or an administrator may well have pointed
+`/usr/bin/crun` at it. Following that symlink execs ourselves, which is an
+unkillable fork bomb holding a container start open. `Pick` now compares
+`filepath.EvalSymlinks` results, and the test fixture pins that the old
+literal comparison would have failed the case.
+
+### Verified
+
+Unit, on the Mac: `go test ./internal/ociruntime/` green, including both
+engines' real `create` argv (containerd-shim's for runc, conmon's for crun),
+`--flag=value` forms, crun's booleans not swallowing the subcommand, the
+symlinked-self exclusion, runc's table and probe list pinned byte for byte,
+and the `WrapperPath`/`RuntimeFor` name contract pinned from the guestbin
+side. `go vet ./...` and the full `-race` suite clean.
+
+Live, argv[0] dispatch on both guests, each missing the *other* runtime so the
+probe lists are exercised in both directions:
+
+```
+# Lima dev VM: runc present, no crun
+$ sudo ./drawbridge-crun --version
+drawbridge-crun: no real crun found (tried /usr/bin/crun, /usr/local/sbin/crun, /usr/sbin/crun, /usr/local/bin/crun; set DRAWBRIDGE_RUNTIME)
+$ sudo DRAWBRIDGE_RUNTIME=/usr/sbin/runc ./drawbridge-crun --version
+runc version 1.3.4-0ubuntu1~24.04.1
+
+# podman machine spike: crun present, no runc
+$ sudo ./drawbridge-crun --version
+crun version 1.28
+$ sudo ./drawbridge-runc --version
+drawbridge-runc: no real runc found (tried /usr/sbin/runc, /usr/bin/runc, /usr/local/sbin/runc; set DRAWBRIDGE_RUNTIME or DRAWBRIDGE_RUNC)
+```
+
+Both probe binaries were staged in `/tmp` and deleted; neither guest was
+changed.
+
+Dev VM, the regression that matters (the docker path runs the same code
+through the runc branch):
+
+| Check | Result |
+|---|---|
+| `just vm-up`, `just build`, `just agent-up` | clean, agent active |
+| `just test-guest` | all green (Phases 1 to 4, OCI protocol, UDP sync) |
+| `just vm-docker` | `provision-docker: ok (docker 29.1.3, wrapper 96b58c17d919)`, the `DRAWBRIDGE_RUNC` dev override still resolves |
+| `just e2e` | **14 pass / 2 root-gated skips / 0 fail**, the baseline |
+
+The three real-container legs (`TestContainerBindGetsSynchronousEADDRINUSE`,
+`TestHostNetContainerListenerMirrored`, `TestBridgedContainerNotArbitrated`)
+are the byte-identical check with teeth: containers really started through the
+rebuilt wrapper, so the new dispatch code carried a live `create` argv from
+containerd-shim into the injection decision and out to the real runc. No port
+race with the released colima daemon, which was installed and running
+throughout.
+
+### Left for the user
+
+Nothing. Every step of 7.3 ran without sudo. The dev VM is left running with
+the agent and docker active, as 7.4 will want it.
+
 
 ## 7.4 results
 
