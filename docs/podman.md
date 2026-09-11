@@ -1204,6 +1204,31 @@ limactl start drawbridge && just e2e      # baseline 14 pass / 2 root-gated skip
 ```
 
 
+**User-run acceptance (2026-09-11, later the same day).** The e2e subset
+(`DRAWBRIDGE_E2E=1 DRAWBRIDGE_VM=podman:spike DRAWBRIDGE_AGENT=tcp://127.0.0.1:4778`,
+four legs incl. `TestForwarderHalfClose`) passed. `sudo ./bin/drawbridge
+install -vm podman:spike` then `status` showed the daemon at
+`tcp://127.0.0.1:4778 (flag)`, auth ok, mirror and sync sessions up.
+Note the e2e gate: the 7.1 hand-off command omitted `DRAWBRIDGE_E2E=1`,
+without which every leg skips green; the recipe must carry it.
+
+**Lesson for 7.2 (single launchd identity).** `install` writes one plist,
+`com.archcorsair.drawbridged`, whatever `-vm` says, and `uninstall`
+removes it. Installing for `podman:spike` on a Mac that already had the
+released daemon for `colima:default` therefore replaced that install in
+place, and the subsequent `uninstall` removed it, so the "restore with
+`launchctl bootstrap`" step in the hand-off failed (`Bootstrap failed: 5`,
+the plist was gone). Recovery is `sudo drawbridge install -vm
+colima:default` from the brew CLI. This is the existing single-daemon
+posture, not new, but 7.2 must make it visible: `install` should print
+the VM it is replacing when the plist already exists with a different
+`-vm`, `status` already names the VM, and verify-podman.md must tell a
+Lima/Colima user that `install -vm podman:…` switches the daemon rather
+than adding one. Also observed: the installed daemon was still the v0.0.1
+binary from August although the cask had been upgraded to v0.1.1 (the
+cask caveat about re-running `install` after upgrades is doing real work;
+doctor's skew check is the backstop).
+
 ## 7.2 results
 
 ## 7.3 results
