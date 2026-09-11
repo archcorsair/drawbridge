@@ -16,6 +16,7 @@ package install
 import (
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -402,4 +403,46 @@ func samePorts(a, b []uint16) bool {
 		}
 	}
 	return true
+}
+
+// InstalledVM reads the `-vm` value out of the plist already on disk, and
+// false when there is no install to read.
+//
+// There is exactly one LaunchDaemon label, so `install -vm X` on a Mac whose
+// daemon is installed for Y *replaces* Y rather than adding to it, and the
+// old VM's mirror and sync sessions stop. That has always been true; what was
+// missing is anyone saying it out loud, which cost a user their colima
+// install during the 7.1 acceptance run (docs/podman.md §"7.1 results",
+// "Lesson for 7.2"). The caller prints it; this half only reads.
+//
+// No root needed: the plist is 0644 by design.
+func InstalledVM() (string, bool) {
+	blob, err := os.ReadFile(PlistPath)
+	if err != nil {
+		return "", false
+	}
+	vm := vmFromPlist(string(blob))
+	return vm, vm != ""
+}
+
+// plistStringRE matches one <string> element of the plist, which is all the
+// structure this needs: ProgramArguments is a flat array and the value of a
+// flag is the element after it.
+var plistStringRE = regexp.MustCompile(`<string>([^<]*)</string>`)
+
+// vmFromPlist is InstalledVM's pure half: the element following `-vm`.
+//
+// A parser rather than a regexp for the pair, because an older or
+// hand-edited plist may render the arguments in a different order, and
+// "whatever follows -vm" is the one rule that survives that. An install with
+// no -vm at all (there has never been one, but the daemon does have a
+// default) reads as unknown, which prints nothing rather than a wrong name.
+func vmFromPlist(plist string) string {
+	m := plistStringRE.FindAllStringSubmatch(plist, -1)
+	for i, g := range m {
+		if g[1] == "-vm" && i+1 < len(m) {
+			return strings.TrimSpace(m[i+1][1])
+		}
+	}
+	return ""
 }

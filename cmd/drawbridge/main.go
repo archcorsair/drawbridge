@@ -100,6 +100,9 @@ Usage:
                      [-skip P,P] [-bin PATH] [-print]
         Install drawbridged as a root LaunchDaemon (needs sudo).
         Ports <1024 need this; -print previews the files and writes nothing.
+        There is one daemon, not one per VM: installing for a different -vm
+        REPLACES the installed one and stops the old VM's sessions. The
+        command says which VM it is replacing when it does.
         -vm takes a bare Lima instance name (default `+install.DefaultVM+`) or
         provider:name, lima:myvm, colima:default, colima:<profile>,
         podman:<machine>. A podman install pins the transport endpoint
@@ -315,7 +318,18 @@ func runInstall(args []string) int {
 		fmt.Printf("# %s\n%s\n# %s\n%s", install.PlistPath, plist, install.NewsyslogPath, install.NewsyslogConf())
 		return 0
 	}
-	st, err := install.Install(cfg, *bin, stepLine(os.Stdout, stdoutStyles))
+	// One LaunchDaemon label exists, so installing for a different VM
+	// replaces the daemon rather than adding one, and the old VM's sessions
+	// stop. Said out loud because it cost a user their colima install during
+	// the 7.1 acceptance run (docs/podman.md §"7.1 results"). Printed, not
+	// prompted: `install` has to stay scriptable, and `uninstall` plus a
+	// re-install is the undo.
+	step := stepLine(os.Stdout, stdoutStyles)
+	if prev, ok := install.InstalledVM(); ok && prev != cfg.VM {
+		step("replacing the installed daemon for %s with %s; the old VM's mirror and sync sessions stop", prev, cfg.VM)
+	}
+
+	st, err := install.Install(cfg, *bin, step)
 	if err != nil {
 		flushWarnings()
 		fmt.Fprintf(os.Stderr, "drawbridge install: %v\n", err)

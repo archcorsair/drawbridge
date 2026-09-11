@@ -581,3 +581,55 @@ func TestPinnedAgentEndpointIsLoopbackOnly(t *testing.T) {
 		}
 	}
 }
+
+// One LaunchDaemon label exists, so `install -vm X` on a Mac whose daemon is
+// installed for Y replaces Y and stops its sessions. Reading the installed
+// -vm back out of the plist is what lets the command say so; during the 7.1
+// acceptance run its absence cost a user their colima install
+// (docs/podman.md §"7.1 results", "Lesson for 7.2").
+func TestVMFromPlist(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{"a lima install", Config{VM: "lima:drawbridge"}, "lima:drawbridge"},
+		{"a colima install", Config{VM: "colima:default"}, "colima:default"},
+		{"a podman install", Config{VM: "podman:spike", Agent: "tcp://127.0.0.1:4778"}, "podman:spike"},
+		{"a bare lima name", Config{VM: "drawbridge"}, "drawbridge"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plist, err := RenderPlist(tc.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := vmFromPlist(plist); got != tc.want {
+				t.Fatalf("vmFromPlist = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// Order is not assumed: it is whatever follows -vm, so a hand-edited or
+	// older plist that renders the arguments differently still reads.
+	reordered := `<array>
+		<string>/usr/local/libexec/drawbridged</string>
+		<string>-skip</string><string>22</string>
+		<string>-vm</string><string>podman:spike</string>
+		<string>-agent</string><string>tcp://127.0.0.1:4778</string>
+	</array>`
+	if got := vmFromPlist(reordered); got != "podman:spike" {
+		t.Fatalf("vmFromPlist(reordered) = %q", got)
+	}
+
+	// No -vm, a trailing -vm, and no plist at all all read as unknown, which
+	// prints nothing rather than a wrong VM name.
+	for _, bad := range []string{
+		"",
+		"<string>/usr/local/libexec/drawbridged</string>",
+		"<string>-vm</string>",
+	} {
+		if got := vmFromPlist(bad); got != "" {
+			t.Fatalf("vmFromPlist(%q) = %q, want unknown", bad, got)
+		}
+	}
+}
