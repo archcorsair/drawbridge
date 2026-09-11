@@ -278,6 +278,29 @@ Per check: **Inputs** (pure = classified from injected values; live = the
 gather step that produces them), **Classification**, **Remedy job** (the §5
 discipline: the strings state condition → likely cause → the one command).
 
+### 4.0 The podman branches (Phase 7.5)
+
+Six checks grew a second vocabulary, because "vz" and "vzNAT" are Lima words
+a podman machine does not speak: its transport is a gvproxy-published
+loopback port, there is no vmnet route to inspect and no Local Network gate
+to be denied by. The numbering did not change, and a Lima or Colima run
+prints byte-identical text. All of it stays pure over injected probe results;
+a `PodmanInput` carries the extra facts and `Target: false` leaves every
+check exactly as it was.
+
+| Check | Podman branch |
+|---|---|
+| 1 `providers` | classifies on the provider's own `Instance.Attachable` verdict, not `VMType == "vz"`: **libkrun and applehv are both attachable**, so the "no host-reachable guest IP" wording a qemu instance earns never appears. A running machine is evidenced with its rootfulness and ssh port, read from the machine's own config file (exec-free, the same source `install` reads). A stopped sibling gets a sentence saying stopped is normal, because **only one podman machine runs at a time** and a Mac with three machines has two stopped ones by construction |
+| 2 `guest-prereqs` | crun's floor (0.19, the listenerPath contract), the guest's SELinux mode, the unprivileged-port floor on a rootless machine, and the `--oci` drop-in: that it is **one file on the Mac** (`/etc/containers` is a virtiofs mount of the user's podman config dir), its Mac-side path when that file is really there, and which other machines read it. Info-grade, because the registration works. The one state said loudly is a drop-in present while `podman info` reports some other runtime |
+| 3 `agent` | branch A's publish evidence: the agent's own `gvproxy: published …` journal lines plus the entry in gvproxy's in-guest forward table. Active and reachable are two claims here, and the guest owns its own forward, so an agent that is up without one is a `fail` ("up but not published"). A table that could not be read is a `warn`, never a verdict |
+| 4 `resolution` | `gvproxy-publish` is `ok`, not the `warn` a Lima fallback earns: it is the only path a podman machine has. Surfaces `vmrecord.Record.Disagreements` (the same comparison `install` refuses on) as a `fail` naming the field that moved. **Under euid 0 the per-VM record is not read** (it is a user-owned file and `install` pinned the endpoint into the plist so root never has to); the check reports the pin instead |
+| 5 `vznat-route`, 6 `local-network` | `skip`. There is no vmnet interface, and loopback is not subject to the Local Network gate, so check 6 does not print the sudo discriminator for a run that could learn nothing from it |
+| 8 `half-close-probe` | the loopback caveat flips. On this provider loopback **is** the transport's path, so a pass is evidence about the real path; and a starve is a `fail` naming gvproxy's tcpproxy half-close boundary (2025-01-21) with "check the gvproxy your podman bundles" as the remedy, rather than the "loopback should never show this" warn a Lima fallback earns |
+| 10 `coexistence` | podman's real detector (gvproxy's forward table, with podman's own ssh forward and drawbridge's transport publish filtered out by guest-side port, so what is left is exactly the user's `-p` publications) and podman's own tradeoff: a published container is bridged, has its own netns, is excluded by the tracker's `host_netns_inum` check, and was never a mirror candidate. The remedy is not an opt-out: with drawbridge attached, `--network host` needs no `-p` |
+
+Checks 7, 9 and 11 are untouched, and check 11's title now follows
+`install.DefaultSkip` rather than spelling a port number.
+
 **1. `providers` — providers present, instances runnable.**
 Inputs: `vmprovider.Detect()` results + `List()` per provider (live);
 classification pure over `[]Instance`. No provider binaries → `fail`

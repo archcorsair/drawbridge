@@ -188,11 +188,26 @@ integration; see docs/transport.md §1")`.
 ```go
 type Resolution struct {
     Endpoint string // canonical, e.g. "tcp://192.168.64.5:4777"
-    Source   string // "vznat-direct" | "ssh-forwarder" (for logs/bench headers)
+    Source   string // see the source table below (for logs/bench headers)
     Note     string // non-empty when falling back: classified reason + remediation
 }
 func Resolve(vmName string, port uint16) Resolution
 ```
+
+**The sources, and which are a fallback.** Only the Lima and Colima pair has
+a fallback at all; a source is not a quality ranking.
+
+| Source | Provider | Resolver | Status |
+|---|---|---|---|
+| `vznat-direct` | lima, colima | `internal/limaaddr`, address from `limactl` | shipped; the direct path |
+| `vznat-leases` | lima, colima | `internal/limaaddr`, address from `/var/db/dhcpd_leases` | shipped; also direct. It is the *root* daemon's only candidate source, since limactl refuses euid 0, so it is a posture rather than a degradation |
+| `ssh-forwarder` | lima, colima | `internal/limaaddr`, the forwarded `127.0.0.1:4777` | shipped; the one real fallback, slower and not attributable to a VM |
+| `gvproxy-publish` | podman | `internal/podmanaddr`, the endpoint `drawbridge up` recorded | **shipped (Phase 7.1)**; the *guest agent* posts its own expose to gvproxy's in-guest API at every start, so the forward comes back after `podman machine stop` and the Mac dials `tcp://127.0.0.1:<port>`. Not a fallback: it is the only path a podman machine has, which is why doctor grades it `ok` rather than `warn` |
+| `ssh-tunnel` | podman | designed, **not built** | the branch-B contingency: a supervised `/usr/bin/ssh -N -L <unix socket>:127.0.0.1:4777`, dialed as `unix://<socket>`. It exists only as a design (podman.md §3.3) because the 7.0 spike's half-close gate passed on gvproxy. It stays designed until gvproxy fails that gate for someone |
+
+Neither podman source adds a scheme to the endpoint grammar, which was the
+point of §1's corollary: branch A is `tcp://`, branch B would be `unix://`,
+and every call site is unchanged either way.
 
 Probe classification (the actionable-UX requirement):
 

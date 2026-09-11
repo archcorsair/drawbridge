@@ -164,7 +164,7 @@ lines). This is the substrate for the §6 skew checks. Release tags are
 | Colima | Lima under a discovered `LIMA_HOME` (instance `colima` / `colima-<profile>`; ≥0.9 is XDG — see Phase 3 results) | same, lease **`colima`** (bare instance name — amended in Phase 3; the guest hostname, not `lima-<…>`) | systemd (Ubuntu) | Ubuntu — BTF ✓ | **Supported** (vz vmType only) |
 | Lima/Colima with `vmType: qemu` | qemu | none (user-mode slirp; no host-reachable IP, no lease record) | — | — | **Rejected with doctor message** ("switch to vz: `colima start --vm-type vz` / lima `vmType: vz`") |
 | Colima legacy Alpine image | vz | vzNAT | OpenRC, no systemd | Alpine | **Rejected with doctor message** (systemd required in v1; §9 Q6) |
-| Podman machine | applehv/vfkit or libkrun, networking via **gvproxy** (user-mode) | none directly; gvproxy can expose forwards via its control API | systemd (Fedora CoreOS) — BTF ✓ | FCOS | **Fast-follow** (Phase 7; transport needs its own spike, §7) |
+| Podman machine | **libkrun** (podman 6's macOS default) or applehv; networking via **gvproxy** (user-mode) | none directly. The *guest agent* publishes its own transport port through gvproxy's in-guest API and the Mac dials `tcp://127.0.0.1:<port>` (source `gvproxy-publish`, Phase 7.1) | systemd (Fedora CoreOS) — BTF ✓ | FCOS | **Supported** (Phase 7, v0.2.0; both providers, rootless and rootful. `:80` needs `--rootful`: a rootless container's bind below the guest's `ip_unprivileged_port_start` is refused by the guest kernel, not by drawbridge. Recipe: [verify-podman.md](verify-podman.md)) |
 | Bespoke dev VM | vz | vzNAT + template-forwarded :4777 | systemd | Ubuntu 24.04 | Supported (unchanged; `just agent-up` remains the dev loop) |
 
 The load-bearing constraint: **the shipped transport requires a
@@ -1230,7 +1230,16 @@ Exit condition: when mise can pin goreleaser ≥ 2.19, move the steps branch
 to `hooks.post.install_steps`, delete `custom_block`, and re-run the same
 snapshot + brew-ruby load check.
 
-### Phase 7 — Podman machine + crun (fast-follow)
+### Phase 7 — Podman machine + crun (DONE, v0.2.0)
+
+**Landed 2026-09-11 across 7.0 to 7.6.** The design, the phase order and
+every results section live in [podman.md](podman.md); that file, not this
+one, is where Phase 7's decisions and corrections are recorded. The sketch
+below is what was planned, kept for the diff against what shipped: the
+spike's verdict was branch A (`gvproxy-publish`), the wrapper dispatches on
+argv[0] as proposed, and registration is a `containers.conf.d` drop-in rather
+than an edit to `containers.conf`.
+
 
 1. **Spike first, contract second:** podman machine's networking is
    gvproxy (user-mode) — no host-dialable guest IP. Candidate transport:

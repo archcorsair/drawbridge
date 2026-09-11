@@ -97,8 +97,8 @@ Probably not if:
   reserves <1024 for root and has no sysctl to relax it), and it is subject to
   the macOS privacy gates that a launchd daemon is exempt from.
 
-Also: Apple silicon only, macOS only, Lima and Colima only (Podman machine is
-planned). Nothing is signed or notarized.
+Also: Apple silicon only, macOS only, and Lima, Colima or Podman machine.
+Nothing is signed or notarized.
 
 ## Install
 
@@ -106,9 +106,12 @@ planned). Nothing is signed or notarized.
 
 - An Apple silicon Mac. Developed and verified on macOS 27; older versions are
   untested rather than unsupported.
-- A **running** Lima or Colima VM with `vmType: vz` — drawbridge attaches to a
-  VM you already have and never creates one. The guest needs a BTF kernel
-  (≥ 5.7), cgroup v2 and systemd; Ubuntu 24.04, the Colima default, is fine.
+- A **running** VM drawbridge can reach: a Lima or Colima instance with
+  `vmType: vz`, or a Podman machine on `libkrun` (podman 6's default) or
+  `applehv`. drawbridge attaches to a VM you already have and never creates
+  one. The guest needs a BTF kernel (≥ 5.7), cgroup v2 and systemd; Ubuntu
+  24.04 (the Colima default) and Fedora CoreOS (the podman machine image) are
+  both fine.
 
 **Homebrew**
 
@@ -122,14 +125,21 @@ than notarized; the cask strips the quarantine attribute on install so the
 first run is not a Gatekeeper kill.
 
 Building from source is the development workflow: see
-[docs/dev.md](docs/dev.md) (mise for the toolchain, `just build`).
+[docs/dev.md](docs/dev.md) (mise for the toolchain, `just build`). The cask is
+the only packaged install; there is no `brew` package for the Podman path
+specifically, because there is nothing extra to install. Podman machine users
+take the same cask and follow
+[docs/verify-podman.md](docs/verify-podman.md), which is the recipe the podman
+support was verified with.
 
 **Provision the guest**
 
 ```sh
-drawbridge up                 # one running vz VM: instance can be omitted
-drawbridge up colima          # or name it; lima:myvm / colima:default also work
-drawbridge up colima --oci    # additionally install the runc wrapper (see below)
+drawbridge up                        # one running VM: instance can be omitted
+drawbridge up colima                 # or name it; lima:myvm / colima:default also work
+drawbridge up colima --oci           # additionally install the runtime wrapper (see below)
+
+drawbridge up podman:mymachine --oci # a Podman machine, the same three commands
 ```
 
 No sudo on the Mac — the privileged half happens inside the guest. `up`
@@ -137,10 +147,34 @@ installs the agent as a systemd unit and writes a per-VM transport secret on
 both sides. It is idempotent: re-run it to upgrade. `drawbridge down`
 reverses exactly what it did.
 
-`--oci` is opt-in because it edits Docker's `daemon.json` in your guest to
-register the wrapper runtime. Without it, mirroring, outbound and host-process
-`EADDRINUSE` all still work — only *containerized* bind arbitration (semantic 3
-above) needs the wrapper.
+`--oci` is opt-in because it registers a wrapper runtime with your container
+engine: it edits Docker's `daemon.json` in a Lima or Colima guest, and writes
+a `containers.conf.d` drop-in for podman. Without it, mirroring, outbound and
+host-process `EADDRINUSE` all still work; only *containerized* bind
+arbitration (semantic 3 above) needs the wrapper.
+
+**Podman machine, in three commands**, and two facts worth knowing before you
+run them:
+
+```sh
+podman machine init --rootful --now mymachine   # yours, not ours
+drawbridge up podman:mymachine --oci
+sudo drawbridge install -vm podman:mymachine
+```
+
+`--rootful` is what the `curl localhost:80` demo needs: on a rootless machine
+the guest kernel refuses a container bind below
+`net.ipv4.ip_unprivileged_port_start` (1024 on Fedora CoreOS) before
+drawbridge is involved at all. Rootless works for everything at `:8080` and
+above, and `drawbridge doctor` names the two ways out.
+
+And `--oci` on podman writes **one file on your Mac**, not in the guest:
+`~/.config/containers/containers.conf.d/50-drawbridge.conf`, which podman
+mounts into every machine as `/etc/containers`. So it registers the wrapper
+for every podman machine you have, and `drawbridge down` on any one of them
+removes it for all. That is harmless by construction, because the drop-in
+names the real `crun` as its fallback, so a machine without the wrapper
+installed uses stock crun, and both `up` and `doctor` say it out loud.
 
 **Run the Mac daemon** — pick one posture:
 
@@ -252,19 +286,22 @@ pasted into an issue. Background on the macOS-side pathologies:
 
 Working and verified end to end today: the kernel loopback gateway, guest
 listener tracking and Mac mirrors, Mac listener sync with outbound dial,
-synchronous binds via a seccomp-unotify OCI wrapper (Docker/runc), UDP in both
-directions, the privileged LaunchDaemon for sub-1024 ports, per-VM transport
-authentication, `up`/`down` provisioning for Lima and Colima, `doctor`, and the
-TUI. `docker run --network host nginx` in the guest really does serve
-`http://localhost:80` on the Mac.
+synchronous binds via a seccomp-unotify OCI wrapper (Docker/runc and
+Podman/crun), UDP in both directions, the privileged LaunchDaemon for sub-1024
+ports, per-VM transport authentication, `up`/`down` provisioning for Lima,
+Colima and Podman machine, `doctor`, and the TUI. `docker run --network host
+nginx` in the guest really does serve `http://localhost:80` on the Mac, and so
+does `podman run --network host nginx` on a rootful machine.
 
 v0.1.1 is the current release (v0.1.0 on 2026-08-15 froze the TUI keybinding
 map and shipped the row-detail and refusal-grouping work; v0.1.1 fixed a
 bare-`drawbridge` panic the same day). Releases are tagged through goreleaser
 as universal binaries, installed via the Homebrew tap, and the quickstart was
 acceptance-tested end to end against a Colima VM on the released v0.0.1
-artifacts. Next: Podman machine + crun. Current state always lives in
-[docs/HANDOFF.md](docs/HANDOFF.md).
+artifacts. **v0.2.0 is pending**: Podman machine + crun, verified end to end
+on both macOS providers (`libkrun` and `applehv`), rootless and rootful, with
+[docs/verify-podman.md](docs/verify-podman.md) as the recipe. Current state
+always lives in [docs/HANDOFF.md](docs/HANDOFF.md).
 
 ## Development
 

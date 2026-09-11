@@ -189,8 +189,9 @@ At 120×40 (the roomy case):
     tcp    3000   ● bound       2m                       tcp    6379
     udp    5353   ● bound       1m                       udp    5353
     tcp    22     · skipped     2h
+    udp    323    · skipped     2h
   ◆ tcp    5000   ✕ bind-failed 40s
-                                        skip list: 22
+                                   skip list: 22,323
                                                                                                       
   tab next daemon · r refusals · d doctor · ? help · q quit
 ```
@@ -232,7 +233,7 @@ At 80×24 (the honest case — SSH sessions, split panes):
  endpoint tcp://192.168.64.5:4777 (vznat-direct)
  auth static-hmac-v1 · secret ok
  mirror ● up · event 12s ago   sync ● up · adv 3 · parked 4
- MIRROR (5)                              skip: 22
+ MIRROR (5)                         skip: 22,323
    PROTO  PORT   STATE         SINCE
    tcp    8080   ● bound       2m
    tcp    3000   ● bound       2m
