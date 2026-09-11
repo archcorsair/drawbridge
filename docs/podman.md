@@ -2053,4 +2053,8 @@ clean tree, so a `just smoke-sudo` from that commit matches. If the tree is
 dirty or the commit has moved, run `./bin/drawbridge up podman:spike --oci`
 first and the skew heals.
 
+**User-run acceptance (2026-09-11):** `just smoke-sudo podman:spike` 11/11
+on the 7.5 build, including `root-doctor-has-no-failures` (sudo doctor on
+the podman machine, no `[fail]`). 7.5 accepted.
+
 ## 7.6 results
