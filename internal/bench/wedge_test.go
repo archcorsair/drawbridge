@@ -26,6 +26,7 @@ import (
 	"github.com/archcorsair/drawbridge/internal/limaaddr"
 	"github.com/archcorsair/drawbridge/internal/macsync"
 	"github.com/archcorsair/drawbridge/internal/mirror"
+	"github.com/archcorsair/drawbridge/internal/vmprovider"
 )
 
 func envInt64(name string, def int64) int64 {
@@ -41,17 +42,26 @@ func TestWedgeRepro(t *testing.T) {
 	if os.Getenv("DRAWBRIDGE_WEDGE") == "" {
 		t.Skip("set DRAWBRIDGE_WEDGE=1")
 	}
-	if _, err := exec.LookPath("limactl"); err != nil {
-		t.Skip("limactl not on PATH")
+	ref, err := vmprovider.ParseRef(vmSpec)
+	if err != nil {
+		t.Fatalf("DRAWBRIDGE_VM=%q: %v", vmSpec, err)
 	}
-	if out, err := limactl(t, "list", "--format", "{{.Status}}", vmName); err != nil || out != "Running" {
-		t.Skipf("VM %s not running (%q, %v)", vmName, out, err)
+	vmRef, vmProvider = ref, vmprovider.ForRef(ref)
+	insts, err := vmProvider.List()
+	if err != nil {
+		t.Skipf("listing %s instances: %v", ref.Provider, err)
 	}
-	res := limaaddr.Resolve(vmName, agentPort)
+	if !running(insts, ref.Instance) {
+		t.Skipf("VM %s is not running", ref.Spec)
+	}
+	res := resolve(ref)
 	agentAddr = res.Endpoint
 	t.Logf("agent transport: %s source=%s", res.Endpoint, res.Source)
+	// The repro is about a non-loopback flow, so it is a Lima/Colima vzNAT
+	// leg by construction: a podman machine's transport is loopback and
+	// exempt from both Little Snitch signatures, and skips here on its own.
 	if res.Source != limaaddr.SourceVZNATDirect {
-		t.Skipf("wedge repro needs the vzNAT path (loopback is exempt); resolver fell back: %s", res.Note)
+		t.Skipf("wedge repro needs the vzNAT path (loopback is exempt); resolver reported %s: %s", res.Source, res.Note)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -93,7 +103,6 @@ func TestWedgeRepro(t *testing.T) {
 	guestUnit(t, "dbg-wedge-sink", "sink", guestSinkPort)
 	sinkAddr := fmt.Sprintf("127.0.0.1:%d", guestSinkPort)
 	var c net.Conn
-	var err error
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		c, err = net.DialTimeout("tcp", sinkAddr, 2*time.Second)

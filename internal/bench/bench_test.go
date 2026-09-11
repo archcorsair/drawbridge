@@ -1,6 +1,13 @@
-// Drawbridge latency/throughput benchmark, run from the Mac against the
-// live dev VM (agent installed via `just agent-up`). Gated:
+// Drawbridge latency/throughput benchmark, run from the Mac against a live
+// VM (agent installed via `just agent-up`, or `drawbridge up`). Gated:
 // DRAWBRIDGE_BENCH=1 (use `just bench`).
+//
+// DRAWBRIDGE_VM takes drawbridged's own grammar, so the suite measures any
+// provider drawbridge attaches to: the dev Lima VM by default,
+// `podman:spike` for a podman machine. Guest exec goes through
+// internal/vmprovider, which means the single-space-free-word argv rule and
+// scripts on stdin, because `podman machine ssh` joins argv exactly as
+// `limactl shell` does.
 //
 // Outbound (guest → Mac, Phase 3 'D' reverse streams) is measured by the
 // guest binary's benchclient subcommand against Mac-side servers; inbound
@@ -11,12 +18,12 @@
 package bench
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,9 +31,11 @@ import (
 	"time"
 
 	"github.com/archcorsair/drawbridge/internal/benchtool"
+	"github.com/archcorsair/drawbridge/internal/guestbin"
 	"github.com/archcorsair/drawbridge/internal/limaaddr"
 	"github.com/archcorsair/drawbridge/internal/macsync"
 	"github.com/archcorsair/drawbridge/internal/mirror"
+	"github.com/archcorsair/drawbridge/internal/podmanaddr"
 	"github.com/archcorsair/drawbridge/internal/transport"
 	"github.com/archcorsair/drawbridge/internal/transportauth"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
@@ -36,8 +45,21 @@ import (
 // else the SSH-forwarded loopback.
 var agentAddr string
 
+// vmSpec is the VM the suite drives, in drawbridged's `-vm` grammar. The
+// default is the dev VM, so `just bench` is unchanged.
+var vmSpec = cmp.Or(os.Getenv("DRAWBRIDGE_VM"), defaultVM)
+
+// vmRef and vmProvider are vmSpec resolved: the canonical ref (which is what
+// the transport secret's path derives from) and the driver that reaches the
+// guest. Both are set by requireBench, which is also where a malformed
+// DRAWBRIDGE_VM stops the run.
+var (
+	vmRef      vmprovider.Ref
+	vmProvider vmprovider.Provider
+)
+
 const (
-	vmName    = "drawbridge"
+	defaultVM = "drawbridge"
 	agentPort = 4777
 
 	guestEchoPort   = 47801
@@ -54,15 +76,16 @@ const (
 	udpLargeSz  = 60000 // guest→Mac only: macOS caps UDP sends at ~9216
 )
 
-func limactl(t *testing.T, args ...string) (string, error) {
-	t.Helper()
-	out, err := exec.Command("limactl", args...).CombinedOutput()
-	return strings.TrimSpace(string(out)), err
-}
-
+// guest runs a script as root in the guest.
+//
+// The script rides on stdin and every argv element is a single space-free
+// word, because both provider shells join argv into one remote command
+// string without quoting it (AGENTS.md; verified for podman in the 7.0
+// spike). `sudo -n` because there is no terminal to prompt on.
 func guest(t *testing.T, script string) (string, error) {
 	t.Helper()
-	return limactl(t, "shell", vmName, "--", "sudo", "bash", "-c", script)
+	out, err := vmProvider.Shell(vmRef.Instance, strings.NewReader(script), "sudo", "-n", "bash")
+	return strings.TrimSpace(string(out)), err
 }
 
 // macAuth mirrors the e2e suite's loader: DRAWBRIDGE_SECRET_FILE, else the
@@ -73,13 +96,11 @@ var macAuth transportauth.MacConfig
 
 func loadMacAuth(t *testing.T) transportauth.MacConfig {
 	t.Helper()
-	cfg := transportauth.MacConfig{VM: vmName}
+	cfg := transportauth.MacConfig{VM: vmRef.Spec}
 	if p := os.Getenv("DRAWBRIDGE_SECRET_FILE"); p != "" {
 		cfg.SecretFile = p
-	} else if ref, err := vmprovider.ParseRef(vmName); err == nil {
-		if p, err := transportauth.PathForRef(ref); err == nil {
-			cfg.SecretFile = p
-		}
+	} else if p, err := transportauth.PathForRef(vmRef); err == nil {
+		cfg.SecretFile = p
 	}
 	sec, err := cfg.Secret()
 	if err != nil {
@@ -98,12 +119,24 @@ func requireBench(t *testing.T) {
 	if os.Getenv("DRAWBRIDGE_BENCH") == "" {
 		t.Skip("set DRAWBRIDGE_BENCH=1 (or run `just bench`)")
 	}
-	if _, err := exec.LookPath("limactl"); err != nil {
-		t.Skip("limactl not on PATH")
+	ref, err := vmprovider.ParseRef(vmSpec)
+	if err != nil {
+		t.Fatalf("DRAWBRIDGE_VM=%q: %v", vmSpec, err)
 	}
-	if out, err := limactl(t, "list", "--format", "{{.Status}}", vmName); err != nil || out != "Running" {
-		t.Skipf("VM %s not running (%q, %v) — run `just vm-up && just agent-up`", vmName, out, err)
+	vmRef, vmProvider = ref, vmprovider.ForRef(ref)
+	// The provider answers "is it running", so the gate is the same question
+	// for every provider and the skip names that provider's own start
+	// command. A provider whose tooling is missing reports the exec failure,
+	// which is the same skip it always was.
+	insts, err := vmProvider.List()
+	if err != nil {
+		t.Skipf("listing %s instances: %v", ref.Provider, err)
 	}
+	if !running(insts, ref.Instance) {
+		t.Skipf("VM %s is not running, start it first (`just vm-up && just agent-up`, `colima start`, or `podman machine start %s`)",
+			ref.Spec, ref.Instance)
+	}
+	t.Logf("VM: %s (%s instance %s); guest bench binary %s", ref.Spec, ref.Provider, ref.Instance, agentBin(t))
 	macAuth = loadMacAuth(t)
 	// Results header: recorded tables must never be ambiguous about which
 	// path they measured. DRAWBRIDGE_AGENT skips resolution outright, which
@@ -117,7 +150,7 @@ func requireBench(t *testing.T) {
 		agentAddr = e.String()
 		t.Logf("agent transport: %s source=override:%s", agentAddr, ep)
 	} else {
-		r := limaaddr.Resolve(vmName, agentPort)
+		r := resolve(ref)
 		agentAddr = r.Endpoint
 		t.Logf("agent transport: %s source=%s", agentAddr, r.Source)
 		if r.Note != "" {
@@ -131,10 +164,50 @@ func requireBench(t *testing.T) {
 	c.Close()
 }
 
-// agentBin is the guest binary's path, identical on both sides of the rw
-// mount.
+// running reports whether the named instance is up, per the provider.
+func running(insts []vmprovider.Instance, name string) bool {
+	for _, i := range insts {
+		if i.Name == name && i.Running {
+			return true
+		}
+	}
+	return false
+}
+
+// resolve is the same dispatch drawbridged makes: the lease db for Lima and
+// Colima, the Mac-side record for podman (whose guest has no lease at all).
+// DRAWBRIDGE_AGENT skips it entirely and is how a specific path gets
+// measured.
+func resolve(ref vmprovider.Ref) limaaddr.Resolution {
+	if ref.Provider == vmprovider.ProviderPodman {
+		return podmanaddr.Resolve(ref)
+	}
+	return limaaddr.ResolveTarget(limaaddr.Target{
+		VM: ref.Instance, LeaseName: ref.LeaseName, LimaHome: ref.LimaHome,
+	}, agentPort)
+}
+
+// agentBin is the path the guest execs the bench tools from.
+//
+// Lima and Colima: the build tree, which is the same path on both sides of
+// the rw mount. That is deliberate for the dev loop, where `just build`
+// followed by a bench run measures the binary just built, with no install
+// step in between.
+//
+// Podman: the copy `drawbridge up` installed at /usr/local/bin. The build
+// tree IS visible in a podman machine (the virtiofs mounts cover /Users), and
+// an interactive `sudo <binary>` there runs fine, but the mount is labelled
+// `context=system_u:object_r:nfs_t:s0` wholesale, and a systemd unit (init_t)
+// may not exec nfs_t: every `systemd-run` of a benchserve off the mount dies
+// with `Permission denied` / `status=203/EXEC` and the inbound legs then fail
+// with "never mirrored", which reads like a drawbridge fault and is not one.
+// The installed copy is the same build, labelled bin_t, and is what the agent
+// itself runs from.
 func agentBin(t *testing.T) string {
 	t.Helper()
+	if vmRef.Provider == vmprovider.ProviderPodman {
+		return guestbin.GuestPath(guestbin.NameAgent)
+	}
 	p, err := filepath.Abs("../../bin/drawbridge-agent-linux-arm64")
 	if err != nil {
 		t.Fatal(err)
