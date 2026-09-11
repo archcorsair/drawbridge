@@ -176,3 +176,39 @@ func Remove(ref vmprovider.Ref) (bool, error) {
 		return false, fmt.Errorf("removing %s: %w", path, err)
 	}
 }
+
+// Disagreements reports the recorded facts that the machine's own config no
+// longer agrees with (docs/podman.md §7.2).
+//
+// Pure, and a list rather than a boolean, because the caller's whole job is
+// to say *which* field moved: "the machine was recreated" and "you switched
+// it to rootful" are the same refusal with different first sentences, and a
+// user who is told only that something disagrees has to diff two JSON files
+// to find out what.
+//
+// The three compared fields are the ones that change what the installed root
+// daemon should be doing. The ssh port is the sharp one: it is assigned at
+// `podman machine init`, stable across stop and start, and therefore new
+// exactly when the machine was destroyed and recreated under the same name,
+// which is also when the transport secret and the published port stopped
+// meaning anything. The identity path and remote user are recorded but not
+// compared: one key file serves every machine of a user, so it moves for
+// reasons that have nothing to do with this VM.
+//
+// Nothing here rewrites the record. A record that disagrees with reality is
+// evidence about what `up` last did, and silently correcting it would destroy
+// the only account of why the daemon is dialing what it dials.
+func (r Record) Disagreements(cfg vmprovider.MachineConfig) []string {
+	var out []string
+	if r.VMType != "" && cfg.VMType != "" && r.VMType != cfg.VMType {
+		out = append(out, fmt.Sprintf("machine type: recorded %s, now %s", r.VMType, cfg.VMType))
+	}
+	if r.Rootful != cfg.Rootful {
+		out = append(out, fmt.Sprintf("rootful: recorded %v, now %v", r.Rootful, cfg.Rootful))
+	}
+	if r.SSH.Port != 0 && cfg.SSH.Port != 0 && r.SSH.Port != cfg.SSH.Port {
+		out = append(out, fmt.Sprintf("ssh port: recorded %d, now %d (the port is assigned at `podman machine init`, so a new one means the machine was recreated)",
+			r.SSH.Port, cfg.SSH.Port))
+	}
+	return out
+}

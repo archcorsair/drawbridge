@@ -1,6 +1,7 @@
 package vmprovider
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,5 +182,77 @@ func TestPodmanBinNamesWhereItLooked(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), PodmanFallbackBin) {
 		t.Fatalf("PodmanBin() error %q does not name where it looked", err)
+	}
+}
+
+// `drawbridge install` runs as root, and root must never run `podman
+// machine`: the state is per-user, and under euid 0 podman looks in /var/root
+// and truthfully reports no machines. Reading the config file under the
+// invoking user's home is the exec-free half, and the fixture is the real
+// layout (one directory per provider, `<name>.json` inside it).
+func TestReadPodmanMachineConfig(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(PodmanMachineDirIn(home), "libkrun")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The subset this package reads, in podman 6.0.2's shape. The rest of the
+	// real file (hypervisor knobs, mounts, image paths) is deliberately
+	// absent: a field we do not read is a field an upgrade cannot break.
+	body := `{"Name":"spike","Version":1,
+	  "HostUser":{"Rootful":false,"UID":501},
+	  "SSH":{"IdentityPath":"/Users/u/.local/share/containers/podman/machine/machine","Port":57446,"RemoteUsername":"core"},
+	  "LibKrunHypervisor":{"KRun":{"LogLevel":"panic"}}}`
+	if err := os.WriteFile(filepath.Join(dir, "spike.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadPodmanMachineConfig(home, "spike")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "spike" || got.VMType != "libkrun" || got.Rootful {
+		t.Fatalf("config = %+v", got)
+	}
+	if got.SSH.Port != 57446 || got.SSH.RemoteUsername != "core" || got.SSH.IdentityPath == "" {
+		t.Fatalf("ssh = %+v", got.SSH)
+	}
+	// The path is in the refusal message, so a user can read the file we read.
+	if !strings.HasSuffix(got.Path, filepath.Join("libkrun", "spike.json")) {
+		t.Fatalf("Path = %q", got.Path)
+	}
+
+	// A machine that is gone is its own error, because its remedy is its own:
+	// no drawbridge command brings a removed machine back.
+	if _, err := ReadPodmanMachineConfig(home, "gone"); !errors.Is(err, ErrNoMachine) {
+		t.Fatalf("missing machine = %v, want ErrNoMachine", err)
+	}
+	if _, err := ReadPodmanMachineConfig(t.TempDir(), "spike"); !errors.Is(err, ErrNoMachine) {
+		t.Fatalf("no machine dir at all = %v, want ErrNoMachine", err)
+	}
+
+	// Every provider directory is searched: the machine's provider is not
+	// knowable from the name, and is itself something callers compare.
+	hv := filepath.Join(PodmanMachineDirIn(home), "applehv")
+	if err := os.MkdirAll(hv, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hv, "spike-hv.json"), []byte(`{"Name":"spike-hv","HostUser":{"Rootful":true}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = ReadPodmanMachineConfig(home, "spike-hv")
+	if err != nil || got.VMType != "applehv" || !got.Rootful {
+		t.Fatalf("applehv machine = %+v, %v", got, err)
+	}
+
+	// Podman's file format is podman's. A parse failure must be reportable as
+	// "could not check", never as ErrNoMachine (which would read as "your
+	// machine is gone" about a machine that is right there).
+	if err := os.WriteFile(filepath.Join(dir, "broken.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ReadPodmanMachineConfig(home, "broken")
+	if err == nil || errors.Is(err, ErrNoMachine) {
+		t.Fatalf("malformed config = %v, want a distinct parse error", err)
 	}
 }

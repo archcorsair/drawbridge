@@ -49,17 +49,6 @@ func PodmanBin() (string, error) {
 		"which a non-login shell does not read)", PodmanFallbackBin)
 }
 
-// PodmanMachineDir is podman's machine state directory on the Mac, one
-// subdirectory per provider (`libkrun`, `applehv`), each holding the
-// machines' JSON configs.
-func PodmanMachineDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".config", "containers", "podman", "machine")
-}
-
 // Podman drives `podman machine`.
 //
 // It carries one piece of state: the machine→VMType map learned from List.
@@ -354,4 +343,120 @@ func decodePodmanInspect(b []byte, inst string) (PodmanInspect, error) {
 		}, nil
 	}
 	return PodmanInspect{}, fmt.Errorf("vmprovider: `podman machine inspect %s` described no machine", inst)
+}
+
+// ---------------------------------------------------------------------------
+// The machine config on disk: podman's own state, read without running podman
+// ---------------------------------------------------------------------------
+
+// ErrNoMachine is what ReadPodmanMachineConfig returns when no machine of
+// that name has a config file. It is a distinct error because the remedy is
+// distinct: the machine was removed or renamed, and no `drawbridge` command
+// will bring it back.
+var ErrNoMachine = errors.New("no podman machine config")
+
+// MachineConfig is a podman machine as its own config file describes it.
+//
+// Reading the file rather than running `podman machine inspect` is what makes
+// this usable from `drawbridge install`, which runs as root. Root must never
+// run `podman machine` (the state is per-user, and under euid 0 podman looks
+// in /var/root and truthfully reports nothing), but reading a file under the
+// invoking user's home is exactly the move install already makes for the
+// transport secret path: the SUDO_USER home is resolved, the file is read,
+// and no user tooling is executed.
+//
+// The fields are the ones the Mac-side record is written from, so a record
+// and a config can be compared for disagreement (docs/podman.md §7.2).
+// Everything else podman keeps there (hypervisor knobs, mounts, image paths)
+// is deliberately not read: a field this package does not use is a field a
+// podman upgrade cannot break.
+type MachineConfig struct {
+	Name    string
+	VMType  string // the provider directory the config lives in
+	Rootful bool
+	SSH     PodmanSSH
+	Path    string // where it was read from, for the message
+}
+
+// podmanConfigJSON is the subset of `<machine>.json` this package reads.
+// Observed on podman 6.0.2 (`Version: 1`).
+type podmanConfigJSON struct {
+	Name     string `json:"Name"`
+	HostUser struct {
+		Rootful bool `json:"Rootful"`
+	} `json:"HostUser"`
+	SSH struct {
+		IdentityPath   string `json:"IdentityPath"`
+		Port           int    `json:"Port"`
+		RemoteUsername string `json:"RemoteUsername"`
+	} `json:"SSH"`
+}
+
+// PodmanMachineDirIn is podman's machine state directory under a given home.
+// One subdirectory per provider (`libkrun`, `applehv`), each holding the
+// machines' JSON configs.
+func PodmanMachineDirIn(home string) string {
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".config", "containers", "podman", "machine")
+}
+
+// PodmanMachineDir is PodmanMachineDirIn for the current user's home.
+func PodmanMachineDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return PodmanMachineDirIn(home)
+}
+
+// ReadPodmanMachineConfig finds and reads one machine's config under home.
+//
+// Every provider directory is searched, because the machine's provider is not
+// knowable from the name alone and is itself one of the things a caller wants
+// to compare. Two providers holding a machine of the same name is not a state
+// podman can produce (names are unique across providers: `init` refuses a
+// duplicate), so the first match wins and the directory name is the VMType.
+func ReadPodmanMachineConfig(home, name string) (MachineConfig, error) {
+	dir := PodmanMachineDirIn(home)
+	if dir == "" {
+		return MachineConfig{}, fmt.Errorf("vmprovider: no home directory to read podman machine config from")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return MachineConfig{}, fmt.Errorf("%w for %q: %s does not exist", ErrNoMachine, name, dir)
+		}
+		return MachineConfig{}, fmt.Errorf("vmprovider: reading %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, e.Name(), name+".json")
+		blob, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return MachineConfig{}, fmt.Errorf("vmprovider: reading %s: %w", path, err)
+		}
+		var raw podmanConfigJSON
+		if err := json.Unmarshal(blob, &raw); err != nil {
+			return MachineConfig{}, fmt.Errorf("vmprovider: parsing %s: %w", path, err)
+		}
+		return MachineConfig{
+			Name:    raw.Name,
+			VMType:  e.Name(),
+			Rootful: raw.HostUser.Rootful,
+			SSH: PodmanSSH{
+				IdentityPath:   raw.SSH.IdentityPath,
+				Port:           raw.SSH.Port,
+				RemoteUsername: raw.SSH.RemoteUsername,
+			},
+			Path: path,
+		}, nil
+	}
+	return MachineConfig{}, fmt.Errorf("%w for %q under %s", ErrNoMachine, name, dir)
 }

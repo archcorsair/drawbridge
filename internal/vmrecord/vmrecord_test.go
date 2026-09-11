@@ -166,3 +166,56 @@ func TestPathFollowsTheSudoUserHome(t *testing.T) {
 		t.Fatalf("Path dir = %q, want transportauth.Dir() %q", filepath.Dir(p), dir)
 	}
 }
+
+// The record is what `up` learned then; the machine's config is what is true
+// now. Which field moved is the message, so the comparison returns a list.
+func TestDisagreements(t *testing.T) {
+	rec := sample()
+	rec.VMType = "libkrun"
+	live := vmprovider.MachineConfig{
+		Name:    "spike",
+		VMType:  "libkrun",
+		Rootful: false,
+		SSH:     vmprovider.PodmanSSH{Port: 57446, RemoteUsername: "core"},
+	}
+	if d := rec.Disagreements(live); len(d) != 0 {
+		t.Fatalf("an unchanged machine disagreed: %v", d)
+	}
+
+	for _, tc := range []struct {
+		name string
+		fix  func(*vmprovider.MachineConfig)
+		want string
+	}{
+		{"recreated on another provider", func(c *vmprovider.MachineConfig) { c.VMType = "applehv" }, "machine type"},
+		{"switched to rootful", func(c *vmprovider.MachineConfig) { c.Rootful = true }, "rootful"},
+		{"recreated under the same name", func(c *vmprovider.MachineConfig) { c.SSH.Port = 61000 }, "ssh port"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := live
+			tc.fix(&c)
+			d := rec.Disagreements(c)
+			if len(d) != 1 || !strings.Contains(d[0], tc.want) {
+				t.Fatalf("Disagreements = %v, want one mentioning %q", d, tc.want)
+			}
+		})
+	}
+
+	// Every field at once: all of them are named, not just the first.
+	c := live
+	c.VMType, c.Rootful, c.SSH.Port = "applehv", true, 61000
+	if d := rec.Disagreements(c); len(d) != 3 {
+		t.Fatalf("Disagreements = %v, want all three named", d)
+	}
+
+	// A field neither side knows is not a disagreement: an older record with
+	// no vmtype, or a config we could only partly read, must not manufacture
+	// a refusal out of an absence.
+	blank := rec
+	blank.VMType, blank.SSH.Port = "", 0
+	c = live
+	c.VMType, c.SSH.Port = "", 0
+	if d := blank.Disagreements(c); len(d) != 0 {
+		t.Fatalf("missing fields on both sides disagreed: %v", d)
+	}
+}

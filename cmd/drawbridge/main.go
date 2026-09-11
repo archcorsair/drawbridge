@@ -19,6 +19,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -257,6 +258,23 @@ func runInstall(args []string) int {
 			return 2
 		}
 		cfg.Agent = rec.Endpoint
+
+		// The record is what `up` learned *then*; the machine's own config is
+		// what is true *now*. They disagree when the machine was recreated,
+		// switched to rootful, or rebuilt on another provider, and in every
+		// one of those cases the pinned endpoint, the published port and the
+		// transport secret describe a VM that no longer exists.
+		//
+		// Read from disk rather than from `podman machine inspect`: install
+		// runs as root, root must never run `podman machine` (the state is
+		// per-user, and under euid 0 podman looks in /var/root and truthfully
+		// reports nothing), and reading a file under the invoking user's home
+		// is the same move this command already makes for the secret path.
+		if code := checkPodmanRecord(ref, rec, &warnings); code != 0 {
+			flushWarnings()
+			return code
+		}
+
 		// -vm-mac is a vmnet lease pin, and there is no lease to pin: the
 		// endpoint is loopback, and what keeps a squatter on that port from
 		// being trusted is the per-VM transport secret, not a hardware
@@ -310,6 +328,69 @@ func runInstall(args []string) int {
 		flushWarnings()
 	}
 	return 0
+}
+
+// checkPodmanRecord compares the record `up` wrote against the machine's own
+// config, and returns the exit code for a refusal (0 to proceed).
+//
+// A machine that is simply gone and a machine that moved are separate
+// messages because the remedies differ: one needs the machine back, the other
+// needs `up` re-run so the record, the published port and the unit agree
+// again. Nothing here rewrites the record: a stale record is the evidence of
+// what `up` last did, and correcting it silently would destroy the only
+// account of why the daemon dials what it dials.
+//
+// An unreadable or unparsable config is a warning, never a refusal. The file
+// is podman's private format; a podman release that changes it must not be
+// able to block an install that would have worked.
+func checkPodmanRecord(ref vmprovider.Ref, rec vmrecord.Record, warnings *[]warning) int {
+	home, err := transportauth.HomeDir()
+	if err != nil {
+		*warnings = append(*warnings, warning{
+			title: fmt.Sprintf("cannot resolve the home directory holding podman's machine config (%v)", err),
+			body:  []string{"the record was not checked against the machine; `drawbridge doctor` re-checks it."},
+		})
+		return 0
+	}
+	cfg, err := vmprovider.ReadPodmanMachineConfig(home, ref.Instance)
+	switch {
+	case errors.Is(err, vmprovider.ErrNoMachine):
+		fmt.Fprintf(os.Stderr, "drawbridge install: podman machine %q no longer exists on this Mac, but %s records it.\n"+
+			"  Nothing drawbridge installs can bring it back: recreate it (`podman machine init --now %s`) and\n"+
+			"  re-run `drawbridge up %s`, or install for a VM that exists.\n",
+			ref.Instance, recordPath(ref), ref.Instance, ref.Spec)
+		return 2
+	case err != nil:
+		*warnings = append(*warnings, warning{
+			title: fmt.Sprintf("could not read podman's machine config (%v)", err),
+			body:  []string{"the record was not checked against the machine; the endpoint is installed as recorded."},
+		})
+		return 0
+	}
+	diffs := rec.Disagreements(cfg)
+	if len(diffs) == 0 {
+		return 0
+	}
+	fmt.Fprintf(os.Stderr, "drawbridge install: %s no longer describes podman machine %q:\n", recordPath(ref), ref.Instance)
+	for _, d := range diffs {
+		fmt.Fprintf(os.Stderr, "    %s\n", d)
+	}
+	fmt.Fprintf(os.Stderr, "  The recorded endpoint %s, the published port and the transport secret all belong to the\n"+
+		"  machine as it was. Re-run `drawbridge up %s` (it re-reads the machine, rewrites the record and\n"+
+		"  reinstalls the agent), then re-run this install.\n"+
+		"  Read from %s; nothing was changed.\n",
+		rec.Endpoint, ref.Spec, cfg.Path)
+	return 2
+}
+
+// recordPath is the record's path for a message, or a description of it when
+// the path cannot be derived (which is the same condition that would have
+// stopped the read above, so this is belt and braces).
+func recordPath(ref vmprovider.Ref) string {
+	if p, err := vmrecord.Path(ref); err == nil {
+		return p
+	}
+	return "the per-VM record"
 }
 
 // limactlShow is the command that prints the instance's hardware address,
