@@ -1234,7 +1234,154 @@ binary from August although the cask had been upgraded to v0.1.1 (the
 cask caveat about re-running `install` after upgrades is doing real work;
 doctor's skew check is the backstop).
 
-## 7.2 results
+## 7.2 results (2026-09-11)
+
+**Landed: `install` for podman, the single-daemon warning, and a bench that
+speaks every provider.** The full bench ran green on `podman:spike`, 13 legs
+including both UDP directions.
+
+### What landed
+
+| Commit | Files |
+|---|---|
+| `de25a9c` record check | `internal/vmprovider/podman.go` (`MachineConfig`, `ReadPodmanMachineConfig`, `ErrNoMachine`, `PodmanMachineDirIn`) + test; `internal/vmrecord/vmrecord.go` (`Record.Disagreements`) + test; `cmd/drawbridge/main.go` (`checkPodmanRecord`) |
+| `ff368e6` one daemon | `internal/install/plist.go` (`InstalledVM`, `vmFromPlist`) + test; `cmd/drawbridge/main.go` (the replacement line, help text) |
+| `39cb660` bench | `internal/bench/bench_test.go` (provider dispatch, stdin scripts, provider-aware guest binary), `wedge_test.go` (same gate), `provider_test.go` (new) |
+
+### The record check reads a file, it does not run podman
+
+§7.2 says to compare the record against `podman machine inspect` "run as the
+user before sudo hands off". There is no such moment: `sudo drawbridge
+install` runs as root from its first instruction to its last, and the podman
+driver refuses euid 0 by design (machine state is per-user; under root podman
+looks in /var/root and truthfully reports nothing).
+
+What does work, and is the same move `install` already makes for the secret
+path, is reading a *file* under the invoking user's home:
+`~/.config/containers/podman/machine/<vmtype>/<name>.json`. It carries
+`Name`, `HostUser.Rootful` and `SSH.{Port,IdentityPath,RemoteUsername}`, and
+the directory it sits in is the machine type. So `ReadPodmanMachineConfig`
+parses those four fields and nothing else, and `Record.Disagreements` compares
+machine type, rootful and ssh port. The identity path and remote user are
+recorded but not compared: one key file serves every machine of a user, so it
+moves for reasons that have nothing to do with this VM.
+
+The ssh port is the sharp one. It is assigned at `podman machine init` and is
+stable across stop and start, so a new one means the machine was destroyed and
+recreated under the same name, which is also when the transport secret and the
+published port stopped meaning anything.
+
+Live, against a record edited to claim `rootful: true` and ssh port 12345:
+
+```
+$ drawbridge install -vm podman:spike -print
+drawbridge install: …/vm-podman-spike.json no longer describes podman machine "spike":
+    rootful: recorded true, now false
+    ssh port: recorded 12345, now 57446 (the port is assigned at `podman machine init`, so a new one means the machine was recreated)
+  The recorded endpoint tcp://127.0.0.1:4778, the published port and the transport secret all belong to the
+  machine as it was. Re-run `drawbridge up podman:spike` (it re-reads the machine, rewrites the record and
+  reinstalls the agent), then re-run this install.
+  Read from /Users/…/.config/containers/podman/machine/libkrun/spike.json; nothing was changed.
+  (exit 2)
+```
+
+A machine that is gone gets its own refusal (no drawbridge command brings it
+back). An unreadable or unparsable config is a warning and never a refusal:
+the file is podman's private format, and a podman release that changes it must
+not be able to block an install that would have worked. Nothing rewrites the
+record.
+
+### One daemon, said out loud
+
+`install.InstalledVM()` reads the `-vm` back out of the plist on disk (0644,
+no root needed) and `install` prints one line when it differs:
+
+```
+drawbridge: replacing the installed daemon for colima:default with podman:spike; the old VM's mirror and sync sessions stop
+```
+
+Verified without root against the plist actually installed on this Mac:
+`InstalledVM()` returns `colima:default`, so the user-run leg below will
+print exactly that line. The same fact is now in `install`'s help text. It is
+printed, not prompted: `install` has to stay scriptable. `uninstall` is
+unchanged, and the parser takes "whatever follows `-vm`" so a reordered or
+hand-edited plist still reads.
+
+### Bench: the podman transport table
+
+`DRAWBRIDGE_BENCH=1 DRAWBRIDGE_VM=podman:spike
+DRAWBRIDGE_AGENT=tcp://127.0.0.1:4778 go test -count=1 -v -timeout 15m
+./internal/bench/` runs 13/13 legs green, zero drops, zero failures, no port
+collision with the installed colima daemon. Lima numbers are the Phase 5
+record in plan.md and were NOT re-run.
+
+| path | podman (gvproxy-publish, loopback) | lima (vznat-direct, plan.md) |
+|---|---|---|
+| guest→Mac outbound, connect p50 | 93 µs | 37 µs |
+| guest→Mac outbound, first-byte p50 / p95 | 1.76 / 2.02 ms | 1.67 / 1.82 ms |
+| guest→Mac bulk (up / down) | 1904 / 260 MB/s | 2615 / 3488 MB/s |
+| Mac→guest inbound, connect p50 | 93 µs | n/a (first-byte only) |
+| Mac→guest inbound, first-byte p50 / p95 | 0.78 / 1.15 ms | 0.31 / 0.47 ms |
+| Mac→guest bulk (up / down) | 250 / 2028 MB/s | 3316 / 3331 MB/s |
+| outbound burst rtt p50, k = 4 / 8 / 16 / 32 | 1.50 / 2.10 / 3.34 / 4.41 ms | 2.01 / 2.43 / 2.67 / 3.93 ms |
+| UDP outbound rtt p50 / p95 | 195 / 251 µs | 128 / 150 µs |
+| UDP inbound rtt p50 / p95 | 251 / 389 µs | 152 / 369 µs |
+| guest loopback baseline (native) | 63 µs | n/a |
+
+Read it as: **latency is in the same band** (first-byte within a millisecond
+of Lima's either way, UDP within ~100 µs), and **bulk in one direction is
+ten-plus times slower**, which is the 7.0 spike's leg-4 number showing up in
+the real transport: gvproxy's forwarder is a single user-mode proxy and every
+byte crosses it. The asymmetry is the forwarder's, not drawbridge's: each
+direction is fast when the data rides the direction the guest is *sending*
+into the transport (1904 MB/s guest→Mac upload, 2028 MB/s Mac→guest download)
+and ~250 MB/s when it rides the leg gvproxy has to pump. The 7.0 spike
+measured 223 MB/s through a bare gvproxy expose with no drawbridge in the
+path at all, so this is the path's ceiling and drawbridge is not adding to it.
+
+### What the plan got wrong, and the correction
+
+1. **"Run `podman machine inspect` as the user before sudo hands off"** has no
+   moment to happen in (§7.2 above): the whole CLI runs as root under sudo.
+   Corrected to reading podman's own machine config file under the SUDO_USER
+   home, which is exec-free, keeps "root never runs `podman machine`" exactly
+   true, and works identically privileged or not.
+2. **The bench harness could not exec off the mount on podman.** Not
+   anticipated by the plan, and it fails in the most misleading possible way:
+   the virtiofs mount that carries the build tree is labelled
+   `context=system_u:object_r:nfs_t:s0` wholesale, systemd (`init_t`) may not
+   exec `nfs_t`, so `systemd-run <mount path> benchserve` dies with
+   `status=203/EXEC` while an interactive `sudo <same path>` runs fine
+   (unconfined_t). The inbound legs then fail as "guest echo :47801 never
+   mirrored", which reads like a mirror bug. On podman the bench tools come
+   from `/usr/local/bin/drawbridge-agent` instead, the same build `up`
+   installed, labelled `bin_t`. Worth remembering for 7.4: anything that runs
+   a guest binary under systemd on a podman machine must run it from
+   `/usr/local/bin`, never from the mount.
+3. **`just bench`'s recipe needs no change** and the Lima default is
+   unchanged, but the suite is no longer limactl-shaped: `guest()` puts the
+   script on stdin (the `bash -c <script>` argv it used before is precisely
+   the shape AGENTS.md says provider shells mangle), and the running-gate is
+   the provider's `List`.
+
+### Left for the user (needs sudo)
+
+The released root daemon is installed for `colima:default` and running, and
+this session cannot `sudo`. Run these in order; the last one puts the Mac back
+the way it was.
+
+```
+sudo ./bin/drawbridge install -vm podman:spike
+   # expect: "replacing the installed daemon for colima:default with podman:spike"
+   # then `drawbridge status` on the podman endpoint, tcp://127.0.0.1:4778
+
+podman machine ssh spike -- python3 -m http.server 8080 --bind 0.0.0.0   # leave running
+curl -sS http://127.0.0.1:8080/ | head -3                                # on the Mac
+
+sudo ./bin/drawbridge uninstall
+sudo drawbridge install -vm colima:default    # the brew CLI, restoring the previous daemon
+```
+
 
 ## 7.3 results
 
