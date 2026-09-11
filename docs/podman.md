@@ -952,23 +952,91 @@ flags) or v0.1.x?** Impact: none on the code.
 
 ---
 
-## 7.0 results
+## 7.0 results (2026-09-11)
 
-*(empty until the spike runs)*
-
-Verdict: `transport branch: …`
+**Verdict: `transport branch: A (gvproxy-publish)`.** Every path passed
+every leg, including the strict FIN-propagation gate (Q2). Branch B stays
+designed, not built; its fallback story is intact because the ssh unix
+path passed 4/4 too.
 
 | Path | leg 1 fin-propagates | leg 2 survives-fin | leg 3 reverse-fin | leg 4 bulk |
 |---|---|---|---|---|
-| Mac loopback (control) | | | | |
-| guest loopback (control) | | | | |
-| gvproxy expose | | | | |
-| ssh `-L` unix socket | | | | |
-| ssh `-L` tcp | | | | |
+| Mac loopback (control) | PASS, ack 0 ms | PASS, 8 hb, last +40 s | PASS, EOF 0 ms, 65536 | PASS, 2121 MB/s |
+| guest loopback (control) | PASS, ack 0 ms | PASS, 8 hb, last +40 s | PASS, EOF 0 ms, 65536 | PASS, 3923 MB/s |
+| gvproxy expose (127.0.0.1:47790 → 192.168.127.2:47790) | PASS, ack 5 ms | PASS, 8 hb, last +40 s | PASS, EOF 0 ms, 65536 | PASS, 223 MB/s |
+| ssh `-L` unix socket | PASS, ack 6 ms | PASS, 8 hb, last +40 s | PASS, EOF 1 ms, 65536 | PASS, 186 MB/s |
+| ssh `-L` tcp (127.0.0.1:47791) | PASS, ack 5 ms | PASS, 8 hb, last +40 s | PASS, EOF 1 ms, 65536 | PASS, 217 MB/s |
 
-Environment: podman …, gvproxy … (tcpproxy boundary 2025-01-21: …),
-vfkit …, FCOS …, kernel …, SELinux …, `ip_unprivileged_port_start` …,
-crun …, staging round trip …, argv joining observed as …
+Leg 2 ran with `-hold 45s` on all paths concurrently against one guest
+server; the server log shows every EOF and every "done". The gvproxy
+expose was created from inside the guest exactly as §3.1 prescribes and
+removed with `/services/forwarder/unexpose` afterwards (`/all` then showed
+only podman's own `:22` forward). Leg 4's number seeds the bench
+expectation: the user-mode forwarder is ~10× slower than guest loopback
+and about 15× slower than vzNAT-direct; ssh is in the same band.
+
+**gvproxy version and the tcpproxy boundary.** The bundled gvproxy is
+v0.8.9 (`/opt/podman/bin/gvproxy -version`), and `go version -m` on the
+binary shows `github.com/inetaf/tcpproxy v0.0.0-20250222171855-c4b9df066048`,
+after the 2025-01-21 gvisor-conn half-close commit, which is why leg 1
+propagates. podman 6.0.2 (`BuildOrigin: pkginstaller`) pins gvisor-tap-vsock
+v0.8.9 in its own module graph, so the CLI and the helper agree. The first
+podman release bundling a post-boundary gvproxy is a 7.1 preflight fact to
+pin from release notes; for now the support line is "podman ≥ 6.0 with
+gvproxy ≥ v0.8.x built after 2025-02-22", and Q6's refuse-with-version
+check reads gvproxy's version the same way (`gvproxy -version`, path from
+the pkg's `/etc/paths.d/podman-pkg` → `/opt/podman/bin`).
+
+**Environment facts (everything §2 marked "verify live").**
+
+| Fact | Observed |
+|---|---|
+| podman (Mac) | 6.0.2, `/opt/podman/bin`, official pkg (Podman Desktop's Podman extension ran the same pkg); helpers `gvproxy v0.8.9`, `vfkit v0.6.4`, `krunkit 1.3.2`, `podman-mac-helper` |
+| **default provider** | **`libkrun`**, not applehv: `podman machine info` reports `VMType: libkrun`, config under `~/.config/containers/podman/machine/libkrun`, process is `krunkit` (with `--device virtio-vsock,port=1025,socketURL=…/spike.sock,listen` for podman's ready socket). No `CONTAINERS_MACHINE_PROVIDER`, no user `containers.conf`. §4.2 is amended below. |
+| gvproxy argv (libkrun) | `-mtu 1500 -ssh-port 57446 -listen-vfkit unixgram://…/spike-gvproxy.sock -forward-identity …/machine -forward-sock …/spike-api.sock -forward-dest /run/user/501/podman/podman.sock -forward-user core -pid-file …` — **no `-listen`, no `-services`**, as §1 predicted. The in-guest API at `http://192.168.127.1/services/forwarder/{all,expose,unexpose}` is the only control surface and answered on first try. |
+| `podman machine list` | `--format json` works; **`--all-providers` does not exist in 6.0.2** (§2 assumed it). `podman machine inspect` JSON keys: `ConfigDir, ConnectionInfo, Created, LastUp, Name, Resources, SSHConfig{IdentityPath, Port, RemoteUsername}, State, UserModeNetworking, Rootful, Rosetta`. Identity `~/.local/share/containers/podman/machine/machine`, user `core`, port 57446 (dynamic). |
+| guest | Fedora CoreOS 44.20260707.3.1 stable, kernel 7.1.3-200.fc44.aarch64, `/sys/kernel/btf/vmlinux` present, cgroup v2, SELinux **Enforcing**, `net.ipv4.ip_unprivileged_port_start = 1024`, crun 1.28 (`+SECCOMP +EBPF +SYSTEMD +SELINUX`), podman 6.0.2 in the guest, **no runc**, `/usr/local/bin/docker → /usr/bin/podman` |
+| tools | `ss sha256sum dd restorecon curl systemctl chcon` all present; `sudo -n true` ok for `core` (uid 501, groups wheel/sudo); `/usr/local` → `/var/usrlocal`, `/usr/local/bin` **not writable as core, writable as root**, label `bin_t`; `/etc/systemd/system` label `systemd_unit_file_t` |
+| containers.conf | `/etc/containers/containers.conf.d/` **does not exist** (drop-in dir must be created by `up`); vendor drop-ins live in `/usr/share/containers/containers.conf.d/{00-vendor.conf,999-podman-machine.conf}`; `podman info` runtime `crun /usr/bin/crun`, rootless=true |
+| staging round trip | 3,000,000 random bytes via `podman machine ssh spike -- dd of=/tmp/dbp.bin status=none` on stdin: sha256 identical both sides; the 3.6 MB probe binary staged the same way and ran |
+| **argv joining** | `podman machine ssh spike -- bash -s a b "c d" < script` reached the guest as **4 arguments `a b c d`**: podman joins argv into one remote command string unquoted, exactly like `limactl shell`. The AGENTS.md single-word-argv rule applies to the podman driver verbatim; stdin scripts + `dd of=` are the mechanism. |
+| ssh forward gotchas | Without `-o IdentitiesOnly=yes` the Mac's agent offers its keys first and sshd disconnects with "Too many authentication failures" before the machine identity is tried; branch B's command line must carry it. `ExitOnForwardFailure=yes` and `StreamLocalBindUnlink=yes` behaved. ssh logs `setsockopt TCP_NODELAY: Operation not supported on socket` once per unix-socket client (cosmetic). |
+| Mac side effects of the install | `podman machine start` prints "API forwarding listening on: /var/run/docker.sock" — `podman-mac-helper` now owns the Docker socket path on this Mac, so the `docker` CLI's default context talks to podman. Doctor's coexistence check should name this when it sees it; it does not affect the transport. |
+
+**§4.2 amendment (libkrun).** libkrun is podman 6's default macOS provider
+and the entire spike ran on it, so `Attachable` is **true for both
+`libkrun` and `applehv`**; the AttachNote text proposed for libkrun is
+dropped. The transport is provider-independent by construction (gvproxy
+either way); the recipe in 7.6 runs on the default (libkrun) and repeats
+the three semantics on an applehv machine (`podman machine init
+--provider applehv`). Q5 is therefore moot in the direction the plan
+assumed: applehv, not libkrun, is the "also verify" provider.
+
+**applehv cross-check (same session).** `podman machine init --provider
+applehv spike-hv` then start: gvproxy argv has the same shape (`-mtu
+-ssh-port 65054 -listen-vfkit … -forward-sock/-dest/-user/-identity`, no
+`-listen`), the in-guest `/services/forwarder/all` answers with the `:22`
+forward, same FCOS build and SELinux mode, same identity file
+`~/.local/share/containers/podman/machine/machine` (one key for all
+machines), a fresh dynamic SSH port. The guest NIC is **not `eth0`** on
+applehv (`ip -4 addr show eth0` fails; libkrun names it `eth0`), so
+nothing in 7.1 may assume an interface name: derive the guest address from
+`ip -4 route get 192.168.127.1` or simply bind the transport on
+`192.168.127.2`, gvproxy's fixed DHCP lease for the machine.
+
+**Only one machine runs at a time**, across providers: starting `spike-hv`
+while `spike` ran failed with "spike already starting or running on the
+libkrun provider: only one VM can be active at a time" (exit 125). Design
+consequence for §4.1's `List()` and the TUI's multi-VM switcher: at most
+one podman instance is ever `Running`, and the daemon's per-VM record for a
+stopped machine is stale-by-definition; doctor's "machine not running"
+branch is the common case, not an edge. The verify-podman recipe must
+stop the default machine before the applehv leg.
+
+Cleanup state after the spike: machine `spike` (rootless, libkrun) left
+running for 7.1, `spike-hv` (applehv) created and stopped;
+`/tmp/halfclose-probe` and `/tmp/dbp.bin` in the `spike` guest; no gvproxy
+forward left behind; ssh forwards killed.
 
 ## 7.1 results
 
