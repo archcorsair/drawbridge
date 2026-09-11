@@ -23,6 +23,7 @@ import (
 	"github.com/archcorsair/drawbridge/internal/limaaddr"
 	"github.com/archcorsair/drawbridge/internal/macsync"
 	"github.com/archcorsair/drawbridge/internal/mirror"
+	"github.com/archcorsair/drawbridge/internal/podmanaddr"
 	"github.com/archcorsair/drawbridge/internal/transport"
 	"github.com/archcorsair/drawbridge/internal/transportauth"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
@@ -135,7 +136,15 @@ func main() {
 		// guest after the instance) is not guessable from the flag value, and
 		// a resolver note naming a record nobody asked for is the confusing
 		// half of every wrong--vm report.
-		log.Printf("drawbridged: -vm %s → %s instance %s (DHCP lease record %s)", ref.Spec, ref.Provider, ref.Instance, ref.LeaseName)
+		//
+		// A podman machine has no lease record at all, so naming one would be
+		// the same confusion in the other direction.
+		if leaseResolvable(ref) {
+			log.Printf("drawbridged: -vm %s → %s instance %s (DHCP lease record %s)", ref.Spec, ref.Provider, ref.Instance, ref.LeaseName)
+		} else {
+			log.Printf("drawbridged: -vm %s → %s machine %s (no DHCP lease: gvproxy is user-mode, so the endpoint comes from the per-VM record)",
+				ref.Spec, ref.Provider, ref.Instance)
+		}
 	}
 	if *vmMAC != "" {
 		hw, err := limaaddr.ParseHWAddr(*vmMAC)
@@ -154,10 +163,15 @@ func main() {
 
 	addr, source, note := *agentFlag, "flag", ""
 	if addr == "auto" {
-		r := limaaddr.ResolveTarget(target, 4777)
+		r := resolveAuto(ref, target)
 		addr, source, note = r.Endpoint, r.Source, r.Note
 		if r.Note != "" {
 			log.Printf("drawbridged: warning: %s", r.Note)
+		}
+		if addr == "" {
+			// Only podman's resolver can refuse outright: with no record
+			// there is no endpoint to dial and no lease db to fall back to.
+			log.Fatalf("drawbridged: -agent auto: no endpoint for %s", ref.Spec)
 		}
 	}
 	ep, err := transport.Parse(addr)
@@ -183,7 +197,13 @@ func main() {
 	resolution := func() introspect.Resolution {
 		return introspect.Resolution{Endpoint: agentAddr, Source: source, Note: note, ResolvedAt: started}
 	}
-	if *agentFlag == "auto" {
+	// Podman gets no re-resolve hook, and needs none: its endpoint is a
+	// loopback port `up` chose, and the guest agent republishes that exact
+	// port through gvproxy on every machine start. There is nothing for a
+	// refresh to discover — where Lima's vzNAT address moves with the VM's
+	// MAC, this one is ours. A stopped machine is the reconnect loop's
+	// business, not the resolver's.
+	if *agentFlag == "auto" && leaseResolvable(ref) {
 		r := newResolver(target, agentPort, agentAddr, source, note)
 		reResolve, curSource, resolution = r.refresh, r.currentSource, r.resolution
 	}
@@ -229,6 +249,41 @@ func main() {
 	log.Printf("drawbridged: agent %s (source=%s); mirroring guest listeners onto %s; syncing Mac listeners into the guest", agentAddr, source, *mirrorIP)
 	go m.Run(ctx)
 	s.Run(ctx)
+}
+
+// leaseResolvable reports whether this VM's endpoint is discoverable from the
+// macOS DHCP lease db — the resolution path limaaddr implements.
+//
+// It is the whole of the provider dispatch, as one predicate, because the
+// property it names is not "which provider" but "is there a vmnet lease to
+// look up". A podman machine's networking is gvproxy, which is user-mode and
+// writes no lease record at all; handing its ref to limaaddr would match
+// `lima-<name>` (Target.leaseName fills an empty name with that default) and
+// resolve some other VM entirely, or nothing, and either way the daemon would
+// be dialing an address nobody chose.
+func leaseResolvable(ref vmprovider.Ref) bool {
+	return ref.Provider != vmprovider.ProviderPodman
+}
+
+// resolveAuto is `-agent auto`, dispatched on the provider.
+//
+// The podman half deliberately refuses under euid 0 rather than reading the
+// record: the record is a user-writable file, and the standing rule is that
+// the root daemon parses no such file while running. `drawbridge install`
+// resolves it as the user and pins the result into the plist, which is why
+// root arrives with an explicit -agent and never reaches this branch.
+func resolveAuto(ref vmprovider.Ref, target limaaddr.Target) limaaddr.Resolution {
+	if leaseResolvable(ref) {
+		return limaaddr.ResolveTarget(target, 4777)
+	}
+	if os.Geteuid() == 0 {
+		return limaaddr.Resolution{
+			Source: podmanaddr.Source,
+			Note: fmt.Sprintf("a root daemon does not read the per-VM record (it is user-writable): install with the endpoint pinned — "+
+				"`sudo drawbridge install -vm %s`", ref.Spec),
+		}
+	}
+	return podmanaddr.Resolve(ref)
 }
 
 // serveIntrospection starts the read-only snapshot socket (docs/doctor.md

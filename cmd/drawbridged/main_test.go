@@ -2,11 +2,15 @@ package main
 
 import (
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/archcorsair/drawbridge/internal/install"
+	"github.com/archcorsair/drawbridge/internal/limaaddr"
 	"github.com/archcorsair/drawbridge/internal/macsync"
+	"github.com/archcorsair/drawbridge/internal/podmanaddr"
+	"github.com/archcorsair/drawbridge/internal/vmprovider"
 )
 
 // The root path must never widen the mirror bind address. This is the whole
@@ -117,5 +121,55 @@ func TestNewExclude(t *testing.T) {
 	ex = newExclude(agentPort, map[uint16]bool{}, mirrored)
 	if ex(l("tcp", 22)) {
 		t.Fatal("-skip \"\" still excluded :22 from the sync")
+	}
+}
+
+// The lease db is Lima's and Colima's resolution source and must never be
+// consulted for a podman machine: gvproxy is user-mode and writes no record,
+// so limaaddr would match `lima-<name>` (Target.leaseName's default) and
+// resolve some other VM entirely, or nothing — and either way the daemon
+// would dial an address nobody chose.
+func TestPodmanRefsNeverReachTheLeaseDb(t *testing.T) {
+	for _, tc := range []struct {
+		spec string
+		want bool
+	}{
+		{"drawbridge", true},
+		{"lima:drawbridge", true},
+		{"colima:default", true},
+		{"podman:spike", false},
+		{"podman:podman-machine-default", false},
+	} {
+		ref, err := vmprovider.ParseRef(tc.spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := leaseResolvable(ref); got != tc.want {
+			t.Fatalf("leaseResolvable(%q) = %v, want %v", tc.spec, got, tc.want)
+		}
+	}
+}
+
+// The per-VM record is a user-writable file, and the standing rule is that
+// the root daemon parses no such file while running. `drawbridge install`
+// resolves it as the user and pins the endpoint into the plist, so root
+// arrives with an explicit -agent and never takes this path.
+func TestRootDoesNotReadThePodmanRecord(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("this asserts the euid-0 branch from an unprivileged run")
+	}
+	ref, err := vmprovider.ParseRef("podman:spike")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The unprivileged branch reads the record (absent here) and says so.
+	t.Setenv("HOME", t.TempDir())
+	if got := resolveAuto(ref, limaaddr.Target{}); got.Endpoint != "" || !strings.Contains(got.Note, "drawbridge up") {
+		t.Fatalf("unprivileged resolveAuto = %+v, want a refusal naming `drawbridge up`", got)
+	}
+	// And the source is podman's, not the lease resolver's — proof the
+	// dispatch happened at all.
+	if got := resolveAuto(ref, limaaddr.Target{}); got.Source != podmanaddr.Source {
+		t.Fatalf("source = %q, want %q", got.Source, podmanaddr.Source)
 	}
 }
