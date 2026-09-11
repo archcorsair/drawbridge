@@ -1038,7 +1038,171 @@ running for 7.1, `spike-hv` (applehv) created and stopped;
 `/tmp/halfclose-probe` and `/tmp/dbp.bin` in the `spike` guest; no gvproxy
 forward left behind; ssh forwards killed.
 
-## 7.1 results
+## 7.1 results (2026-09-11)
+
+**Landed and verified live on `podman:spike` (libkrun, rootless, podman
+6.0.2).** Branch A works end to end: a guest listener is reachable on Mac
+localhost through the agent's own gvproxy publish, `up` is idempotent, `down`
+leaves nothing, and the machine is left provisioned for 7.2.
+
+### What landed
+
+| Commit | Files |
+|---|---|
+| `d8c2b19` provider | `internal/vmprovider/podman.go` (new), `podman_test.go` + `testdata/podman-list.json`, `testdata/podman-inspect.json` (both captured verbatim from podman 6.0.2, home and $TMPDIR anonymised); `vmprovider.go` (`ProviderPodman`, `Instance.Attachable/AttachNote`, `Attachability`, `ParseRef`, `LeaseName`, `Detect`, `ForRef` moved here and returning `Provider`); `lima.go` (`checkArgv`, `Attachable` filled); `internal/e2e/e2e_test.go` (`Forwarder` type assertion) |
+| `ff56e72` record | `internal/vmrecord/{vmrecord.go,vmrecord_test.go}` (new) |
+| `dc88387` agent | `internal/agent/gvproxy.go` + `gvproxy_test.go` (new), `listen.go` (`Option`, `WithPublisher`, `publish`, `Close` unexposes, "vzNAT" label ⇒ "guest NIC"), `cmd/drawbridge-agent/main_linux.go` (`-gvproxy-publish`, `-gvproxy-gateway`) |
+| `4ca4b7b` resolution | `internal/podmanaddr/{podmanaddr.go,podmanaddr_test.go}` (new); `cmd/drawbridged/main.go` (`leaseResolvable`, `resolveAuto`, no re-resolve hook for podman, lease-free log line) + `main_test.go` |
+| `2b53a5a` CLI | `cmd/drawbridge/{guest.go,up.go,down.go,main.go}` and their tests, `fakeguest_test.go` (FCOS fixture, `Inspect`, restorecon modelling); `internal/guestbin/guestbin.go` (`Unit` takes the whole ExecStart line) + test; `internal/install/plist.go` (`Config.Agent`, `agentRE`) + test |
+
+Scope held: no `internal/bpf/` change, no wire-protocol change, no `--oci`
+(`up --oci podman:…` refuses before touching the guest, naming 7.4).
+
+### Verified live
+
+```
+$ mise exec -- just build                       # guest binaries first, then the Mac CLI
+$ ./bin/drawbridge up podman:spike
+drawbridge: podman:spike — linux/arm64, kernel 7.1.3-200.fc44.aarch64, SELinux Enforcing, rpm-ostree
+drawbridge: chose transport port 4778, recorded in ~/Library/Application Support/drawbridge/vm-podman-spike.json
+drawbridge: installed /usr/local/bin/drawbridge-agent (v0.1.1-10-g2b53a5a)
+drawbridge: wrote /etc/drawbridge/transport-secret (transport auth enabled)
+drawbridge: drawbridge-agent.service is active
+drawbridge: transport tcp://127.0.0.1:4778 (source gvproxy-publish; the guest agent re-publishes it on every machine start)
+
+$ ./bin/drawbridge up podman:spike              # second run: idempotent
+drawbridge: transport port 4778 (recorded in …/vm-podman-spike.json)
+drawbridge: /usr/local/bin/drawbridge-agent already current
+  (no unit rewrite, no restart, record unchanged)
+
+$ podman machine ssh spike -- sudo journalctl -u drawbridge-agent -n 30
+… transport listening on 192.168.127.2:4777 (guest NIC; sources: loopback,192.168.127.1/32)
+… gvproxy: published 127.0.0.1:4778 -> 192.168.127.2:4777 (the Mac dials tcp://127.0.0.1:4778)
+… (on the restart) gvproxy: unexposed 127.0.0.1:4778   ← Close's best-effort unexpose, then a fresh publish
+
+$ podman machine ssh spike -- curl -sS http://192.168.127.1/services/forwarder/all
+[{"local":"127.0.0.1:4778","remote":"192.168.127.2:4777","protocol":"tcp"},
+ {"local":"127.0.0.1:57446","remote":"192.168.127.2:22","protocol":"tcp"}]
+$ lsof -nP -iTCP:4778 -sTCP:LISTEN
+gvproxy 83078 nxc 16u IPv4 … TCP 127.0.0.1:4778 (LISTEN)
+
+$ podman machine ssh spike -- ls -Z /usr/local/bin/drawbridge-agent /etc/systemd/system/drawbridge-agent.service
+system_u:object_r:bin_t:s0                  /usr/local/bin/drawbridge-agent
+system_u:object_r:systemd_unit_file_t:s0    /etc/systemd/system/drawbridge-agent.service
+
+$ ./bin/drawbridged -vm podman:spike -introspect off
+drawbridged: -vm podman:spike → podman machine spike (no DHCP lease: gvproxy is user-mode, so the endpoint comes from the per-VM record)
+drawbridged: agent tcp://127.0.0.1:4778 (source=gvproxy-publish); mirroring guest listeners onto 127.0.0.1; …
+drawbridged: mirroring guest :8099 on 127.0.0.1:8099
+$ curl -o /dev/null -w '%{http_code}' http://127.0.0.1:8099/     # guest `python3 -m http.server 8099`
+200
+
+$ ./bin/drawbridge down podman:spike
+drawbridge: removed /etc/systemd/system/drawbridge-agent.service
+drawbridge: removed /usr/local/bin/drawbridge-agent
+drawbridge: removed ~/Library/Application Support/drawbridge/vm-podman-spike.json
+drawbridge: kept the Mac-side transport secret …   (down is guest-scoped)
+$ podman machine ssh spike -- ls /usr/local/bin /etc/drawbridge /etc/systemd/system | grep drawbridge
+   (prints nothing; /etc/drawbridge does not exist, the gvproxy forward is gone, Mac :4778 free)
+
+$ ./bin/drawbridge up podman:spike               # left provisioned for 7.2 (secret reused, port 4778 again)
+$ ./bin/drawbridge install -vm podman:spike -print
+   <string>-agent</string><string>tcp://127.0.0.1:4778</string><string>-vm</string><string>podman:spike</string>
+$ ./bin/drawbridge install -vm podman:spike -vm-mac 52:55:55:a5:de:d2 -print
+drawbridge install: -vm-mac does not apply to a podman machine: … (refused, exit 2)
+```
+
+Cross-provider selection was exercised with the Lima dev VM stopped: bare
+`drawbridge up` picks `podman:spike` on its own, and `drawbridge up
+lima:drawbridge` still answers `is not running — limactl start drawbridge`.
+
+Unit tests: `go test ./internal/... ./cmd/...` green, and `-race` green on
+every package touched (`vmprovider`, `vmrecord`, `agent`, `podmanaddr`,
+`install`, `guestbin`, `cmd/drawbridge`, `cmd/drawbridged`). `go vet ./...`
+clean.
+
+### What the plan got wrong, and the correction
+
+1. **`Instance.AttachNote` cannot carry the whole refusal.** §4.2 says the
+   qemu note is "the existing vz-switch hint (text unchanged)", but that text
+   is rendered two different ways (a named instance gets "runs on qemu, not
+   vz" plus a remediation; the candidate list gets a shorter sentence) and the
+   remediation is per-provider *and* per-instance (`limactl edit <name>` vs
+   `colima start -p <profile>`). Correction: `AttachNote` is the provider's
+   *reason* only, and the CLI keeps `vzSwitchError`/`vzSwitchHint` for
+   lima/colima so their wording is byte-identical, with `attachRefusal` and
+   `notAttachableError` dispatching. Podman's note is printed as given plus a
+   `podman machine rm/init` hint.
+2. **`up`'s port choice must not bind-probe a port it is reusing.** §3.2 says
+   "first free port in `4778..4799` (bind-probed at `up` time)… re-running
+   `up` reuses the recorded port". Those two collide: on the second run the
+   agent is already publishing, so gvproxy *holds* the recorded port and a
+   probe finds it busy, moves the endpoint, rewrites the unit and restarts a
+   healthy agent. Correction: a recorded port is reused unconditionally (it is
+   ours); the probe only ever chooses a *new* one. Pinned by
+   `TestUpPodmanIsIdempotent`, which holds the port while the second `up` runs.
+3. **`restorecon` cannot be a link in `installFile`'s `&&` chain.** §5.2 says
+   to append `command -v restorecon && restorecon -F <path>` after the `mv`.
+   Appending it makes the chain end in a tolerant clause, and the fake guest's
+   shell model (correctly) applies a trailing `|| true` to the whole chain,
+   so a failed `install` would have been swallowed. Correction: a separate
+   `g.try` call, gated on the preflight's `restorecon=yes`, so an Ubuntu guest
+   spends no round trip at all and the install's own failure stays fatal.
+4. **`-vm-mac` had to become an error on podman, not a no-op.** Not addressed
+   by the plan. Accepting it and ignoring it would leave an operator believing
+   the root daemon is pinned when nothing is; there is no lease to pin, and
+   what refuses a squatter on the loopback port is the per-VM HMAC.
+5. **`Instance.MACAddress`/`LeaseName` for podman.** §4.1 has them empty,
+   which is right, but `limaaddr.Target.leaseName()` still fills an empty name
+   with `lima-<VM>`. The plan's answer ("a unit test pins that `ResolveTarget`
+   is not called for podman refs") is what shipped, as the `leaseResolvable`
+   predicate plus `TestPodmanRefsNeverReachTheLeaseDb`, worth restating
+   because the empty lease name is *not* self-enforcing.
+6. **`Forwarding` for podman is a stub in this phase**, as permitted: it
+   reports nothing forwarded, so `up` prints no coexistence warning. The real
+   detector reads gvproxy's `/services/forwarder/all` from inside the guest and
+   needs its own wording (a published container is bridged and was never a
+   mirror candidate), which is doctor check 10's job in 7.5.
+
+### Not done here, and why
+
+- **Doctor still speaks Lima.** `internal/doctor`'s own `VMType == "vz"` tests
+  are untouched, so `drawbridge doctor` describes a running podman machine as
+  "running on libkrun — no host-reachable guest IP". That is §7's work, phase
+  7.5, and nothing in 7.1 depends on it.
+- **`drawbridged` mirrors the guest's own `:4777`** onto Mac `127.0.0.1:4777`
+  on a podman machine. Pre-existing behaviour (the mirror direction has never
+  excluded the guest's transport listener; on Lima the port is simply already
+  held by the SSH forward, so the bind loses and is logged), newly *visible*
+  because podman's transport is on 4778. Harmless (`newExclude` keeps the
+  syncer off mirrored ports), but it is noise worth a decision in 7.5.
+- **A flaky pre-existing data race in `internal/mirror`'s test harness**
+  (`fakeAgent.handshake` in `udp_test.go` reads a field
+  `TestSpliceGatesClientBytesOnProof` writes). Unrelated to this phase, seen
+  once in a `-race` full-suite run and not reproducible in four re-runs of the
+  package. Not fixed here.
+
+### Left for the user (needs sudo, or the root daemon booted out)
+
+The released root `drawbridged` LaunchDaemon is installed and running on this
+Mac, and this session could not `sudo`.
+
+```
+# the e2e subset, which needs the installed daemon out of the way first
+sudo launchctl bootout system/com.archcorsair.drawbridged
+DRAWBRIDGE_VM=podman:spike DRAWBRIDGE_AGENT=tcp://127.0.0.1:4778 \
+  go test -count=1 -run 'TestGuestListenerReachableOnMacLocalhost|TestReverse|TestForwarderHalfClose|TestSyncEADDRINUSE' ./internal/e2e/
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.archcorsair.drawbridged.plist
+
+# the root install against podman (7.2's live leg, rendering verified by -print here)
+sudo drawbridge install -vm podman:spike
+drawbridge status
+sudo drawbridge uninstall
+
+# dev-VM regression, once the Lima dev VM is started (it is stopped on this Mac)
+limactl start drawbridge && just e2e      # baseline 14 pass / 2 root-gated skips
+```
+
 
 ## 7.2 results
 
