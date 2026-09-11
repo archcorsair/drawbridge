@@ -1791,8 +1791,8 @@ podman machine stop spike-rootful && podman machine start spike
 (rootless, libkrun) 14/14: the base checks plus wrapper-in-`podman info`,
 host-net nginx on :8080 mirrored to the Mac, a second host-net nginx on
 the Mac-held :8080 refused synchronously, containers removed, colima
-daemon restored. The rootful `:80` leg on `spike-rootful` is pending the
-machine swap.
+daemon restored. `just smoke-sudo-oci podman:spike-rootful` (rootful, after the machine
+swap) 14/14 as well, nginx at :80 through the root daemon. 7.4 accepted.
 
 ## 7.5 results
 
