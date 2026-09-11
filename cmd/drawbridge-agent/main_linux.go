@@ -78,8 +78,9 @@ func main() {
 			addr := fs.String("addr", "", "listen address, e.g. 127.0.0.1:8080")
 			nsock := fs.String("notify-sock", "/run/drawbridge-notify.sock", "agent notify socket")
 			hold := fs.Duration("hold", 2*time.Second, "keep a successful listener open this long")
+			offThread := fs.Bool("off-thread", false, "bind from a non-leader thread (the notification then carries a TID, not the PID)")
 			fs.Parse(os.Args[2:])
-			if err := seccomp.RunBindProbe(*network, *addr, *nsock, *hold, os.Stdout); err != nil {
+			if err := seccomp.RunBindProbe(*network, *addr, *nsock, *hold, *offThread, os.Stdout); err != nil {
 				log.Fatalf("bindprobe: %v", err)
 			}
 			return

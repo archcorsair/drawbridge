@@ -34,7 +34,7 @@ func TestMain(m *testing.M) {
 	case "bindprobe":
 		hold, _ := time.ParseDuration(os.Getenv("HELPER_HOLD"))
 		if err := seccomp.RunBindProbe(os.Getenv("HELPER_NETWORK"), os.Getenv("HELPER_ADDR"),
-			os.Getenv("HELPER_NOTIFY_SOCK"), hold, os.Stdout); err != nil {
+			os.Getenv("HELPER_NOTIFY_SOCK"), hold, os.Getenv("HELPER_OFF_THREAD") == "1", os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -24,7 +25,7 @@ type ProbeResult struct {
 // hook: install the bind filter, hand the notify fd to the agent over the
 // unix socket, then attempt the bind and report how it went. The listener
 // is held briefly so the tracker path can observe it.
-func RunBindProbe(network, addr, notifySock string, hold time.Duration, out io.Writer) error {
+func RunBindProbe(network, addr, notifySock string, hold time.Duration, offThread bool, out io.Writer) error {
 	// The unix connection must exist BEFORE the filter is installed: Go's
 	// net package does capability probes on first use, and any syscall it
 	// makes post-install would be answered by a supervisor that does not
@@ -47,7 +48,7 @@ func RunBindProbe(network, addr, notifySock string, hold time.Duration, out io.W
 	}
 
 	res := ProbeResult{}
-	ln, err := net.Listen(network, addr)
+	ln, err := listenMaybeOffThread(network, addr, offThread)
 	if err != nil {
 		var errno syscall.Errno
 		if !errors.As(err, &errno) {
@@ -65,4 +66,28 @@ func RunBindProbe(network, addr, notifySock string, hold time.Duration, out io.W
 		time.Sleep(hold)
 	}
 	return nil
+}
+
+// listenMaybeOffThread binds from a thread that is deliberately not the
+// group leader when offThread is set: the notification then carries a
+// non-leader TID, the case the supervisor's tgid fallback exists for. Main
+// is pinned first so the goroutine cannot be scheduled onto it.
+func listenMaybeOffThread(network, addr string, offThread bool) (net.Listener, error) {
+	if !offThread {
+		return net.Listen(network, addr)
+	}
+	runtime.LockOSThread()
+	type result struct {
+		ln  net.Listener
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		ln, err := net.Listen(network, addr)
+		ch <- result{ln, err}
+	}()
+	r := <-ch
+	return r.ln, r.err
 }

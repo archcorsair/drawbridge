@@ -525,18 +525,23 @@ func TestGuestBindGetsSynchronousEADDRINUSE(t *testing.T) {
 	// the free-port probe there also proves the CONTINUE path works.
 	waitBindArbitrationLive(t)
 
-	r, err := guestBindProbe(t, heldPort)
-	if err != nil {
-		t.Fatal(err)
+	// Both thread placements: the notification carries the calling thread's
+	// TID, and a non-leader TID once made the supervisor degrade to CONTINUE
+	// (pidfd_open refuses it), which is the off-thread variant's job to pin.
+	for _, offThread := range []bool{false, true} {
+		r, err := guestBindProbeOpts(t, heldPort, offThread)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The errno crosses the VM boundary as a number from the guest's
+		// kernel, so it is Linux's EADDRINUSE (98), not this test binary's
+		// darwin syscall.EADDRINUSE (48).
+		if r.Errno != linuxEADDRINUSE {
+			t.Fatalf("guest bind (off-thread=%v) to Mac-held :%d = errno %d (%s), want EADDRINUSE(%d)",
+				offThread, heldPort, r.Errno, r.Error, linuxEADDRINUSE)
+		}
+		t.Logf("guest bind (off-thread=%v) to Mac-held :%d refused synchronously with EADDRINUSE", offThread, heldPort)
 	}
-	// The errno crosses the VM boundary as a number from the guest's
-	// kernel, so it is Linux's EADDRINUSE (98) — not this test binary's
-	// darwin syscall.EADDRINUSE (48).
-	if r.Errno != linuxEADDRINUSE {
-		t.Fatalf("guest bind to Mac-held :%d = errno %d (%s), want EADDRINUSE(%d)",
-			heldPort, r.Errno, r.Error, linuxEADDRINUSE)
-	}
-	t.Logf("guest bind to Mac-held :%d refused synchronously with EADDRINUSE", heldPort)
 }
 
 // guestBindProbe runs the agent's `bindprobe` in the guest and parses its
@@ -545,7 +550,16 @@ func TestGuestBindGetsSynchronousEADDRINUSE(t *testing.T) {
 // legs in privileged_test.go.
 func guestBindProbe(t *testing.T, port int) (seccompProbeResult, error) {
 	t.Helper()
-	out, err := guest(t, fmt.Sprintf("%s bindprobe -addr 127.0.0.1:%d -hold 0s", guestAgentBin(t), port))
+	return guestBindProbeOpts(t, port, false)
+}
+
+func guestBindProbeOpts(t *testing.T, port int, offThread bool) (seccompProbeResult, error) {
+	extra := ""
+	if offThread {
+		extra = " -off-thread"
+	}
+	t.Helper()
+	out, err := guest(t, fmt.Sprintf("%s bindprobe -addr 127.0.0.1:%d -hold 0s%s", guestAgentBin(t), port, extra))
 	if err != nil {
 		return seccompProbeResult{}, fmt.Errorf("%v: %s", err, out)
 	}

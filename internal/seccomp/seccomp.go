@@ -13,6 +13,7 @@ package seccomp
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -276,9 +277,9 @@ func ReadBindAddr(pid uint32, ptr, length uint64) (BindAddr, error) {
 // rejects ordinary Go servers. Stream + AF_INET/AF_INET6 covers TCP and
 // MPTCP and still excludes UDP.
 func IsInetStream(pid uint32, sockfd uint64) (bool, error) {
-	pidfd, err := unix.PidfdOpen(int(pid), 0)
+	pidfd, err := openPidfd(pid)
 	if err != nil {
-		return false, fmt.Errorf("pidfd_open: %w", err)
+		return false, err
 	}
 	defer unix.Close(pidfd)
 	fd, err := unix.PidfdGetfd(pidfd, int(sockfd), 0)
@@ -295,4 +296,30 @@ func IsInetStream(pid uint32, sockfd uint64) (bool, error) {
 		return false, fmt.Errorf("SO_DOMAIN: %w", err)
 	}
 	return typ == unix.SOCK_STREAM && (dom == unix.AF_INET || dom == unix.AF_INET6), nil
+}
+
+// openPidfd opens a pidfd for the process that owns task pid. The notif's
+// pid is a TID; when it is not the group leader pidfd_open refuses it, so
+// fall back to the thread group (see tgid.go). The fd table is shared
+// across the group, so pidfd_getfd through the leader sees the same fd.
+func openPidfd(pid uint32) (int, error) {
+	pidfd, err := unix.PidfdOpen(int(pid), 0)
+	if err == nil {
+		return pidfd, nil
+	}
+	if !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.ESRCH) {
+		return 0, fmt.Errorf("pidfd_open: %w", err)
+	}
+	tgid, terr := tgidOf(pid)
+	if terr != nil {
+		return 0, fmt.Errorf("pidfd_open tid %d: %v; resolving tgid: %w", pid, err, terr)
+	}
+	if tgid == int(pid) {
+		return 0, fmt.Errorf("pidfd_open: %w", err)
+	}
+	pidfd, err2 := unix.PidfdOpen(tgid, 0)
+	if err2 != nil {
+		return 0, fmt.Errorf("pidfd_open tgid %d (tid %d: %v): %w", tgid, pid, err, err2)
+	}
+	return pidfd, nil
 }
