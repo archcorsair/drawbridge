@@ -111,3 +111,11 @@ e2e-root: build
 # latency/throughput benchmark, both directions (needs agent-up)
 bench: build
     DRAWBRIDGE_BENCH=1 go test -count=1 -v -timeout 15m ./internal/bench/
+
+# Phase 7.0 transport spike (docs/podman.md §3.1): the standalone half-close
+# probe, built for the Mac and for the podman machine guest. No drawbridge
+# package is linked; the verdict must be about the path, not our code.
+spike-halfclose:
+    mkdir -p bin
+    go build -o bin/halfclose-probe ./scripts/halfclose-probe
+    GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o bin/halfclose-probe-linux-arm64 ./scripts/halfclose-probe

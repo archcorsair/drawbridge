@@ -862,6 +862,16 @@ embedded); CI green.
 
 ## 10. Open questions for the user, ranked by how much the answer changes the plan
 
+**Decided 2026-09-11 (user):** Q1 official `.pkg`, installed by the user
+(reference install for verify-podman.md; mise/brew not used). Q2 stricter
+gate accepted: a swallowed FIN disqualifies a path, not only a killed
+connection. Q3 rootful first-class, rootless supported for ≥ 1024 with the
+socket-owner widening. Q4 branch A's root posture accepted: the
+LaunchDaemon dials the gvproxy-bound loopback port pinned in the plist,
+authenticated by the per-VM HMAC. Q5 to Q7 take the recommendations below
+unless the user says otherwise (libkrun verdict-only; refuse a pre-boundary
+gvproxy; v0.2.0).
+
 **Q1: How is podman installed on the dev Mac?** Options: (a) the official
 `.pkg` (`/opt/podman/bin/{podman,gvproxy,vfkit}`, `helper_binaries_dir`
 preconfigured; the version the most users have; `brew` not involved; but
