@@ -75,21 +75,22 @@ func down(g *guest, sel selection) error {
 	g.try("systemctl daemon-reload")
 
 	// 2. Revert the --oci changes, if any, while the wrapper still exists.
-	//
-	// Never on a podman guest: `up --oci` refuses there in this release, so
-	// there is nothing this command wrote to revert, and the revert path
-	// ends in a docker restart, which on a guest whose only engine is podman
-	// would be a command aimed at nothing.
-	if sel.Ref.Provider != vmprovider.ProviderPodman {
-		if err := revertOCI(g); err != nil {
-			return err
-		}
+	//    Which engine's revert that is comes from the state file `up` wrote,
+	//    not from the provider: the state is the record of what was actually
+	//    changed, and a guest that has been re-imaged under the same machine
+	//    name is exactly the case where the two disagree.
+	if err := revertOCI(g); err != nil {
+		return err
 	}
 
 	// 3. Binaries and state last: nothing references them any more.
+	//    Both wrapper names, unconditionally: they are ours by name, one
+	//    engine's guest never has the other's, and removing a file that is
+	//    not there costs one round trip and no correctness.
 	for _, p := range []string{
 		guestbin.GuestPath(guestbin.NameAgent),
 		guestbin.GuestPath(guestbin.NameRunc),
+		guestbin.WrapperPath(guestbin.EnginePodman),
 	} {
 		if _, had, err := g.readFile(p); err != nil {
 			return err
@@ -150,6 +151,21 @@ func revertOCI(g *guest) error {
 	}
 	if !have {
 		return nil
+	}
+	// Dispatch on the recorded version before committing to a shape. The
+	// two schemas describe disjoint reverts — a daemon.json restore and a
+	// drop-in deletion — and reading one as the other is how a `down`
+	// rewrites a config it never wrote.
+	version, err := guestbin.PeekStateVersion(blob)
+	if err != nil {
+		return err
+	}
+	if version == guestbin.StateVersionPodman {
+		st, err := guestbin.DecodePodmanState(blob)
+		if err != nil {
+			return err
+		}
+		return revertOCIPodman(g, st)
 	}
 	st, err := guestbin.DecodeState(blob)
 	if err != nil {

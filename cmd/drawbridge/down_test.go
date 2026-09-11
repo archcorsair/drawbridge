@@ -285,3 +285,118 @@ func TestDownPodmanRemovesTheRecordAndNeverTouchesDocker(t *testing.T) {
 		t.Fatalf("a second `down` failed: %v", err)
 	}
 }
+
+// --- `down` on a podman guest provisioned with --oci (§6.2) ----------------
+
+// upThenDownPodmanOCI runs the whole round trip against one fake guest and
+// hands back its output, since what `down` says is half of what it does.
+func upThenDownPodmanOCI(t *testing.T, f *fakeGuest, before func()) string {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	sel, err := upPodman(t, f, upOptions{
+		oci: true, agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "wrapper"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.files[guestbin.DropinPath] == "" {
+		t.Fatal("up --oci wrote no drop-in")
+	}
+	if before != nil {
+		before()
+	}
+	f.calls, f.podmanRestarted = nil, false
+	var out strings.Builder
+	if err := down(&guest{p: f, inst: sel.Ref.Instance, out: &out}, sel); err != nil {
+		t.Fatalf("down: %v\n%s", err, out.String())
+	}
+	return out.String()
+}
+
+// The round trip: everything `up --oci` wrote is gone, and the drop-in goes
+// before the wrapper it names.
+func TestDownPodmanOCIRemovesTheDropin(t *testing.T) {
+	f := newFakeGuest(t).withFCOS()
+	f.podmanAPIActive = true
+	out := upThenDownPodmanOCI(t, f, nil)
+
+	for _, p := range []string{
+		guestbin.DropinPath,
+		guestbin.WrapperPath(guestbin.EnginePodman),
+		guestbin.UnitPath,
+		guestbin.ProvisionPath,
+		agentPath,
+	} {
+		if _, ok := f.files[p]; ok {
+			t.Fatalf("%s survived `down`", p)
+		}
+	}
+	if !strings.Contains(out, "removed "+guestbin.DropinPath) {
+		t.Fatalf("down did not say it removed the drop-in:\n%s", out)
+	}
+	// Ordering: the registration goes while the binary it names still
+	// exists, the same rule the docker path follows.
+	dropinAt, wrapperAt := -1, -1
+	for i, r := range f.removed {
+		if r == guestbin.DropinPath && dropinAt < 0 {
+			dropinAt = i
+		}
+		if r == guestbin.WrapperPath(guestbin.EnginePodman) && wrapperAt < 0 {
+			wrapperAt = i
+		}
+	}
+	if dropinAt < 0 || wrapperAt < 0 || dropinAt > wrapperAt {
+		t.Fatalf("drop-in removed at %d, wrapper at %d: %v", dropinAt, wrapperAt, f.removed)
+	}
+	if !f.podmanRestarted {
+		t.Fatal("the running API service was not reloaded after the registration was removed")
+	}
+	// And nothing anywhere near docker: the revert path's docker restart is
+	// a command aimed at nothing on a guest whose only engine is podman.
+	if f.ran("docker") {
+		t.Fatalf("`down` on a podman guest went near docker:\n%s", strings.Join(f.calls, "\n"))
+	}
+}
+
+// A drop-in edited since `up` is left exactly where it is, and `down` says
+// so by name. Guessing is the one thing the recorded digest exists to
+// prevent.
+func TestDownPodmanOCIKeepsAnEditedDropin(t *testing.T) {
+	f := newFakeGuest(t).withFCOS()
+	out := upThenDownPodmanOCI(t, f, func() {
+		f.files[guestbin.DropinPath] += "# an administrator was here\n"
+	})
+	if _, ok := f.files[guestbin.DropinPath]; !ok {
+		t.Fatal("an edited drop-in was deleted")
+	}
+	if !strings.Contains(out, "edited since `up`; not removed") || !strings.Contains(out, guestbin.DropinPath) {
+		t.Fatalf("down did not name the file it kept:\n%s", out)
+	}
+	// The wrapper still goes: the drop-in's second element is the real
+	// crun, so podman keeps starting containers on stock crun either way.
+	if _, ok := f.files[guestbin.WrapperPath(guestbin.EnginePodman)]; ok {
+		t.Fatal("the wrapper survived down")
+	}
+}
+
+// A drop-in already gone is a no-op, not an error, and `down` stays silent
+// about it: there is nothing for the user to do.
+func TestDownPodmanOCIWithTheDropinAlreadyGone(t *testing.T) {
+	f := newFakeGuest(t).withFCOS()
+	out := upThenDownPodmanOCI(t, f, func() { delete(f.files, guestbin.DropinPath) })
+	if strings.Contains(out, "not removed") {
+		t.Fatalf("down complained about a file that was already gone:\n%s", out)
+	}
+}
+
+// A state file from a build this one does not understand is refused, not
+// guessed at — the rule that has applied to daemon.json since Phase 4,
+// carried forward to the version that replaced it.
+func TestDownRefusesANewerStateFile(t *testing.T) {
+	f := newFakeGuest(t).withFCOS()
+	f.files[guestbin.ProvisionPath] = `{"version":99,"engine":"podman"}` + "\n"
+	err := runDownOn(t, f)
+	if err == nil || !strings.Contains(err.Error(), "newer drawbridge") {
+		t.Fatalf("down against a version-99 state file = %v, want a refusal", err)
+	}
+}

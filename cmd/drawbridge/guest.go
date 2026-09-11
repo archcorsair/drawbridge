@@ -536,9 +536,24 @@ type preflight struct {
 	// there; /usr/local is a symlink into /var and is what we write to.
 	OSTree bool
 
-	// Crun is `crun --version`'s version field, empty when absent. The `--oci`
-	// path needs >= 0.19 for the seccomp notify listener; 7.4 enforces it.
-	Crun string
+	// Crun is `crun --version`'s version field, empty when absent, and
+	// CrunPath is where `command -v crun` finds it. The `--oci` path needs
+	// >= 0.19 for the seccomp notify listener, and the path is the fallback
+	// entry in the containers.conf drop-in (docs/podman.md §6.2).
+	//
+	// `command -v crun` rather than `podman info`'s OCIRuntime.Path, which
+	// is the acceptance line and not a source: after the first `up --oci`
+	// podman reports the *wrapper* there, so a second run would render a
+	// drop-in whose fallback pointed at drawbridge-crun itself. The wrapper
+	// is never installed under the bare name `crun`, so this probe cannot
+	// find it whatever has been provisioned.
+	Crun     string
+	CrunPath string
+
+	// User is the login user the provider shells in as — `core` on a podman
+	// machine — and therefore the uid a rootless engine's runtime runs as.
+	// It is what `-oci-sock-owner` is set from (docs/podman.md §6.3).
+	User string
 
 	// UnprivPort is net.ipv4.ip_unprivileged_port_start, "" when unreadable.
 	// It decides whether a rootless container can bind :80 at all, long
@@ -568,6 +583,8 @@ command -v restorecon >/dev/null 2>&1 && echo restorecon=yes || echo restorecon=
 [ -e /run/ostree-booted ] && echo ostree=yes || echo ostree=no
 echo "selinux=$(getenforce 2>/dev/null || true)"
 echo "crun=$(crun --version 2>/dev/null | head -1 | awk '{print $3}')"
+echo "crun_path=$(command -v crun 2>/dev/null || true)"
+echo "user=$(id -un 2>/dev/null || true)"
 echo "unpriv_port=$(sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null || true)"
 [ -S /run/podman/podman.sock ] && echo rootful=yes || echo rootful=no
 engine=none
@@ -626,6 +643,10 @@ func parsePreflight(out string) preflight {
 			p.OSTree = yes
 		case "crun":
 			p.Crun = v
+		case "crun_path":
+			p.CrunPath = v
+		case "user":
+			p.User = v
 		case "unpriv_port":
 			p.UnprivPort = v
 		}
@@ -641,6 +662,16 @@ func parsePreflight(out string) preflight {
 // podman, and registering a runc wrapper in /etc/docker/daemon.json there
 // would edit a file no engine reads.
 func (p preflight) hasDocker() bool { return p.Engine == EngineDocker }
+
+// hasPodman is the other engine `--oci` can register with, through a
+// containers.conf drop-in rather than a merge (docs/podman.md §6.2).
+func (p preflight) hasPodman() bool { return p.Engine == EnginePodman }
+
+// minCrun is the floor for crun's seccomp notify listener — `listenerPath`
+// and `listenerMetadata` in the OCI seccomp config, which is what makes a
+// container's bind reach the agent at all. 0.19 is where crun's NEWS
+// records it.
+var minCrun = [2]int{0, 19}
 
 // minKernel is the seccomp `listenerPath` contract's floor: SECCOMP_IPC
 // listener support in runc's OCI seccomp config landed against 5.7's
@@ -681,7 +712,7 @@ func checkPreflight(p preflight, oci bool) error {
 	if _, err := guestArchOf(p); err != nil {
 		return err
 	}
-	maj, min, ok := parseKernel(p.Kernel)
+	maj, min, ok := parseMajorMinor(p.Kernel)
 	switch {
 	case !ok:
 		// Informational either way: an unparsable version is not evidence of
@@ -699,6 +730,9 @@ func checkPreflight(p preflight, oci bool) error {
 				p.Kernel, minKernel[0], minKernel[1], minKernel[0], minKernel[1])
 		}
 	}
+	if oci && p.hasPodman() {
+		return checkPodmanOCI(p)
+	}
 	if oci && !p.hasDocker() {
 		return fmt.Errorf("no docker in the guest: --oci registers the drawbridge runc wrapper in Docker Engine's\n" +
 			"  /etc/docker/daemon.json and has nothing to register it with.\n" +
@@ -707,10 +741,40 @@ func checkPreflight(p preflight, oci bool) error {
 	return nil
 }
 
-// parseKernel reads the leading `major.minor` of a `uname -r` string. It
+// checkPodmanOCI is the `--oci` verdict on a podman guest: the two things
+// that have to be true before anything is written, each named with what the
+// user can do about it.
+//
+// The SELinux mode is deliberately not a verdict. Fedora CoreOS runs
+// Enforcing and every file `up` installs is relabelled; a guest that broke
+// on a denial is a question for docs/podman.md §10, never a reason for
+// drawbridge to reach for `setenforce`.
+func checkPodmanOCI(p preflight) error {
+	if p.CrunPath == "" {
+		return fmt.Errorf("no crun in the guest: --oci on a podman machine registers the drawbridge wrapper as\n" +
+			"  podman's `crun` runtime and execs the real crun behind it, and there is none on PATH.\n" +
+			"  Without --oci, inbound mirroring, outbound and host-process EADDRINUSE all still work")
+	}
+	maj, min, ok := parseMajorMinor(p.Crun)
+	switch {
+	case !ok:
+		return fmt.Errorf("cannot read crun's version from %q, and --oci needs >= %d.%d for the seccomp notify\n"+
+			"  listener (listenerPath) a container's bind is arbitrated through.\n"+
+			"  `crun --version` in the guest is what this reads", p.Crun, minCrun[0], minCrun[1])
+	case maj < minCrun[0] || (maj == minCrun[0] && min < minCrun[1]):
+		return fmt.Errorf("guest crun %s is older than %d.%d: --oci arbitrates container binds through seccomp\n"+
+			"  user-notify (listenerPath), which crun grew in %d.%d.\n"+
+			"  Update crun in the VM, or re-run without --oci — inbound mirroring, outbound and\n"+
+			"  host-process EADDRINUSE all work without it",
+			p.Crun, minCrun[0], minCrun[1], minCrun[0], minCrun[1])
+	}
+	return nil
+}
+
+// parseMajorMinor reads the leading `major.minor` of a version string. It
 // stops at the first thing that is not a digit or a dot, which is what makes
-// "6.8.0-51-generic" and "5.15.0" and "6.1" all parse.
-func parseKernel(rel string) (maj, min int, ok bool) {
+// "6.8.0-51-generic" and "5.15.0" and "6.1" and crun's "1.28" all parse.
+func parseMajorMinor(rel string) (maj, min int, ok bool) {
 	fields := strings.FieldsFunc(rel, func(r rune) bool { return r < '0' || r > '9' })
 	if len(fields) < 2 {
 		return 0, 0, false

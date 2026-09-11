@@ -251,11 +251,44 @@ func TestCheckPreflight(t *testing.T) {
 			// The trap this replaced a `command -v docker` check for: the
 			// podman machine image symlinks /usr/local/bin/docker to podman,
 			// so the old probe reported a Docker Engine that is not there and
-			// --oci would have edited a daemon.json nothing reads.
-			name:    "a podman guest is not a docker guest",
+			// --oci would have edited a daemon.json nothing reads. It now
+			// takes the podman branch instead of the docker one — but still
+			// never the docker one.
+			name:    "a podman guest with no crun",
 			p:       mutate(ok, func(p *preflight) { p.Engine = EnginePodman }),
 			oci:     true,
+			wantErr: []string{"no crun in the guest", "podman machine"},
+		},
+		{
+			// A guest with neither engine keeps the wording that has been in
+			// front of Lima and Colima users since Phase 4.
+			name:    "no engine at all",
+			p:       mutate(ok, func(p *preflight) { p.Engine = EngineNone }),
+			oci:     true,
 			wantErr: []string{"no docker in the guest"},
+		},
+		{
+			name: "a podman guest with a crun too old for listenerPath",
+			p: mutate(ok, func(p *preflight) {
+				p.Engine, p.CrunPath, p.Crun = EnginePodman, "/usr/bin/crun", "0.18"
+			}),
+			oci:     true,
+			wantErr: []string{"older than 0.19", "listenerPath"},
+		},
+		{
+			name: "a podman guest with an unreadable crun version",
+			p: mutate(ok, func(p *preflight) {
+				p.Engine, p.CrunPath, p.Crun = EnginePodman, "/usr/bin/crun", "unknown"
+			}),
+			oci:     true,
+			wantErr: []string{"cannot read crun's version"},
+		},
+		{
+			name: "a podman guest ready for --oci",
+			p: mutate(ok, func(p *preflight) {
+				p.Engine, p.CrunPath, p.Crun = EnginePodman, "/usr/bin/crun", "1.28"
+			}),
+			oci: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -323,9 +356,9 @@ func TestParseKernel(t *testing.T) {
 		{"weird", 0, 0, false},
 		{"6", 0, 0, false},
 	} {
-		maj, min, ok := parseKernel(tc.in)
+		maj, min, ok := parseMajorMinor(tc.in)
 		if maj != tc.maj || min != tc.min || ok != tc.ok {
-			t.Fatalf("parseKernel(%q) = %d, %d, %v; want %d, %d, %v", tc.in, maj, min, ok, tc.maj, tc.min, tc.ok)
+			t.Fatalf("parseMajorMinor(%q) = %d, %d, %v; want %d, %d, %v", tc.in, maj, min, ok, tc.maj, tc.min, tc.ok)
 		}
 	}
 }

@@ -43,6 +43,15 @@ type fakeGuest struct {
 	hasRestorecon bool
 	relabelled    []string
 
+	// podman's API service, as the socket-activated unit it is. Present but
+	// not running is the common case on a real machine, and the one the
+	// restart marker calls `idle`; podmanRestarted records that the unit was
+	// actually bounced, which `idle` deliberately does not do.
+	hasPodmanAPI    bool
+	podmanAPIActive bool
+	podmanAPIBroken bool
+	podmanRestarted bool
+
 	// docker, as a unit of its own: the agent's active state says nothing
 	// about the engine's, and the restart paths turn on exactly that.
 	hasDocker    bool
@@ -90,10 +99,12 @@ func (f *fakeGuest) withDocker() *fakeGuest {
 // an engine rather than a `command -v docker` boolean.
 func (f *fakeGuest) withFCOS() *fakeGuest {
 	f.hasRestorecon = true
+	f.hasPodmanAPI = true // socket-activated, and therefore idle
 	f.preflight = strings.Join([]string{
 		"arch=aarch64", "kernel=7.1.3-200.fc44.aarch64", "btf=yes",
 		"cgroup2=yes", "systemd=yes", "sudo=yes", "engine=podman",
 		"restorecon=yes", "ostree=yes", "selinux=Enforcing", "crun=1.28",
+		"crun_path=/usr/bin/crun", "user=core",
 		"unpriv_port=1024", "rootful=no",
 	}, "\n")
 	f.inspect = vmprovider.PodmanInspect{
@@ -114,6 +125,19 @@ func (f *fakeGuest) Inspect(inst string) (vmprovider.PodmanInspect, error) {
 		return vmprovider.PodmanInspect{}, fmt.Errorf("fakeGuest: no inspect answer configured for %q", inst)
 	}
 	return f.inspect, nil
+}
+
+// withRootfulPodman is a `podman machine init --rootful` guest: podman runs
+// as root in the init user namespace, the API service is root's, and the OCI
+// socket needs no ownership widening at all.
+func (f *fakeGuest) withRootfulPodman() *fakeGuest {
+	f.withFCOS()
+	// The login user stays `core` — a rootful machine is podman-as-root
+	// inside a guest you still ssh into as core — which is exactly why
+	// `rootful` and not the user name is what decides the socket ownership.
+	f.preflight = strings.ReplaceAll(f.preflight, "rootful=no", "rootful=yes")
+	f.podmanAPIActive = true // root's podman.service is up on a rootful machine
+	return f
 }
 
 // withWedgedDocker is the live finding: systemd's start rate limit leaves
@@ -187,6 +211,9 @@ func (f *fakeGuest) exec(script string) ([]byte, error) {
 	}
 	if strings.Contains(script, "drawbridge-docker=") {
 		return f.execRestartDocker(), nil // down's engine reload
+	}
+	if strings.Contains(script, "drawbridge-podman=") {
+		return f.execRestartPodmanAPI(), nil // the API socket's cached runtime path
 	}
 	// A trailing `|| true` covers the whole chain, as it does in sh.
 	script = strings.TrimSpace(script)
@@ -418,6 +445,22 @@ func (f *fakeGuest) execRestartDocker() []byte {
 		return []byte("drawbridge-docker=failed\n")
 	}
 	return []byte("drawbridge-docker=restarted\n")
+}
+
+// execRestartPodmanAPI models restartPodmanAPIScript: a marker, never an
+// exit status, and `idle` for the socket-activated unit that is simply not
+// running — which is the common case, not an edge.
+func (f *fakeGuest) execRestartPodmanAPI() []byte {
+	switch {
+	case !f.hasPodmanAPI:
+		return []byte("drawbridge-podman=absent\n")
+	case !f.podmanAPIActive:
+		return []byte("drawbridge-podman=idle\n")
+	case f.podmanAPIBroken:
+		return []byte("drawbridge-podman=failed\n")
+	}
+	f.podmanRestarted = true
+	return []byte("drawbridge-podman=restarted\n")
 }
 
 // ran reports whether any executed script contained a substring — the shape

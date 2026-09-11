@@ -41,9 +41,9 @@ const controlPort = 4777
 
 func runUp(args []string) int {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	oci := fs.Bool("oci", false, "also install the runc wrapper and register it in the guest's Docker daemon.json (default off: it edits a file you own and changes the default container runtime)")
+	oci := fs.Bool("oci", false, "also install the OCI runtime wrapper and register it with the guest's engine — Docker Engine's daemon.json, or podman's containers.conf.d (default off: on docker it edits a file you own and changes the default container runtime)")
 	agentBin := fs.String("agent-bin", "", "guest agent binary to push instead of the bundled one; the dev loop's escape hatch and the way to use a standalone release artifact")
-	runcBin := fs.String("runc-bin", "", "runc wrapper binary to push instead of the bundled one (--oci only)")
+	runcBin := fs.String("runc-bin", "", "OCI runtime wrapper binary to push instead of the bundled one (--oci only); one binary for both engines, installed under the name of the runtime it stands in for")
 	instance, err := parsePositional(fs, args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "drawbridge up: %v\n", err)
@@ -82,17 +82,6 @@ type upOptions struct {
 // (step 6) is separate because it dials the guest over the network, which is
 // exactly the part a unit test cannot have.
 func up(g *guest, sel selection, o upOptions) error {
-	// --- step 1b: the flag combinations this build does not have -----------
-	// Before the probe, because the failure posture is "nothing changed" and
-	// a refusal that has already shelled into the guest reads like a failure
-	// halfway through.
-	if o.oci && sel.Ref.Provider == vmprovider.ProviderPodman {
-		return fmt.Errorf("--oci is not supported on podman machines yet: the wrapper registers itself in Docker Engine's\n" +
-			"  daemon.json, and a podman guest has no Docker Engine. podman --oci lands in 7.4 (docs/podman.md §6).\n" +
-			"  Without --oci, inbound mirroring, outbound and host-process EADDRINUSE all still work; only\n" +
-			"  containerized bind arbitration needs the wrapper")
-	}
-
 	// --- step 2: preflight -------------------------------------------------
 	pf, err := g.probe()
 	if err != nil {
@@ -127,12 +116,19 @@ func up(g *guest, sel selection, o upOptions) error {
 	// the gvproxy publish, which is how the Mac reaches the transport at all
 	// (docs/podman.md §5.4).
 	execStart := guestbin.GuestPath(guestbin.NameAgent)
+	var sockOwner string
 	if sel.Ref.Provider == vmprovider.ProviderPodman {
 		rec, err := ensureRecord(g, sel)
 		if err != nil {
 			return err
 		}
 		execStart += " -gvproxy-publish " + publishLocal(rec)
+		if sockOwner, err = ociSockOwner(g, pf, o.oci); err != nil {
+			return err
+		}
+		if sockOwner != "" {
+			execStart += " -oci-sock-owner " + sockOwner
+		}
 	}
 	unit, err := guestbin.Unit(execStart)
 	if err != nil {
@@ -170,7 +166,7 @@ func up(g *guest, sel selection, o upOptions) error {
 
 	// --- step 5: --oci -----------------------------------------------------
 	if o.oci {
-		if err := provisionOCI(g, runc, pf.Engine); err != nil {
+		if err := provisionOCI(g, runc, pf, sockOwner); err != nil {
 			return err
 		}
 	}
@@ -521,16 +517,27 @@ func (g *guest) enableAgent(restart bool) error {
 	return nil
 }
 
-// provisionOCI is §4.1 step 5: the runc wrapper, registered with Docker.
+// provisionOCI is §4.1 step 5: the wrapper, registered with the guest's
+// engine.
+//
+// One binary, two registrations. The wrapper is installed under the name of
+// the runtime the engine execs, because that name is the whole of its
+// dispatch (internal/ociruntime.RuntimeFor); what differs is how the engine
+// is told about it — a merge into a file Docker's user owns, or one whole
+// drop-in file podman reads and nobody else wrote.
+func provisionOCI(g *guest, wrapper []byte, pf preflight, sockOwner string) error {
+	if pf.Engine == EnginePodman {
+		return provisionOCIPodman(g, wrapper, pf, sockOwner)
+	}
+	return provisionOCIDocker(g, wrapper, pf.Engine)
+}
+
+// provisionOCIDocker is the Docker Engine half, unchanged since Phase 4.
 //
 // The daemon.json edit is done here, in Go, and not by the provisioning
 // script — see internal/guestbin/provision.go for why (`down` has to restore
 // exact bytes, and only the writer can promise that).
-func provisionOCI(g *guest, runc []byte, engine string) error {
-	// The wrapper is installed under the name of the runtime the engine
-	// execs, because that name is the whole of its dispatch
-	// (internal/ociruntime.RuntimeFor). Docker is the only engine that gets
-	// here in this release: `up --oci` on podman is refused above.
+func provisionOCIDocker(g *guest, runc []byte, engine string) error {
 	runcPath := guestbin.WrapperPath(engine)
 
 	// Stage the wrapper now; the script installs it below. Registering a

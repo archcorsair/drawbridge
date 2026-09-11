@@ -411,22 +411,6 @@ func TestUpRelabelsOnSELinuxGuestsOnly(t *testing.T) {
 	}
 }
 
-// --oci on podman would register a runc wrapper in a daemon.json no engine
-// reads. It is refused before the guest is touched at all.
-func TestUpPodmanRefusesOCI(t *testing.T) {
-	f := newFakeGuest(t).withFCOS()
-	_, err := runUpOnPodman(t, f, upOptions{
-		oci:      true,
-		agentBin: writeTempBinary(t, "agent"),
-		runcBin:  writeTempBinary(t, "runc"),
-	})
-	if err == nil || !strings.Contains(err.Error(), "7.4") {
-		t.Fatalf("up --oci on podman = %v, want a refusal naming the phase it lands in", err)
-	}
-	if len(f.calls) != 0 {
-		t.Fatalf("the guest was shelled into despite the refusal: %v", f.calls)
-	}
-}
 
 // A Lima guest's unit must stay byte-identical: no -gvproxy-publish, and
 // therefore no rewrite and no restart on a guest that was already correct.
@@ -444,5 +428,198 @@ func TestUpLimaUnitIsUnchanged(t *testing.T) {
 	}
 	if strings.Contains(f.files[guestbin.UnitPath], "gvproxy") {
 		t.Fatal("a Lima guest's unit carries a podman flag")
+	}
+}
+
+// --- `up --oci` on a podman guest (docs/podman.md §6.2, §6.3) --------------
+
+// The whole registration on a podman guest: the wrapper under the name crun
+// is exec'd by, one drop-in file that did not exist, and a version-2 state
+// file that records exactly enough for `down` to undo it.
+func TestUpOCIPodmanWritesTheDropin(t *testing.T) {
+	f := newFakeGuest(t).withFCOS()
+	_, err := runUpOnPodman(t, f, upOptions{
+		oci:      true,
+		agentBin: writeTempBinary(t, "agent"),
+		runcBin:  writeTempBinary(t, "wrapper"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	crunGuest := guestbin.WrapperPath(guestbin.EnginePodman)
+	if f.files[crunGuest] != "wrapper" {
+		t.Fatalf("the wrapper is not installed at %s: %q", crunGuest, f.files[crunGuest])
+	}
+	if _, ok := f.files[runcGuest]; ok {
+		t.Fatal("a podman guest got the runc name too — one engine, one name")
+	}
+	want, err := guestbin.DropinBytes("/usr/bin/crun")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.files[guestbin.DropinPath] != string(want) {
+		t.Fatalf("drop-in bytes:\n--- got ---\n%s\n--- want ---\n%s", f.files[guestbin.DropinPath], want)
+	}
+	// The docker half must not have run at all: its script, its config file
+	// and its engine are all someone else's guest.
+	if _, ok := f.files[guestbin.DaemonJSONPath]; ok {
+		t.Fatal("a podman guest got a daemon.json")
+	}
+	if f.ran("provision-docker") || f.ran("--restart-docker") {
+		t.Fatalf("the docker provisioning script ran on a podman guest:\n%s", strings.Join(f.calls, "\n"))
+	}
+
+	st, err := guestbin.DecodePodmanState([]byte(f.files[guestbin.ProvisionPath]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Version != guestbin.StateVersionPodman || st.Engine != guestbin.EnginePodman {
+		t.Fatalf("state is not a podman v2 record: %+v", st)
+	}
+	if st.RuntimePath != crunGuest || st.DropinPath != guestbin.DropinPath {
+		t.Fatalf("state does not name what was written: %+v", st)
+	}
+	if st.DropinSHA256 != sha256Hex(want) {
+		t.Fatalf("recorded digest does not match the bytes written: %+v", st)
+	}
+	if st.Rootful {
+		t.Fatal("a rootless machine was recorded as rootful")
+	}
+	if st.OCISockOwner != "core" {
+		t.Fatalf("oci_sock_owner = %q, want the machine's login user", st.OCISockOwner)
+	}
+}
+
+// A rootless machine's agent gets -oci-sock-owner; a rootful one does not,
+// because root's 0600 is already the right answer there (§6.3).
+func TestUpOCIPodmanSocketOwnerIsRootlessOnly(t *testing.T) {
+	rootless := newFakeGuest(t).withFCOS()
+	if _, err := runUpOnPodman(t, rootless, upOptions{
+		oci: true, agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "wrapper"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rootless.files[guestbin.UnitPath], " -oci-sock-owner core\n") {
+		t.Fatalf("a rootless machine's unit does not widen the OCI socket:\n%s", rootless.files[guestbin.UnitPath])
+	}
+
+	rootful := newFakeGuest(t).withRootfulPodman()
+	if _, err := runUpOnPodman(t, rootful, upOptions{
+		oci: true, agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "wrapper"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rootful.files[guestbin.UnitPath], "-oci-sock-owner") {
+		t.Fatalf("a rootful machine's socket was widened for no reason:\n%s", rootful.files[guestbin.UnitPath])
+	}
+	st, err := guestbin.DecodePodmanState([]byte(rootful.files[guestbin.ProvisionPath]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.Rootful || st.OCISockOwner != "" {
+		t.Fatalf("rootful state: %+v", st)
+	}
+}
+
+// Re-running plain `drawbridge up` on a machine provisioned with `--oci`
+// must not quietly drop the flag: the drop-in would still point at the
+// wrapper, the wrapper would still fail to reach the socket, and
+// arbitration would stop with no error anywhere. `down` is what removes it.
+func TestUpWithoutOCIKeepsTheRecordedSocketOwner(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	f := newFakeGuest(t).withFCOS()
+	agent := writeTempBinary(t, "agent")
+	if _, err := upPodman(t, f, upOptions{oci: true, agentBin: agent, runcBin: writeTempBinary(t, "wrapper")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := upPodman(t, f, upOptions{agentBin: agent}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.files[guestbin.UnitPath], " -oci-sock-owner core\n") {
+		t.Fatalf("a plain re-run dropped the socket owner:\n%s", f.files[guestbin.UnitPath])
+	}
+	// And a guest that never had `--oci` never gets the flag.
+	clean := newFakeGuest(t).withFCOS()
+	if _, err := runUpOnPodman(t, clean, upOptions{agentBin: agent}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(clean.files[guestbin.UnitPath], "-oci-sock-owner") {
+		t.Fatalf("a guest with no --oci got the flag anyway:\n%s", clean.files[guestbin.UnitPath])
+	}
+}
+
+// The second `up --oci` writes nothing and restarts nothing: the drop-in is
+// already exactly right, and the API service is what containers' clients
+// talk to.
+func TestUpOCIPodmanIsIdempotent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	f := newFakeGuest(t).withFCOS()
+	f.podmanAPIActive = true // so a restart would be observable if one happened
+	o := upOptions{oci: true, agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "wrapper")}
+	if _, err := upPodman(t, f, o); err != nil {
+		t.Fatal(err)
+	}
+	if !f.podmanRestarted {
+		t.Fatal("the first --oci run did not restart the running API service")
+	}
+	first := f.files[guestbin.ProvisionPath]
+
+	f.calls, f.podmanRestarted = nil, false
+	if _, err := upPodman(t, f, o); err != nil {
+		t.Fatal(err)
+	}
+	if f.podmanRestarted {
+		t.Fatal("an unchanged drop-in restarted the API service")
+	}
+	if f.files[guestbin.ProvisionPath] != first {
+		t.Fatalf("the state file was rewritten on a no-op run:\n%s\n%s", first, f.files[guestbin.ProvisionPath])
+	}
+	if f.ran("dd of=/tmp/drawbridge-stage-etc-containers-containers.conf.d-50-drawbridge.conf") {
+		t.Fatal("the drop-in was re-staged although its bytes had not changed")
+	}
+}
+
+// The rootless restart is aimed at the login user's own systemd manager,
+// not root's: that is where the socket-activated API service lives.
+func TestUpOCIPodmanRestartTargetsTheRightManager(t *testing.T) {
+	rootless := newFakeGuest(t).withFCOS()
+	rootless.podmanAPIActive = true
+	if _, err := runUpOnPodman(t, rootless, upOptions{
+		oci: true, agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "wrapper"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !rootless.ran("SC=systemctl --user -M core@.host") {
+		t.Fatalf("rootless restart did not address core's manager:\n%s", strings.Join(rootless.calls, "\n"))
+	}
+	if !rootless.ran("reset-failed $U") {
+		t.Fatal("the restart skipped reset-failed — two restarts in the burst window leave the unit failed")
+	}
+
+	rootful := newFakeGuest(t).withRootfulPodman()
+	if _, err := runUpOnPodman(t, rootful, upOptions{
+		oci: true, agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "wrapper"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !rootful.ran("SC=systemctl\n") {
+		t.Fatalf("rootful restart did not address the system manager:\n%s", strings.Join(rootful.calls, "\n"))
+	}
+}
+
+// `--oci` against a podman guest whose crun predates the seccomp notify
+// listener is refused in the preflight, before anything is written.
+func TestUpOCIPodmanRefusesOldCrun(t *testing.T) {
+	f := newFakeGuest(t).withFCOS()
+	f.preflight = strings.ReplaceAll(f.preflight, "crun=1.28", "crun=0.18")
+	_, err := runUpOnPodman(t, f, upOptions{
+		oci: true, agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "wrapper"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "older than 0.19") {
+		t.Fatalf("up --oci with crun 0.18 = %v, want a preflight refusal", err)
+	}
+	if len(f.files) != 0 {
+		t.Fatalf("the guest was mutated despite a failed preflight: %v", f.files)
 	}
 }
