@@ -102,6 +102,10 @@ func main() {
 		"gvproxy's in-guest forwarding API base URL, used by -gvproxy-publish")
 	notifySock := flag.String("notify-sock", "/run/drawbridge-notify.sock", "seccomp notify-fd handoff socket (Phase 4)")
 	ociSock := flag.String("oci-sock", "/run/drawbridge-oci.sock", "OCI seccomp-agent listenerPath socket (runc/crun handoffs)")
+	ociSockOwner := flag.String("oci-sock-owner", "",
+		"local user to give the OCI socket to, mode unchanged at 0600 (empty: root only). "+
+			"Set by `drawbridge up --oci` on a rootless podman machine, where the engine, conmon and crun all run as that user "+
+			"and a root-owned socket would leave the wrapper unable to connect — which is a silent loss of containerized bind arbitration, not an error")
 	flag.Parse()
 
 	log.Printf("drawbridge-agent: version %s", buildinfo.Version)
@@ -171,7 +175,16 @@ func main() {
 		log.Fatalf("drawbridge-agent: oci socket: %v", err)
 	}
 	defer os.Remove(*ociSock)
-	os.Chmod(*ociSock, 0o600) // only root runtimes send here (rootless is out of scope)
+	os.Chmod(*ociSock, 0o600) // root runtimes, plus -oci-sock-owner's one named user
+	// Fatal rather than a warning: an agent that kept running with a
+	// configured-but-unapplied owner looks healthy and arbitrates nothing
+	// (docs/podman.md §6.3).
+	if err := agent.OwnOCISocket(*ociSock, *ociSockOwner); err != nil {
+		log.Fatalf("drawbridge-agent: oci socket: %v", err)
+	}
+	if *ociSockOwner != "" {
+		log.Printf("drawbridge-agent: %s owned by %s (rootless runtime handoffs), mode 0600", *ociSock, *ociSockOwner)
+	}
 	go a.ServeOCISeccomp(oln)
 	log.Printf("drawbridge-agent: gateway+tracker attached (cgroup=%s), control %s, transport %s %v",
 		*cgroup, *sock, *transportEP, tset.Addrs())
