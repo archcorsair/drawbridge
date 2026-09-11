@@ -127,7 +127,7 @@ func TestNewExclude(t *testing.T) {
 // The lease db is Lima's and Colima's resolution source and must never be
 // consulted for a podman machine: gvproxy is user-mode and writes no record,
 // so limaaddr would match `lima-<name>` (Target.leaseName's default) and
-// resolve some other VM entirely, or nothing — and either way the daemon
+// resolve some other VM entirely, or nothing, and either way the daemon
 // would dial an address nobody chose.
 func TestPodmanRefsNeverReachTheLeaseDb(t *testing.T) {
 	for _, tc := range []struct {
@@ -167,7 +167,7 @@ func TestRootDoesNotReadThePodmanRecord(t *testing.T) {
 	if got := resolveAuto(ref, limaaddr.Target{}); got.Endpoint != "" || !strings.Contains(got.Note, "drawbridge up") {
 		t.Fatalf("unprivileged resolveAuto = %+v, want a refusal naming `drawbridge up`", got)
 	}
-	// And the source is podman's, not the lease resolver's — proof the
+	// And the source is podman's, not the lease resolver's, proof the
 	// dispatch happened at all.
 	if got := resolveAuto(ref, limaaddr.Target{}); got.Source != podmanaddr.Source {
 		t.Fatalf("source = %q, want %q", got.Source, podmanaddr.Source)

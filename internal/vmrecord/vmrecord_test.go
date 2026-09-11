@@ -100,7 +100,7 @@ func TestRoundTrip(t *testing.T) {
 	for _, forbidden := range []string{"secret", "proof", "key", "hmac"} {
 		for k := range raw {
 			if strings.Contains(strings.ToLower(k), forbidden) {
-				t.Fatalf("the record carries a %q field — transport secrets are file-borne only", k)
+				t.Fatalf("the record carries a %q field, transport secrets are file-borne only", k)
 			}
 		}
 	}
@@ -150,7 +150,7 @@ func TestUnreadableRecordsFailWithARemedy(t *testing.T) {
 	}
 }
 
-// Under sudo the record belongs to the invoking user, not root — the same
+// Under sudo the record belongs to the invoking user, not root, the same
 // rule (and the same seam) as the transport secret's path.
 func TestPathFollowsTheSudoUserHome(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

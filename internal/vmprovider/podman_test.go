@@ -169,7 +169,7 @@ func TestForRefDispatchesOnProvider(t *testing.T) {
 
 // The fallback path matters: the official pkg puts podman in /opt/podman/bin
 // and adds it to PATH through /etc/paths.d, which a non-login shell does not
-// read — so LookPath alone finds nothing on a perfectly good install.
+// read, so LookPath alone finds nothing on a perfectly good install.
 func TestPodmanBinNamesWhereItLooked(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	bin, err := PodmanBin()

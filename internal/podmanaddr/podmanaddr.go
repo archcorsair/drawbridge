@@ -43,7 +43,7 @@ const probeTimeout = 800 * time.Millisecond
 // A resolution with an empty Endpoint is a refusal, not a fallback: the
 // caller has nowhere to dial, and the Note says which of the two reasons it
 // is (no record, or a record that cannot be read). Every other outcome
-// returns the recorded endpoint — a machine that is merely stopped is a
+// returns the recorded endpoint, a machine that is merely stopped is a
 // reconnect away from working, and the daemon's backoff is the right response
 // to it.
 func Resolve(ref vmprovider.Ref) limaaddr.Resolution {
@@ -52,7 +52,7 @@ func Resolve(ref vmprovider.Ref) limaaddr.Resolution {
 	case errors.Is(err, vmrecord.ErrAbsent):
 		return limaaddr.Resolution{
 			Source: Source,
-			Note: fmt.Sprintf("%v — run `drawbridge up %s` first: it chooses the Mac-side port, "+
+			Note: fmt.Sprintf("%v, run `drawbridge up %s` first: it chooses the Mac-side port, "+
 				"records it, and installs the agent that publishes it through gvproxy", err, ref.Spec),
 		}
 	case err != nil:
@@ -63,7 +63,7 @@ func Resolve(ref vmprovider.Ref) limaaddr.Resolution {
 	if err != nil {
 		return limaaddr.Resolution{
 			Source: Source,
-			Note:   fmt.Sprintf("the recorded endpoint %q is not a valid transport endpoint (%v) — re-run `drawbridge up %s`", rec.Endpoint, err, ref.Spec),
+			Note:   fmt.Sprintf("the recorded endpoint %q is not a valid transport endpoint (%v), re-run `drawbridge up %s`", rec.Endpoint, err, ref.Spec),
 		}
 	}
 	if ep.Scheme != transport.SchemeTCP {
@@ -73,7 +73,7 @@ func Resolve(ref vmprovider.Ref) limaaddr.Resolution {
 		// dialing a socket nobody owns.
 		return limaaddr.Resolution{
 			Source: Source,
-			Note:   fmt.Sprintf("the recorded endpoint %s is not a tcp endpoint: this build resolves podman machines through the gvproxy publish only — re-run `drawbridge up %s`", ep, ref.Spec),
+			Note:   fmt.Sprintf("the recorded endpoint %s is not a tcp endpoint: this build resolves podman machines through the gvproxy publish only, re-run `drawbridge up %s`", ep, ref.Spec),
 		}
 	}
 	addr := ep.String()
@@ -98,10 +98,10 @@ func classify(ref vmprovider.Ref, addr string, err error) string {
 			"Is the machine running (`podman machine list`)? Then: `podman machine ssh %s -- sudo journalctl -u drawbridge-agent -n 30`",
 			addr, ref.Instance)
 	case isTimeout(err):
-		return fmt.Sprintf("%s accepted nothing within %s: gvproxy is forwarding the port but the guest agent is not answering behind it — "+
+		return fmt.Sprintf("%s accepted nothing within %s: gvproxy is forwarding the port but the guest agent is not answering behind it, "+
 			"`podman machine ssh %s -- sudo journalctl -u drawbridge-agent -n 30`", addr, probeTimeout, ref.Instance)
 	}
-	return fmt.Sprintf("%s not reachable (%v) — `podman machine ssh %s -- sudo journalctl -u drawbridge-agent -n 30`", addr, err, ref.Instance)
+	return fmt.Sprintf("%s not reachable (%v), `podman machine ssh %s -- sudo journalctl -u drawbridge-agent -n 30`", addr, err, ref.Instance)
 }
 
 func isTimeout(err error) bool {

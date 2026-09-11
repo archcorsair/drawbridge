@@ -150,7 +150,7 @@ const (
 // about.
 const ProvisionScriptPath = "/tmp/drawbridge-provision-docker.sh"
 
-// unitTmpl renders the unit. Only the ExecStart line is substituted — the
+// unitTmpl renders the unit. Only the ExecStart line is substituted, the
 // supervision policy is not configurable, because a user who needs a
 // different one needs `systemctl edit`, which is exactly what installing to
 // /etc/systemd/system enables.
@@ -160,8 +160,8 @@ var unitTmpl = template.Must(template.New("unit").Parse(mustAsset("assets/drawbr
 //
 // The parameter is the line and not just the path because a podman guest's
 // agent takes flags the Lima one does not (`-gvproxy-publish`, docs/podman.md
-// §5.4). A caller that passes the bare binary path — every Lima and Colima
-// call — renders exactly the bytes this function always rendered, so existing
+// §5.4). A caller that passes the bare binary path, every Lima and Colima
+// call, renders exactly the bytes this function always rendered, so existing
 // guests see no unit change and no restart. That byte-identity is pinned by a
 // test, because "no diff" is the property, not "looks the same".
 func Unit(execStart string) (string, error) {

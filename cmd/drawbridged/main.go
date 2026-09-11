@@ -30,8 +30,8 @@ import (
 )
 
 func main() {
-	agentFlag := flag.String("agent", "auto", "guest agent transport endpoint (auto: vzNAT IP if reachable, else 127.0.0.1:4777; accepts tcp://host:port, unix:///path, or bare host:port)")
-	vmName := flag.String("vm", install.DefaultVM, "VM to resolve, used by -agent auto: a bare name is a Lima instance; `provider:name` selects one explicitly (lima:myvm, colima:default)")
+	agentFlag := flag.String("agent", "auto", "guest agent transport endpoint (auto: for lima and colima the vzNAT IP if reachable, else 127.0.0.1:4777; for podman the loopback port `drawbridge up` recorded; accepts tcp://host:port, unix:///path, or bare host:port)")
+	vmName := flag.String("vm", install.DefaultVM, "VM to resolve, used by -agent auto: a bare name is a Lima instance; `provider:name` selects one explicitly (lima:myvm, colima:default, podman:spike)")
 	vmMAC := flag.String("vm-mac", "", "guest's expected hardware address (e.g. 52:55:55:a5:de:d2); DHCP lease records that do not match it are ignored. Unset matches lease records by the guest-chosen name alone")
 	vmSubnet := flag.String("vm-subnet", "", "vmnet subnet a DHCP lease address must fall inside (default "+limaaddr.DefaultSubnet+"); only needed when this Mac's vmnet is configured elsewhere")
 	mirrorIP := flag.String("mirror-ip", "127.0.0.1", "local address to bind mirrors on")
@@ -200,7 +200,7 @@ func main() {
 	// Podman gets no re-resolve hook, and needs none: its endpoint is a
 	// loopback port `up` chose, and the guest agent republishes that exact
 	// port through gvproxy on every machine start. There is nothing for a
-	// refresh to discover — where Lima's vzNAT address moves with the VM's
+	// refresh to discover, where Lima's vzNAT address moves with the VM's
 	// MAC, this one is ours. A stopped machine is the reconnect loop's
 	// business, not the resolver's.
 	if *agentFlag == "auto" && leaseResolvable(ref) {
@@ -252,7 +252,7 @@ func main() {
 }
 
 // leaseResolvable reports whether this VM's endpoint is discoverable from the
-// macOS DHCP lease db — the resolution path limaaddr implements.
+// macOS DHCP lease db, the resolution path limaaddr implements.
 //
 // It is the whole of the provider dispatch, as one predicate, because the
 // property it names is not "which provider" but "is there a vmnet lease to
@@ -279,7 +279,7 @@ func resolveAuto(ref vmprovider.Ref, target limaaddr.Target) limaaddr.Resolution
 	if os.Geteuid() == 0 {
 		return limaaddr.Resolution{
 			Source: podmanaddr.Source,
-			Note: fmt.Sprintf("a root daemon does not read the per-VM record (it is user-writable): install with the endpoint pinned — "+
+			Note: fmt.Sprintf("a root daemon does not read the per-VM record (it is user-writable): install with the endpoint pinned, "+
 				"`sudo drawbridge install -vm %s`", ref.Spec),
 		}
 	}

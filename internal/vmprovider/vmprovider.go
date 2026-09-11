@@ -64,7 +64,7 @@ type Instance struct {
 	Attachable bool
 
 	// AttachNote says why not, in the user's terms. Empty when Attachable.
-	// The remediation command is the caller's to spell — it is per-provider
+	// The remediation command is the caller's to spell, it is per-provider
 	// and per-instance, and lives with the other user-facing text.
 	AttachNote string
 }

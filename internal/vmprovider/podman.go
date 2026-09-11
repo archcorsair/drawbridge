@@ -2,7 +2,7 @@ package vmprovider
 
 // The Podman driver (docs/podman.md §4). Everything here shells out to
 // `podman machine` and is therefore user-scoped, exactly like the limactl
-// half — see the package comment. Podman keeps its machine state in the
+// half, see the package comment. Podman keeps its machine state in the
 // invoking user's home, so under euid 0 it would look in /var/root and find
 // nothing; the root daemon never reaches this file, because `drawbridge
 // install` pins the endpoint it resolved as the user into the plist.
@@ -26,12 +26,12 @@ import (
 // which diagnoses nothing.
 var ErrPodmanRootScoped = errors.New("vmprovider: `podman machine` is user-scoped and must not run under euid 0 " +
 	"(machine state lives in the invoking user's home; as root podman looks in /var/root and reports no machines); " +
-	"run this as your own user — the root daemon dials the endpoint `drawbridge install` pinned into its plist")
+	"run this as your own user, the root daemon dials the endpoint `drawbridge install` pinned into its plist")
 
 // PodmanFallbackBin is where the official podman `.pkg` puts the binary. It
 // is on PATH only in a login shell (the pkg installs /etc/paths.d/podman-pkg),
 // so a CLI invoked from launchd, a build tool or a non-login shell has to be
-// told — observed live, 7.0 spike.
+// told, observed live, 7.0 spike.
 const PodmanFallbackBin = "/opt/podman/bin/podman"
 
 // PodmanBin resolves the podman binary: PATH first, then the official pkg's
@@ -49,7 +49,7 @@ func PodmanBin() (string, error) {
 		"which a non-login shell does not read)", PodmanFallbackBin)
 }
 
-// PodmanMachineDir is podman's machine state directory on the Mac — one
+// PodmanMachineDir is podman's machine state directory on the Mac, one
 // subdirectory per provider (`libkrun`, `applehv`), each holding the
 // machines' JSON configs.
 func PodmanMachineDir() string {
@@ -100,7 +100,7 @@ func (p *Podman) List() ([]Instance, error) {
 	return insts, nil
 }
 
-// Inspect reads the machine's SSH configuration and rootful flag — what `up`
+// Inspect reads the machine's SSH configuration and rootful flag, what `up`
 // writes into the Mac-side record (internal/vmrecord) and what doctor
 // compares that record against.
 func (p *Podman) Inspect(inst string) (PodmanInspect, error) {
@@ -149,7 +149,7 @@ func (p *Podman) GuestArch(inst string) (string, error) {
 // `-p` publications, and the tradeoff they represent is different in kind: a
 // published container is bridged and was never a mirror candidate, so the
 // overlap is only with a host-netns listener on the same port. Reporting that
-// needs its own wording and its own evidence, which is doctor's check 10 —
+// needs its own wording and its own evidence, which is doctor's check 10 ,
 // docs/podman.md §7, phase 7.5. Until then this answers "no forwarder holds
 // this instance", which suppresses a warning rather than inventing one.
 func (p *Podman) Forwarding(inst string) (Forwarding, error) {
@@ -311,7 +311,7 @@ type podmanInspectJSON struct {
 }
 
 // decodePodmanList reads `podman machine list --format json`. Unlike
-// limactl's stream of objects this is a single JSON array — and an empty
+// limactl's stream of objects this is a single JSON array, and an empty
 // machine list is `[]`, not the empty string.
 func decodePodmanList(b []byte) ([]podmanJSON, error) {
 	if len(bytes.TrimSpace(b)) == 0 {

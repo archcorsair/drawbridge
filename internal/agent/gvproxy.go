@@ -6,7 +6,7 @@
 // Why the guest publishes its own port. On macOS podman starts gvproxy with
 // no host-side control socket at all (no -listen, no -services: verified in
 // the 7.0 spike), so the only port-forwarding API that exists is the one
-// inside the guest at http://192.168.127.1 — the same endpoint podman itself
+// inside the guest at http://192.168.127.1, the same endpoint podman itself
 // POSTs to for `-p`. And gvproxy's forwards die with gvproxy on every
 // `podman machine stop`, so a Mac-side publish would have to be re-created by
 // hand after every machine restart. The agent restarts with the machine
@@ -108,7 +108,7 @@ func (p *Publisher) client() *http.Client {
 // Unexpose first, errors ignored: gvproxy answers a duplicate key with
 // "proxy already running for tcp on <local>", so a re-publish after an agent
 // restart would fail forever without it. Nothing is read back except the
-// status — the agent has no use for the body and no business parsing it.
+// status, the agent has no use for the body and no business parsing it.
 func (p *Publisher) Publish(remote string) error {
 	_ = p.post("/services/forwarder/unexpose", unexpose{Local: p.Local, Protocol: "tcp"}, gvproxyTimeout)
 	if err := p.post("/services/forwarder/expose", expose{Local: p.Local, Remote: remote, Protocol: "tcp"}, gvproxyTimeout); err != nil {

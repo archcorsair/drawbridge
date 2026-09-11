@@ -77,7 +77,7 @@ func down(g *guest, sel selection) error {
 	// 2. Revert the --oci changes, if any, while the wrapper still exists.
 	//
 	// Never on a podman guest: `up --oci` refuses there in this release, so
-	// there is nothing this command wrote to revert — and the revert path
+	// there is nothing this command wrote to revert, and the revert path
 	// ends in a docker restart, which on a guest whose only engine is podman
 	// would be a command aimed at nothing.
 	if sel.Ref.Provider != vmprovider.ProviderPodman {
@@ -111,7 +111,7 @@ func down(g *guest, sel selection) error {
 	}
 	// 4. The Mac-side record, which is the other half of what `up` created
 	//    for this provider: it names a port that is now published by nothing.
-	//    The transport secret is deliberately kept (below) — the record is
+	//    The transport secret is deliberately kept (below), the record is
 	//    not, because a stale endpoint is worse than an absent one.
 	if sel.Ref.Provider == vmprovider.ProviderPodman {
 		path, _ := vmrecord.Path(sel.Ref)

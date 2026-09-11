@@ -116,7 +116,7 @@ type Config struct {
 	// would go stale behind the user's back. Podman is the opposite case:
 	// the endpoint is a loopback port `drawbridge up` chose and the guest
 	// agent republishes on every machine start, so there is nothing for a
-	// re-resolve to discover — and root resolving it itself would mean root
+	// re-resolve to discover, and root resolving it itself would mean root
 	// reading a user-writable record at boot, which is the thing this field
 	// exists to avoid.
 	Agent string

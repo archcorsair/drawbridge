@@ -195,7 +195,7 @@ func requireAttributableMirror(t *testing.T, guestBind string, port int) {
 	// driver's Forwarding is the documented stub until doctor's coexistence
 	// check grows its podman branch (docs/podman.md §4.1, phase 7.5). A
 	// provider that cannot answer is not an attribution failure, so the legs
-	// run — a podman machine forwards nothing until the user publishes a port.
+	// run, a podman machine forwards nothing until the user publishes a port.
 	f, ok := vmprovider.ForRef(vmRef).(vmprovider.Forwarder)
 	if !ok {
 		return

@@ -107,7 +107,7 @@ func up(g *guest, sel selection, o upOptions) error {
 	}
 	// Every file installed from here on gets its SELinux label restored.
 	g.relabel = pf.Restorecon
-	fmt.Fprintf(g.out, "drawbridge: %s — linux/%s, kernel %s%s\n", qualify(sel.Instance), arch, pf.Kernel, guestNotes(pf))
+	fmt.Fprintf(g.out, "drawbridge: %s, linux/%s, kernel %s%s\n", qualify(sel.Instance), arch, pf.Kernel, guestNotes(pf))
 
 	// Resolve every artifact before touching the guest. A dev build with no
 	// bundled agent has to fail here, with the remedy, and not halfway
@@ -188,7 +188,7 @@ func up(g *guest, sel selection, o upOptions) error {
 // 4777 is deliberately excluded even though it is the obvious first choice: a
 // Lima dev VM's SSH forward holds it on this very Mac, and a podman machine
 // that silently landed on an occupied port would be a transport pointed at
-// someone else's guest. The range is small on purpose — a Mac with 22 podman
+// someone else's guest. The range is small on purpose, a Mac with 22 podman
 // machines attached at once is not a case worth widening an allowlist for.
 const (
 	publishPortLo = 4778
@@ -206,7 +206,7 @@ type inspector interface {
 //
 // The recorded port is reused unconditionally when there is one, without a
 // bind probe: on a second `up` the agent is running and gvproxy is holding
-// that exact port, so probing it would find it busy and move the endpoint —
+// that exact port, so probing it would find it busy and move the endpoint ,
 // rewriting the unit and restarting a perfectly healthy agent every time.
 // The probe is for choosing a *new* port, which is the only moment it says
 // anything true.
@@ -283,8 +283,8 @@ func recordedPort(rec vmrecord.Record) int {
 //
 // Bind-probed rather than assumed: the port has to be free for *gvproxy* to
 // bind when the guest agent publishes, and the only way to know that is to
-// have held it ourselves a moment ago. It is a race, unavoidably — we release
-// it before the guest claims it — but a lost race is a publish that fails and
+// have held it ourselves a moment ago. It is a race, unavoidably, we release
+// it before the guest claims it, but a lost race is a publish that fails and
 // retries with the reason in the agent's journal, not a silent misroute.
 func freePublishPort() (int, error) {
 	for port := publishPortLo; port <= publishPortHi; port++ {
@@ -669,8 +669,8 @@ echo timeout
 // resolveEndpoint is step 6's resolution, dispatched on the provider.
 //
 // Lima and Colima probe the vzNAT address and fall back to the forwarder.
-// Podman has one path — the loopback port the agent publishes through gvproxy
-// — so the only question is whether it is live yet, and the answer arrives a
+// Podman has one path, the loopback port the agent publishes through gvproxy,
+// so the only question is whether it is live yet, and the answer arrives a
 // beat after the agent starts. Hence the wait: the same budget the in-guest
 // readiness script gives the agent, applied to the Mac side of the same
 // event, so a machine that came up correctly is never reported as one that

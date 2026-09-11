@@ -91,7 +91,7 @@ func checkArgv(inst string, argv []string) error {
 	}
 	for _, a := range argv {
 		if strings.ContainsAny(a, " \t\n") {
-			return fmt.Errorf("vmprovider: Shell(%q): argv element %q contains whitespace; provider shells join argv unquoted, so it would be re-split in the guest — put the script on stdin", inst, a)
+			return fmt.Errorf("vmprovider: Shell(%q): argv element %q contains whitespace; provider shells join argv unquoted, so it would be re-split in the guest, put the script on stdin", inst, a)
 		}
 	}
 	return nil

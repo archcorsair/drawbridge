@@ -243,8 +243,8 @@ func TestDownWithoutStateLeavesDaemonJSON(t *testing.T) {
 	}
 }
 
-// `down` on a podman guest removes what `up` put there — the unit, the
-// binary, the state directory — plus the one thing that lives on the Mac and
+// `down` on a podman guest removes what `up` put there, the unit, the
+// binary, the state directory, plus the one thing that lives on the Mac and
 // would otherwise name a port nothing publishes any more.
 //
 // And it never goes near docker: the revert path ends in a docker restart,

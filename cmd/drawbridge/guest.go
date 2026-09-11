@@ -119,7 +119,7 @@ func (g *guest) installFile(staged, dst, mode string) error {
 //
 // The install-beside-then-rename already gives the new file the destination
 // directory's type, which is why this is a belt-and-braces step rather than
-// the thing that makes the file work — but /tmp staging and a policy that
+// the thing that makes the file work, but /tmp staging and a policy that
 // distinguishes `bin_t` from `user_tmp_t` are exactly the pair that produces
 // an executable systemd refuses to run, with an AVC denial as the only clue.
 //
@@ -259,7 +259,7 @@ func listAll(providers []vmprovider.Provider, out io.Writer) []vmprovider.Instan
 }
 
 // eligible is the set `up` can attach to: running, and attachable. Both
-// halves are hard requirements — a stopped VM has no guest to provision, and
+// halves are hard requirements, a stopped VM has no guest to provision, and
 // a machine type with no path from the Mac has nothing to attach over (§3.1).
 //
 // Attachability is the provider's verdict, not this package's: "vz" is Lima

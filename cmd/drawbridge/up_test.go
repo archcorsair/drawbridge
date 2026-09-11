@@ -384,7 +384,7 @@ func TestUpPodmanIsIdempotent(t *testing.T) {
 
 // Fedora CoreOS runs SELinux Enforcing. Every file installed into the guest
 // gets its label restored, and on a guest without restorecon nothing is
-// attempted at all — not even the round trip to find out.
+// attempted at all, not even the round trip to find out.
 func TestUpRelabelsOnSELinuxGuestsOnly(t *testing.T) {
 	f := newFakeGuest(t).withFCOS()
 	if _, err := runUpOnPodman(t, f, upOptions{agentBin: writeTempBinary(t, "agent")}); err != nil {

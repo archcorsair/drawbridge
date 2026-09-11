@@ -5,7 +5,7 @@
 // Lima and Colima need nothing like it: their guests hold a vmnet address
 // with a DHCP lease record, so resolution is a lookup any process can repeat
 // (internal/limaaddr). A podman machine has no host-dialable guest address at
-// all — gvproxy is user-mode — so the endpoint is a loopback port *we* chose
+// all, because gvproxy is user-mode: the endpoint is a loopback port *we* chose
 // at `up` time and the guest agent republishes through gvproxy on every
 // start. Something has to remember which port that was, and this is it.
 //
@@ -49,7 +49,7 @@ const Version = 1
 const TransportGvproxyPublish = "gvproxy-publish"
 
 // ErrAbsent is what Read returns when there is no record. It is a legitimate
-// state — `install` before `up`, or a VM that was never attached — so callers
+// state (`install` before `up`, or a VM that was never attached), so callers
 // distinguish it from a broken file and say which.
 var ErrAbsent = errors.New("no VM record")
 
@@ -85,7 +85,7 @@ type SSH struct {
 }
 
 // FileName is the record's basename for a VM, derived from the canonical ref
-// exactly as the transport secret's is — so the two files always describe the
+// exactly as the transport secret's is, so the two files always describe the
 // same machine.
 func FileName(ref vmprovider.Ref) string {
 	return "vm-" + ref.Provider + "-" + ref.Instance + ".json"

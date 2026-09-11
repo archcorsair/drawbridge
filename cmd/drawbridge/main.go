@@ -79,7 +79,7 @@ Usage:
   drawbridge up [INSTANCE] [--oci] [-agent-bin PATH] [-runc-bin PATH]
         Install and start the guest agent in a Lima, Colima or Podman VM. No
         sudo on the Mac; the privileged half happens inside the guest.
-        Attach-only — `+"`up`"+` never creates a VM. INSTANCE takes the same
+        Attach-only, `+"`up`"+` never creates a VM. INSTANCE takes the same
         grammar as -vm: a bare name is resolved across providers,
         provider:name selects one (lima:myvm, colima:default, podman:spike).
         With one running attachable VM it can be left out; with several it is
@@ -100,7 +100,7 @@ Usage:
         Install drawbridged as a root LaunchDaemon (needs sudo).
         Ports <1024 need this; -print previews the files and writes nothing.
         -vm takes a bare Lima instance name (default `+install.DefaultVM+`) or
-        provider:name — lima:myvm, colima:default, colima:<profile>,
+        provider:name, lima:myvm, colima:default, colima:<profile>,
         podman:<machine>. A podman install pins the transport endpoint
         `+"`drawbridge up`"+` recorded, so run that first.
         -skip lists ports drawbridged leaves alone in both directions
