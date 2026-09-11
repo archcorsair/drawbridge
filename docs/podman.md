@@ -1383,6 +1383,21 @@ sudo drawbridge install -vm colima:default    # the brew CLI, restoring the prev
 ```
 
 
+**User-run acceptance (2026-09-11).** `sudo ./bin/drawbridge install -vm
+podman:spike` booted out the colima daemon, installed, and came up on
+`tcp://127.0.0.1:4778 (source=flag)` with auth from
+`transport-secret-podman-spike`, mirror 3 bound of 4 entries (`:22`
+skipped), sync 26 advertised. A `python3 -m http.server 8080` in the guest
+(transient systemd unit) answered `curl http://127.0.0.1:8080/` on the Mac
+through the root daemon. `uninstall` then `sudo drawbridge install -vm
+colima:default` (brew CLI) restored the previous daemon on
+`vznat-leases`. Caveat: the binary used was `v0.1.1-14-g4f378a3`, built
+by `just e2e` before the 7.2 commits, so the replacement line was not
+exercised live in that run; `bin/` is rebuilt at `f2c4367` and the line
+is re-checked below. Two things the podman daemon mirrored that 7.5 must
+rule on: the guest's own transport `:4777` onto Mac `:4777`, and chrony's
+udp `:323`.
+
 ## 7.3 results
 
 ## 7.4 results
