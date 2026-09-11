@@ -170,7 +170,7 @@ func up(g *guest, sel selection, o upOptions) error {
 
 	// --- step 5: --oci -----------------------------------------------------
 	if o.oci {
-		if err := provisionOCI(g, runc); err != nil {
+		if err := provisionOCI(g, runc, pf.Engine); err != nil {
 			return err
 		}
 	}
@@ -526,8 +526,12 @@ func (g *guest) enableAgent(restart bool) error {
 // The daemon.json edit is done here, in Go, and not by the provisioning
 // script — see internal/guestbin/provision.go for why (`down` has to restore
 // exact bytes, and only the writer can promise that).
-func provisionOCI(g *guest, runc []byte) error {
-	runcPath := guestbin.GuestPath(guestbin.NameRunc)
+func provisionOCI(g *guest, runc []byte, engine string) error {
+	// The wrapper is installed under the name of the runtime the engine
+	// execs, because that name is the whole of its dispatch
+	// (internal/ociruntime.RuntimeFor). Docker is the only engine that gets
+	// here in this release: `up --oci` on podman is refused above.
+	runcPath := guestbin.WrapperPath(engine)
 
 	// Stage the wrapper now; the script installs it below. Registering a
 	// runtime whose binary is not there would leave docker unable to start

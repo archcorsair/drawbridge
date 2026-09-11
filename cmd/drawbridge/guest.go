@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/archcorsair/drawbridge/internal/guestbin"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
 )
 
@@ -545,11 +546,12 @@ type preflight struct {
 	UnprivPort string
 }
 
-// The engines the preflight can find.
+// The engines the preflight can find. Spelled once, in guestbin, because the
+// wrapper's installed name turns on them (guestbin.WrapperPath).
 const (
-	EngineNone   = "none"
-	EngineDocker = "docker"
-	EnginePodman = "podman"
+	EngineNone   = guestbin.EngineNone
+	EngineDocker = guestbin.EngineDocker
+	EnginePodman = guestbin.EnginePodman
 )
 
 // probeScript asks every question at once. Six `limactl shell` invocations

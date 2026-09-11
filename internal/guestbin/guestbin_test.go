@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/archcorsair/drawbridge/internal/ociruntime"
 )
 
 // The dev-build path is the one every contributor hits on a fresh checkout,
@@ -192,4 +194,32 @@ func stripComments(s string) string {
 func firstLine(s string) string {
 	l, _, _ := strings.Cut(s, "\n")
 	return l
+}
+
+// The wrapper's installed NAME is its whole dispatch: one binary, and
+// internal/ociruntime reads argv[0] to decide which runtime it stands in for.
+// So the name this package installs and the name that package recognises are
+// one contract, and a rename on either side is a wrapper that execs the wrong
+// runtime (or itself).
+func TestWrapperPathMatchesRuntimeDispatch(t *testing.T) {
+	for _, tc := range []struct{ engine, want string }{
+		{EngineDocker, ociruntime.RuntimeRunc},
+		{EnginePodman, ociruntime.RuntimeCrun},
+		{EngineNone, ociruntime.RuntimeRunc}, // unknown engines get the historical wrapper
+		{"containerd", ociruntime.RuntimeRunc},
+	} {
+		path := WrapperPath(tc.engine)
+		if got := ociruntime.RuntimeFor(path).Name; got != tc.want {
+			t.Fatalf("WrapperPath(%q) = %q, which dispatches to %q, want %q", tc.engine, path, got, tc.want)
+		}
+		if !strings.HasPrefix(path, "/usr/local/bin/") {
+			t.Fatalf("WrapperPath(%q) = %q, want it under /usr/local/bin", tc.engine, path)
+		}
+	}
+
+	// Docker's wrapper path is the one already installed in every guest that
+	// ran `up --oci`, and `down` removes exactly it. It must not move.
+	if got := WrapperPath(EngineDocker); got != GuestPath(NameRunc) {
+		t.Fatalf("the docker wrapper path moved to %q; every provisioned guest points at %q", got, GuestPath(NameRunc))
+	}
 }

@@ -58,6 +58,35 @@ func GuestPath(name string) string {
 	return "/usr/local/bin/drawbridge-" + name
 }
 
+// The container engines a guest can have, as the preflight reports them.
+// They live here rather than in the CLI because the thing that turns on them
+// is what goes into the guest, and because two packages spelling "podman"
+// separately is one typo away from a wrapper installed under a name nothing
+// execs.
+const (
+	EngineNone   = "none"
+	EngineDocker = "docker"
+	EnginePodman = "podman"
+)
+
+// WrapperPath is where the OCI wrapper is installed for an engine.
+//
+// One binary, installed under the name of the runtime it stands in for:
+// Docker execs `runc`, so the wrapper is `drawbridge-runc`; Podman execs
+// `crun`, so it is `drawbridge-crun`. The binary dispatches on its own
+// argv[0] (internal/ociruntime.RuntimeFor), which is why the *name* is the
+// whole registration and there is no second artifact to build or embed.
+//
+// An engine this build does not know gets the runc name, matching
+// RuntimeFor's own default: the wrapper's failure posture is stock
+// behaviour, and that is the behaviour it has always had.
+func WrapperPath(engine string) string {
+	if engine == EnginePodman {
+		return GuestPath("crun")
+	}
+	return GuestPath(NameRunc)
+}
+
 // Arch maps a guest's `uname -m` to the GOARCH half of a bundled binary's
 // name.
 //

@@ -1,12 +1,20 @@
 //go:build linux
 
 // drawbridge-runc is a wrapper OCI runtime (docs/oci-hook.md, Phase B):
-// registered in Docker's daemon.json, it rewrites a host-network bundle's
-// config.json — bind → SCMP_ACT_NOTIFY plus listenerPath — and execs the
-// real runc, which installs the filter and delivers the notify fd to the
-// agent itself. Every path that cannot provably inject execs runc with the
-// spec untouched: the failure posture is stock Docker behavior, never a
+// registered as an engine's runtime, it rewrites a host-network bundle's
+// config.json (bind to SCMP_ACT_NOTIFY plus listenerPath) and execs the real
+// runtime, which installs the filter and delivers the notify fd to the agent
+// itself. Every path that cannot provably inject execs the runtime with the
+// spec untouched: the failure posture is stock engine behavior, never a
 // container that fails to start.
+//
+// One binary, two names. Installed as `drawbridge-runc` it stands in for
+// runc (Docker); installed as `drawbridge-crun` it stands in for crun
+// (Podman). Everything that differs is a table in internal/ociruntime
+// (docs/podman.md §6.1), and everything below is engine-neutral: the bundle
+// detection, the injection decision and the exec are the same code either
+// way, which is what makes "runc behaviour is unchanged" a property of the
+// build rather than of a second code path.
 package main
 
 import (
@@ -14,6 +22,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,25 +31,24 @@ import (
 
 const defaultOCISock = "/run/drawbridge-oci.sock"
 
-// Value-taking runc global flags (they precede the subcommand); everything
-// else before the subcommand is a boolean flag. Stable since runc 1.0.
-var globalValueFlags = map[string]bool{
-	"--log": true, "--log-format": true, "--root": true,
-	"--criu": true, "--rootless": true,
-}
+// rt is the runtime this invocation stands in for, decided by argv[0] before
+// anything else reads the command line: which global flags take a value is
+// the difference between finding the subcommand and mistaking a flag's value
+// for it.
+var rt = ociruntime.RuntimeFor(os.Args[0])
 
 func main() {
 	args := os.Args[1:]
 	if sub, bundle := createBundle(args); sub {
 		tryInject(bundle)
 	}
-	execRunc(args)
+	execRuntime(args)
 }
 
 // createBundle reports whether args are a `create`/`run` invocation and
-// resolves the bundle directory (default: cwd, as runc does).
+// resolves the bundle directory (default: cwd, as both runtimes do).
 func createBundle(args []string) (bool, string) {
-	sub, rest := subcommand(args)
+	sub, rest := ociruntime.Subcommand(rt, args)
 	if sub != "create" && sub != "run" {
 		return false, ""
 	}
@@ -61,19 +69,6 @@ func createBundle(args []string) (bool, string) {
 	return true, bundle
 }
 
-func subcommand(args []string) (string, []string) {
-	for i := 0; i < len(args); i++ {
-		a := args[i]
-		if len(a) == 0 || a[0] != '-' {
-			return a, args[i+1:]
-		}
-		if globalValueFlags[a] {
-			i++ // skip the flag's value
-		}
-	}
-	return "", nil
-}
-
 // tryInject mutates the bundle's config.json when every precondition
 // holds. All failures are silent skips (stderr note only): the wrapper
 // must never break a container start.
@@ -88,7 +83,7 @@ func tryInject(bundle string) {
 		note("read %s: %v", cfg, err)
 		return
 	}
-	meta := `{"v":1,"source":"drawbridge-runc","hostNetwork":true}`
+	meta := `{"v":1,"source":"` + wrapperName() + `","hostNetwork":true}`
 	out, injected, _, err := ociruntime.MutateConfig(raw, sock, meta)
 	if err != nil {
 		note("%s: %v", cfg, err)
@@ -122,37 +117,27 @@ func tryInject(bundle string) {
 	}
 }
 
-// execRunc replaces this process with the real runc; stdio, exit code, and
-// argv all stay the shim's.
-func execRunc(args []string) {
-	runc := realRunc()
-	if runc == "" {
-		fmt.Fprintln(os.Stderr, "drawbridge-runc: no real runc found (set DRAWBRIDGE_RUNC)")
+// execRuntime replaces this process with the real runtime; stdio, exit code,
+// and argv all stay the shim's.
+func execRuntime(args []string) {
+	real := rt.Real()
+	if real == "" {
+		fmt.Fprintf(os.Stderr, "%s: no real %s found (tried %s; set %s)\n",
+			wrapperName(), rt.Name, strings.Join(rt.Probe, ", "), strings.Join(rt.EnvOverride, " or "))
 		os.Exit(1)
 	}
-	argv := append([]string{runc}, args...)
-	if err := syscall.Exec(runc, argv, os.Environ()); err != nil {
-		fmt.Fprintf(os.Stderr, "drawbridge-runc: exec %s: %v\n", runc, err)
+	argv := append([]string{real}, args...)
+	if err := syscall.Exec(real, argv, os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "%s: exec %s: %v\n", wrapperName(), real, err)
 		os.Exit(1)
 	}
 }
 
-func realRunc() string {
-	if p := os.Getenv("DRAWBRIDGE_RUNC"); p != "" {
-		return p
-	}
-	self, _ := os.Executable()
-	for _, p := range []string{"/usr/sbin/runc", "/usr/bin/runc", "/usr/local/sbin/runc"} {
-		if p == self {
-			continue
-		}
-		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
-			return p
-		}
-	}
-	return ""
-}
+// wrapperName is how this binary refers to itself in its own messages: the
+// name it was installed under, so a podman user reading a container-start
+// failure sees the command their engine actually ran.
+func wrapperName() string { return filepath.Base(os.Args[0]) }
 
 func note(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "drawbridge-runc: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, wrapperName()+": "+format+"\n", args...)
 }
