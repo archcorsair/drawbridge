@@ -1424,6 +1424,8 @@ both variants on the dev VM, and 10/10 probes (5 off-thread) refused with
 EADDRINUSE on `podman:spike` through a foreground daemon, the agent
 logging `-> inuse` for each. This was never podman-specific; it affected
 every provider. AGENTS.md gained the invariant.
+The second `just smoke-sudo podman:spike` run, on the fixed agent, was
+10/10 (both bind placements refused), cleanup and colima restore included.
 
 ## 7.3 results (2026-09-11)
 
