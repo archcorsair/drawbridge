@@ -172,6 +172,19 @@ func (a *Agent) answerBind(fd int, nf seccomp.Notif) {
 			log.Printf("notify: continue id=%d: %v", nf.ID, err)
 		}
 	}
+	// Only bind is ours to judge. The wrapper never installs a filter that
+	// notifies on anything else, but a notify fd can reach this socket from
+	// elsewhere; reading a foreign syscall's args as a sockaddr and then
+	// possibly answering EADDRINUSE would turn someone else's policy into
+	// ours (audit finding 5). CONTINUE, without touching target memory.
+	if nf.Nr != seccomp.NrBind {
+		a.foreignNrOnce.Do(func() {
+			log.Printf("notify: notification for syscall %d (not bind=%d) pid=%d: answering CONTINUE; this filter is not drawbridge's (logged once)",
+				nf.Nr, seccomp.NrBind, nf.PID)
+		})
+		cont()
+		return
+	}
 	ba, err := seccomp.ReadBindAddr(nf.PID, nf.Args[1], nf.Args[2])
 	if err != nil {
 		log.Printf("notify: read sockaddr pid=%d: %v", nf.PID, err)

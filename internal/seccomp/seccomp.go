@@ -112,6 +112,11 @@ func InstallBindFilter() (int, error) {
 	return int(fd), nil
 }
 
+// NrBind is bind(2)'s syscall number on the running architecture — the only
+// Nr a supervisor should ever act on (anything else is answered CONTINUE
+// without reading target memory).
+const NrBind int32 = nrBind
+
 // Notif is one blocked syscall.
 type Notif struct {
 	ID   uint64

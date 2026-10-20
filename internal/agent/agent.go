@@ -40,7 +40,8 @@ type Agent struct {
 	store *notifyStore // systemd fd store for supervised notify fds (fdstore.go)
 	cap   superviseCap // bound on fds under supervision (notifycap.go)
 
-	refusals *peerLimiter // handoff-refusal log throttle, per sender uid
+	refusals      *peerLimiter // handoff-refusal log throttle, per sender uid
+	foreignNrOnce sync.Once    // one log line for non-bind notifications (notify.go)
 
 	// SecretFile is the transport secret's path (docs/transport-auth.md §5).
 	// Empty, or a path with no file, means unauthenticated mode: today's
