@@ -12,6 +12,8 @@ import (
 	"slices"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/archcorsair/drawbridge/internal/acceptloop"
 )
 
 // OCI seccomp-agent listener (docs/oci-hook.md, Phase A). Any OCI runtime
@@ -45,14 +47,10 @@ const seccompFdName = "seccompFd"
 
 // ServeOCISeccomp accepts seccomp-agent handoffs until the listener closes.
 func (a *Agent) ServeOCISeccomp(ln *net.UnixListener) {
-	for {
-		c, err := ln.AcceptUnix()
-		if err != nil {
-			return
-		}
-		go a.recvOCIState(c)
-	}
+	acceptloop.Serve(ln.AcceptUnix, func(c *net.UnixConn) { go a.recvOCIState(c) }, ociLogf)
 }
+
+func ociLogf(format string, args ...any) { log.Printf("oci: "+format, args...) }
 
 func (a *Agent) recvOCIState(c *net.UnixConn) {
 	defer c.Close()
@@ -101,9 +99,11 @@ func (a *Agent) recvOCIState(c *net.UnixConn) {
 			unix.Close(fd)
 		}
 	}
+	if !a.acceptNotifyFd(fds[idx], peerOf(c), "oci socket, container "+st.State.ID) {
+		return
+	}
 	log.Printf("oci: supervising container %s (init pid %d, metadata %q)",
 		st.State.ID, st.Pid, st.Metadata)
-	go a.superviseNotify(fds[idx])
 }
 
 func parseRights(oob []byte) []int {

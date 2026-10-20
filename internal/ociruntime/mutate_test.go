@@ -200,3 +200,51 @@ func TestAllowDefaultProfileWithNoBindRule(t *testing.T) {
 		t.Fatal("unrelated deny rule lost")
 	}
 }
+
+// Audit finding 5: a profile that already has a seccomp agent is never
+// rewired to ours — the user's notifications would land in answerBind,
+// which CONTINUEs anything it does not recognize.
+func TestRefusesExistingListenerPath(t *testing.T) {
+	raw := `{"linux":{"seccomp":{
+	  "defaultAction":"SCMP_ACT_ALLOW",
+	  "listenerPath":"/run/user-agent.sock",
+	  "listenerMetadata":"theirs",
+	  "syscalls":[{"names":["accept4","bind"],"action":"SCMP_ACT_ALLOW"}]}}}`
+	spec, injected, reason := mutate(t, raw)
+	if injected {
+		t.Fatal("hijacked a profile with its own listenerPath")
+	}
+	if !strings.Contains(reason, "listenerPath") {
+		t.Fatalf("reason = %q", reason)
+	}
+	sec := seccompMap(t, spec)
+	if sec["listenerPath"] != "/run/user-agent.sock" || sec["listenerMetadata"] != "theirs" {
+		t.Fatalf("refused profile was modified: %v", sec)
+	}
+}
+
+func TestRefusesProfileWithNotifyOnOtherSyscalls(t *testing.T) {
+	raw := `{"linux":{"seccomp":{
+	  "defaultAction":"SCMP_ACT_ALLOW",
+	  "syscalls":[
+	    {"names":["mount"],"action":"SCMP_ACT_NOTIFY"},
+	    {"names":["bind"],"action":"SCMP_ACT_ALLOW"}]}}}`
+	_, injected, reason := mutate(t, raw)
+	if injected {
+		t.Fatal("injected over a profile that notifies on mount")
+	}
+	if !strings.Contains(reason, "SCMP_ACT_NOTIFY") {
+		t.Fatalf("reason = %q", reason)
+	}
+}
+
+func TestRefusesNotifyDefaultAction(t *testing.T) {
+	raw := `{"linux":{"seccomp":{"defaultAction":"SCMP_ACT_NOTIFY","syscalls":[]}}}`
+	_, injected, reason := mutate(t, raw)
+	if injected {
+		t.Fatal("injected over a notify-by-default profile")
+	}
+	if !strings.Contains(reason, "SCMP_ACT_NOTIFY") {
+		t.Fatalf("reason = %q", reason)
+	}
+}

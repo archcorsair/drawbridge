@@ -80,7 +80,7 @@ alias test-phase1 := test-guest
 # refuses to create a transient unit while that unit file exists, so the dev
 # flow reclaims the name first (§8 Phase 4: "each stops the other").
 agent-up: build
-    limactl shell {{vm}} -- sudo bash -c 'systemctl disable --now drawbridge-agent 2>/dev/null; rm -f /etc/systemd/system/drawbridge-agent.service; systemctl daemon-reload; systemctl reset-failed drawbridge-agent 2>/dev/null; systemd-run --unit=drawbridge-agent --collect {{justfile_directory()}}/bin/drawbridge-agent-linux-arm64'
+    limactl shell {{vm}} -- sudo bash -c 'systemctl disable --now drawbridge-agent 2>/dev/null; rm -f /etc/systemd/system/drawbridge-agent.service; systemctl daemon-reload; systemctl reset-failed drawbridge-agent 2>/dev/null; systemd-run --unit=drawbridge-agent --collect -p FileDescriptorStoreMax=4096 -p NotifyAccess=main {{justfile_directory()}}/bin/drawbridge-agent-linux-arm64'
 
 agent-down:
     limactl shell {{vm}} -- sudo systemctl stop drawbridge-agent
@@ -135,3 +135,10 @@ smoke-sudo vm: build
 # be provisioned: `drawbridge up VM --oci`, with the nginx image pulled.
 smoke-sudo-oci vm: build
     go run ./scripts/smoke-sudo -vm {{vm}} -oci 1
+
+# the brew acceptance on RELEASED artifacts: the CLI on PATH (the cask) runs
+# `up --oci` for VM so the guest agent matches it, then the full -oci run
+# installs that CLI's daemon, proves the semantics, and restores the previous
+# daemon with the same CLI. No repo build involved: this is what a user gets.
+smoke-sudo-brew vm:
+    go run ./scripts/smoke-sudo -vm {{vm}} -oci 1 -up 1 -bin "$(command -v drawbridge)" -restore-bin "$(command -v drawbridge)"

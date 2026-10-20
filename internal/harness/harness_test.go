@@ -51,6 +51,12 @@ func TestMain(m *testing.M) {
 			os.Exit(1)
 		}
 		os.Exit(0)
+	case "lonetns": // foreign-netns loopback self-connect (gwnetns_test.go)
+		if err := runLoNetnsHelper(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
 	if os.Geteuid() != 0 {
 		fmt.Println("SKIP: phase 1 harness loads BPF and must run as root")

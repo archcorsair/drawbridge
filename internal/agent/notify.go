@@ -4,12 +4,15 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/netip"
+	"time"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/archcorsair/drawbridge/internal/acceptloop"
 	"github.com/archcorsair/drawbridge/internal/seccomp"
 )
 
@@ -21,40 +24,109 @@ import (
 
 // ServeNotify accepts notify-fd handoffs until the listener closes.
 func (a *Agent) ServeNotify(ln *net.UnixListener) {
-	for {
-		c, err := ln.AcceptUnix()
-		if err != nil {
-			return
-		}
-		go a.recvNotifyFd(c)
-	}
+	acceptloop.Serve(ln.AcceptUnix, func(c *net.UnixConn) { go a.recvNotifyFd(c) }, notifyLogf)
 }
+
+func notifyLogf(format string, args ...any) { log.Printf("notify: "+format, args...) }
 
 func (a *Agent) recvNotifyFd(c *net.UnixConn) {
 	defer c.Close()
 	buf := make([]byte, 1)
-	oob := make([]byte, 64)
+	oob := make([]byte, 1024)
 	_, oobn, _, _, err := c.ReadMsgUnix(buf, oob)
 	if err != nil {
 		log.Printf("notify: read fd message: %v", err)
 		return
 	}
-	scms, err := unix.ParseSocketControlMessage(oob[:oobn])
-	if err != nil || len(scms) == 0 {
-		log.Printf("notify: parse control message (%d bytes): %v", oobn, err)
+	// Every control message, every fd: the first is the handoff, the rest
+	// are closed rather than leaked (audit finding 4).
+	fds := parseRights(oob[:oobn])
+	if len(fds) == 0 {
+		log.Printf("notify: no fd in handoff message (%d oob bytes)", oobn)
 		return
 	}
-	fds, err := unix.ParseUnixRights(&scms[0])
-	if err != nil || len(fds) == 0 {
-		log.Printf("notify: parse rights: %v", err)
-		return
+	for _, extra := range fds[1:] {
+		unix.Close(extra)
 	}
 	// The sender blocks in bind() as soon as it has handed the fd over, so
 	// supervision must outlive this connection.
-	go a.superviseNotify(fds[0])
+	a.acceptNotifyFd(fds[0], peerOf(c), "probe socket")
 }
 
+// peerCred identifies a handoff's sender for refusal logs and their
+// throttle. ok is false when SO_PEERCRED could not be read.
+type peerCred struct {
+	pid, uid uint32
+	ok       bool
+}
+
+func (p peerCred) String() string {
+	if !p.ok {
+		return "unknown peer"
+	}
+	return fmt.Sprintf("pid=%d uid=%d", p.pid, p.uid)
+}
+
+func peerOf(c *net.UnixConn) peerCred {
+	rc, err := c.SyscallConn()
+	if err != nil {
+		return peerCred{}
+	}
+	var out peerCred
+	rc.Control(func(fd uintptr) {
+		if cr, err := unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED); err == nil {
+			out = peerCred{pid: uint32(cr.Pid), uid: cr.Uid, ok: true}
+		}
+	})
+	return out
+}
+
+// refusalLogEvery throttles refusal lines per sender uid.
+const refusalLogEvery = 10 * time.Second
+
+// acceptNotifyFd takes ownership of fd: a real seccomp listener goes under
+// supervision (and into the fd store); anything else is closed. The socket
+// is 0666 and a pipe read end parked in a blocking poll would pin an OS
+// thread forever, so the gate is "prove it is a listener" rather than
+// "trust the framing", and the cap bounds the thread count whatever the
+// sender does (audit finding 4). Refusals are logged once per sender per
+// refusalLogEvery.
+func (a *Agent) acceptNotifyFd(fd int, from peerCred, via string) bool {
+	refuse := func(why string) {
+		unix.Close(fd)
+		if a.refusals.allow(from.uid, time.Now()) {
+			log.Printf("notify: refused fd from %s via %s: %s", from, via, why)
+		}
+	}
+	if !seccomp.IsListener(fd) {
+		refuse("not a seccomp notify listener")
+		return false
+	}
+	if !a.cap.acquire() {
+		refuse(fmt.Sprintf("%d fds already under supervision", maxSupervisedNotifyFds))
+		return false
+	}
+	go a.superviseNotify(fd)
+	return true
+}
+
+// superviseNotify parks fd in the fd store (when there is one) and
+// supervises it until its filter dies. Takes ownership of fd and of the
+// cap slot the caller acquired.
 func (a *Agent) superviseNotify(fd int) {
+	a.superviseStored(fd, a.store.add(fd))
+}
+
+// superviseStored supervises an fd already stored under name ("" when it
+// is not stored), drops it from the store when supervision ends, and
+// returns the caller's cap slot.
+func (a *Agent) superviseStored(fd int, name string) {
+	defer a.cap.release()
+	defer a.store.remove(name)
+	a.runSupervision(fd)
+}
+
+func (a *Agent) runSupervision(fd int) {
 	defer unix.Close(fd)
 	// Poll-first, never bare Recv: NOTIF_RECV blocks forever once the
 	// filter's last task exits (kernel gives no error — pinned by
@@ -99,6 +171,23 @@ func (a *Agent) answerBind(fd int, nf seccomp.Notif) {
 		if err := seccomp.SendContinue(fd, nf.ID); err != nil {
 			log.Printf("notify: continue id=%d: %v", nf.ID, err)
 		}
+	}
+	// Only bind is ours to judge. The wrapper never installs a filter that
+	// notifies on anything else, but a notify fd can reach this socket from
+	// elsewhere; reading a foreign syscall's args as a sockaddr and then
+	// possibly answering EADDRINUSE would turn someone else's policy into
+	// ours (audit finding 5). CONTINUE, without touching target memory.
+	// The check is per ABI (seccomp_data.arch), not against the native
+	// number alone: a 32-bit container binds through the compat table with
+	// a different nr and the same (fd, sockaddr*, len) args, and must keep
+	// its synchronous EADDRINUSE.
+	if !seccomp.IsBind(nf.Arch, nf.Nr) {
+		a.foreignNrOnce.Do(func() {
+			log.Printf("notify: notification for syscall %d under arch %#x (not bind) pid=%d: answering CONTINUE; this filter is not drawbridge's (logged once)",
+				nf.Nr, nf.Arch, nf.PID)
+		})
+		cont()
+		return
 	}
 	ba, err := seccomp.ReadBindAddr(nf.PID, nf.Args[1], nf.Args[2])
 	if err != nil {

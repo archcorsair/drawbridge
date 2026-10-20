@@ -98,7 +98,29 @@ func seccompOf(spec map[string]any) (map[string]any, string) {
 	if sec == nil {
 		return nil, ""
 	}
+	// A profile that already talks to a seccomp agent is not ours to
+	// rewire: replacing its listenerPath would route every one of its
+	// notifications (whatever syscalls, whatever policy) to drawbridge,
+	// which answers CONTINUE to anything it does not recognize — a
+	// notify-based deny policy silently becomes allow (audit finding 5).
+	// The same goes for any SCMP_ACT_NOTIFY rule even without a
+	// listenerPath: the runtime would wire its notify fd to ours.
+	if lp, _ := sec["listenerPath"].(string); lp != "" {
+		return nil, "profile already has a listenerPath (another seccomp agent)"
+	}
+	for _, r := range syscallRules(sec) {
+		rule, _ := r.(map[string]any)
+		if rule == nil {
+			continue
+		}
+		if act, _ := rule["action"].(string); act == actNotify {
+			return nil, "profile already uses SCMP_ACT_NOTIFY"
+		}
+	}
 	da, _ := sec["defaultAction"].(string)
+	if da == actNotify {
+		return nil, "profile defaultAction SCMP_ACT_NOTIFY"
+	}
 	bindRules := 0
 	for _, r := range syscallRules(sec) {
 		rule, _ := r.(map[string]any)

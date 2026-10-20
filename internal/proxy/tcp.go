@@ -4,6 +4,8 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+
+	"github.com/archcorsair/drawbridge/internal/acceptloop"
 )
 
 type tcpProxy struct {
@@ -29,14 +31,12 @@ func NewTCP(listen netip.AddrPort, dial DialFunc, stats *Stats) (Proxy, error) {
 
 func (p *tcpProxy) acceptLoop() {
 	defer p.wg.Done()
-	for {
-		c, err := p.ln.AcceptTCP()
-		if err != nil {
-			return // listener closed
-		}
+	// Returns on the closed listener; EMFILE and friends back off and retry
+	// instead of silently ending the proxy for the port's lifetime.
+	acceptloop.Serve(p.ln.AcceptTCP, func(c *net.TCPConn) {
 		p.stats.TCPConns.Add(1)
 		go p.handle(c)
-	}
+	}, nil)
 }
 
 func (p *tcpProxy) handle(c *net.TCPConn) {

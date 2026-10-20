@@ -2226,3 +2226,13 @@ Machines are left as the recipe wants them: `podman:spike` running and
 provisioned with `--oci` at HEAD with nginx pulled, `podman:spike-rootful`
 and `podman:spike-hv` stopped, the Lima dev VM running with agent and docker.
 
+**Brew acceptance on the released artifacts (2026-09-11, v0.2.0):**
+`brew upgrade --cask archcorsair/drawbridge/drawbridge` then
+`just smoke-sudo-brew podman:spike`: 16/16. The cask CLI ran `up
+podman:spike --oci` (released agent installed in the guest), installed its
+daemon, proved inbound mirror, outbound sync, both bind-probe placements,
+the wrapper in `podman info`, host-net nginx mirrored and a duplicate
+refused synchronously, a clean root doctor, then uninstalled and restored
+the colima daemon with the same v0.2.0 CLI. Phase 7 is complete end to
+end on shipped bits; the v0.0.1 brew-acceptance precedent now has a podman
+counterpart that is one command.

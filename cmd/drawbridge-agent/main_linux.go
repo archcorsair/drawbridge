@@ -135,12 +135,28 @@ func main() {
 	defer a.Close()
 	a.SecretFile = *secretFile // re-read per conn; rotation heals live
 
+	// Notify fds parked by the previous agent process come back through
+	// systemd's fd store; adopting them before the sockets open means a
+	// container's bind that has been blocking since the old agent went
+	// away is answered before any new handoff is accepted.
+	if a.FdStoreAvailable() {
+		log.Printf("drawbridge-agent: fd store: enabled (notify fds survive agent restarts)")
+	} else {
+		log.Printf("drawbridge-agent: fd store: no NOTIFY_SOCKET — notify fds die with this process; a restart turns bind() into ENOSYS in running host-network containers (docs/oci-hook.md)")
+	}
+	if n, err := a.AdoptStoredFds(); err != nil {
+		log.Printf("drawbridge-agent: fd store: %v", err)
+	} else if n > 0 {
+		log.Printf("drawbridge-agent: fd store: re-adopted %d notify fd(s) from the previous agent", n)
+	}
+
 	os.Remove(*sock)
 	ln, err := net.Listen("unix", *sock)
 	if err != nil {
 		log.Fatalf("drawbridge-agent: control socket: %v", err)
 	}
 	defer os.Remove(*sock)
+	os.Chmod(*sock, 0o600) // root-only: it edits the decision maps (audit finding 17)
 	go a.ServeControl(ln)
 
 	// The gvproxy publish is a startup side effect behind a flag, not a wire

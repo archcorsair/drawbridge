@@ -11,6 +11,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/archcorsair/drawbridge/internal/acceptloop"
 	"github.com/archcorsair/drawbridge/internal/proxy"
 	"github.com/archcorsair/drawbridge/internal/transportauth"
 )
@@ -56,13 +57,7 @@ import (
 
 // ServeTransport accepts transport connections until the listener closes.
 func (a *Agent) ServeTransport(ln net.Listener) {
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		go a.handleTransportConn(c)
-	}
+	acceptloop.Serve(ln.Accept, func(c net.Conn) { go a.handleTransportConn(c) }, a.log)
 }
 
 func (a *Agent) handleTransportConn(c net.Conn) {
