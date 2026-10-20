@@ -221,7 +221,35 @@ recipe), not a `lima/drawbridge-dev.yaml` edit:
 `default-runtime=drawbridge` makes the demo transparent (`docker run --network host
 nginx`, no flags). Because the wrapper no-ops for bridged containers and probes the
 agent socket first, stock docker behavior is preserved even with the agent down —
-the only added failure mode is a host-network container start racing an agent crash.
+the added failure modes are a host-network container start racing an agent crash,
+and the full-stop case described next.
+
+### Agent restarts and running containers
+
+runc hands the agent the *only* reference to a container's seccomp notify fd. If
+that reference is closed, the kernel clears the filter's listener and every later
+`bind()` in that container returns `ENOSYS` for the rest of the container's life;
+a new agent cannot re-attach to an existing filter. So the agent parks a duplicate
+of every supervised fd in systemd's file-descriptor store
+(`FileDescriptorStoreMax=4096` + `NotifyAccess=main` in the unit,
+`internal/fdstore`, names `notify-<nonce>-<seq>`), and on start re-adopts whatever
+`LISTEN_FDS`/`LISTEN_FDNAMES` hands back before it opens its sockets. Verified in
+the guest (2026-10-19): a `--network host` container looping `bindtry` kept
+getting `errno 0` across `systemctl restart drawbridge-agent` and across a
+`kill -9` of the agent (`Restart=on-failure`), with the restarted agent logging
+`fd store: re-adopted 1 notify fd(s)`. While the agent is down, a bind in such a
+container blocks until the new agent polls the adopted fd; it is never answered
+by nobody.
+
+What the store does **not** cover, by systemd's own rule
+(`FileDescriptorStorePreserve=` defaults to `restart`): a full `systemctl stop`
+(including `drawbridge down`, and `just agent-up`, which replaces the unit)
+releases the store. Host-network containers started under the wrapper before
+such a stop get `ENOSYS` from `bind()` afterwards; the remedy is to restart those
+containers. The agent says which world it is in at startup (`fd store: enabled`
+versus `fd store: no NOTIFY_SOCKET`); the dev transient unit from `just agent-up`
+passes the same two properties, so the dev loop's `systemctl restart` behaves like
+the installed unit.
 
 ### Container-side test binary
 

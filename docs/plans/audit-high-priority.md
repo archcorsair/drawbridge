@@ -187,8 +187,8 @@ last column once committed.
 
 | Item | Finding | Status | Decision / notes | Commit |
 |------|---------|--------|------------------|--------|
-| 1 | Gateway netns cookie | done | `host_netns_cookie` gates all eight hooks (connect/sendmsg/recvmsg/getpeername, v4+v6); loader reads `SO_NETNS_COOKIE` and fails the load on error or 0. New leg `TestGatewayForeignNetnsPassThrough` (`unshare --net` + `lo` up, self-connect on a Mac-held port). Negative check done: with the gate forced open the leg fails with ECONNREFUSED. | (this commit; hash recorded in item 2's commit) |
-| 2 | Notify fds survive restart | todo | (a) fd store or (b) document+warn: | |
+| 1 | Gateway netns cookie | done | `host_netns_cookie` gates all eight hooks (connect/sendmsg/recvmsg/getpeername, v4+v6); loader reads `SO_NETNS_COOKIE` and fails the load on error or 0. New leg `TestGatewayForeignNetnsPassThrough` (`unshare --net` + `lo` up, self-connect on a Mac-held port). Negative check done: with the gate forced open the leg fails with ECONNREFUSED. | 95936e1 |
+| 2 | Notify fds survive restart | done | **(a) fd store.** Reason: fits in a day, no cgo (one `sendmsg` with `SCM_RIGHTS` to `NOTIFY_SOCKET`), and systemd 255 in the guest defaults `FileDescriptorStorePreserve=restart`, which covers exactly the cases that matter (`systemctl restart` from `drawbridge up`, and crashes under `Restart=on-failure`). New `internal/fdstore` (pure encoding + `LISTEN_*` parse, Mac-tested) and `internal/agent/fdstore.go`; unit gains `FileDescriptorStoreMax=4096` + `NotifyAccess=main` (golden updated), `just agent-up` passes the same two `-p`. Adoption verifies each inherited fd with `seccomp.IsListener` and closes anything else. In-guest observed: `errno 0` across `systemctl restart` and across `kill -9` (re-adopt line in the journal, new PID answering the original filter); a full `systemctl stop` + start gives `errno 38 ENOSYS`, which docs/oci-hook.md and the README row now state with the remedy (restart the containers). | (this commit; hash recorded in item 3's commit) |
 | 3 | Notify socket + accept loops | todo | | |
 | 4 | listenerPath refusal + nf.Nr gate | todo | | |
 

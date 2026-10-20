@@ -80,7 +80,7 @@ alias test-phase1 := test-guest
 # refuses to create a transient unit while that unit file exists, so the dev
 # flow reclaims the name first (§8 Phase 4: "each stops the other").
 agent-up: build
-    limactl shell {{vm}} -- sudo bash -c 'systemctl disable --now drawbridge-agent 2>/dev/null; rm -f /etc/systemd/system/drawbridge-agent.service; systemctl daemon-reload; systemctl reset-failed drawbridge-agent 2>/dev/null; systemd-run --unit=drawbridge-agent --collect {{justfile_directory()}}/bin/drawbridge-agent-linux-arm64'
+    limactl shell {{vm}} -- sudo bash -c 'systemctl disable --now drawbridge-agent 2>/dev/null; rm -f /etc/systemd/system/drawbridge-agent.service; systemctl daemon-reload; systemctl reset-failed drawbridge-agent 2>/dev/null; systemd-run --unit=drawbridge-agent --collect -p FileDescriptorStoreMax=4096 -p NotifyAccess=main {{justfile_directory()}}/bin/drawbridge-agent-linux-arm64'
 
 agent-down:
     limactl shell {{vm}} -- sudo systemctl stop drawbridge-agent

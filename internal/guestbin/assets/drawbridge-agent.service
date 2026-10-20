@@ -15,6 +15,13 @@ ExecStart={{.ExecStart}}
 # the agent's whole job consists of.
 Restart=on-failure
 RestartSec=2
+# Each host-network container's seccomp notify fd is parked here so it
+# outlives the agent: a restart (crash, `drawbridge up`) re-adopts it instead
+# of leaving the container's bind() returning ENOSYS for the rest of its
+# life. The store is kept across restarts and dropped on a full stop
+# (FileDescriptorStorePreserve= defaults to restart).
+FileDescriptorStoreMax=4096
+NotifyAccess=main
 # The BPF collections are pinned per-process; a hard kill leaves the guest
 # clean because the kernel drops the last reference with the process.
 KillMode=control-group

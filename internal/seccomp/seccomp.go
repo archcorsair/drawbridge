@@ -157,6 +157,20 @@ func IDValid(fd int, id uint64) bool {
 	return errno == 0
 }
 
+// IsListener reports whether fd is a seccomp user-notification listener.
+// SECCOMP_IOCTL_NOTIF_ID_VALID with id 0 answers ENOENT on a listener (no
+// such pending notification) and ENOTTY on anything else; a 0 return would
+// mean id 0 is pending, which only a listener can report. Anything handed
+// to the agent that fails this is parked nowhere: a pipe read end, for
+// one, never reports POLLIN or POLLHUP and would pin a thread forever
+// (audit finding 4).
+func IsListener(fd int) bool {
+	var id uint64
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd),
+		ioc(iocWrite, 2, 8), uintptr(unsafe.Pointer(&id)))
+	return errno == 0 || errno == unix.ENOENT
+}
+
 func send(fd int, id uint64, sysErr int32, flags uint32) error {
 	if err := getSizes(); err != nil {
 		return err

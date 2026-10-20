@@ -37,6 +37,7 @@ type Agent struct {
 	Hub   *TrackerHub
 	Stats *proxy.Stats
 	pool  *dialPool // parked Mac reverse-stream ('D') conns
+	store *notifyStore // systemd fd store for supervised notify fds (fdstore.go)
 
 	// SecretFile is the transport secret's path (docs/transport-auth.md §5).
 	// Empty, or a path with no file, means unauthenticated mode: today's
@@ -90,6 +91,7 @@ func New(cgroupPath string) (*Agent, error) {
 		Hub:       NewTrackerHub(),
 		Stats:     &proxy.Stats{},
 		pool:      newDialPool(),
+		store:     newNotifyStore(),
 		mac:       map[portID]*macEntry{},
 		guest:     map[portID]bpf.PortKey{},
 		syncOwned: map[portID]struct{}{},

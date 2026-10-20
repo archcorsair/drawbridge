@@ -277,6 +277,7 @@ Every row ends in doctor or a one-liner. Doctor's output is the long version.
 | Everything worked, then a rebuild broke it | Version skew between the CLI, the installed daemon and the guest agent. They are meant to move in lockstep. | `drawbridge up && sudo drawbridge install` |
 | Guest `:22` never appears on the Mac | Deliberate: the VM's sshd is on the default skip list. | `-skip ""` (or your own list) on `drawbridged` / `drawbridge install`. |
 | `just e2e` fails for contributors | An installed `drawbridged` holds the agent sessions the harness needs. | `sudo launchctl bootout system/com.archcorsair.drawbridged` first. |
+| A `--network host` container's `bind()` fails with `ENOSYS` (`Function not implemented`) | The guest agent was fully *stopped* (not restarted) while the container was running; its seccomp notify listener died with the agent. Restarts and crashes are covered by systemd's fd store; a `systemctl stop` or `drawbridge down` is not. | Restart the affected containers. Background: [docs/oci-hook.md](docs/oci-hook.md#agent-restarts-and-running-containers). |
 
 If doctor says something you don't believe, `-json` output is designed to be
 pasted into an issue. Background on the macOS-side pathologies:

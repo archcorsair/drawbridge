@@ -54,7 +54,20 @@ func (a *Agent) recvNotifyFd(c *net.UnixConn) {
 	go a.superviseNotify(fds[0])
 }
 
+// superviseNotify parks fd in the fd store (when there is one) and
+// supervises it until its filter dies. Takes ownership of fd.
 func (a *Agent) superviseNotify(fd int) {
+	a.superviseStored(fd, a.store.add(fd))
+}
+
+// superviseStored supervises an fd already stored under name ("" when it
+// is not stored) and drops it from the store when supervision ends.
+func (a *Agent) superviseStored(fd int, name string) {
+	defer a.store.remove(name)
+	a.runSupervision(fd)
+}
+
+func (a *Agent) runSupervision(fd int) {
 	defer unix.Close(fd)
 	// Poll-first, never bare Recv: NOTIF_RECV blocks forever once the
 	// filter's last task exits (kernel gives no error — pinned by
