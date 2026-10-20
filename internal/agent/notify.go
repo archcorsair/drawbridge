@@ -177,10 +177,14 @@ func (a *Agent) answerBind(fd int, nf seccomp.Notif) {
 	// elsewhere; reading a foreign syscall's args as a sockaddr and then
 	// possibly answering EADDRINUSE would turn someone else's policy into
 	// ours (audit finding 5). CONTINUE, without touching target memory.
-	if nf.Nr != seccomp.NrBind {
+	// The check is per ABI (seccomp_data.arch), not against the native
+	// number alone: a 32-bit container binds through the compat table with
+	// a different nr and the same (fd, sockaddr*, len) args, and must keep
+	// its synchronous EADDRINUSE.
+	if !seccomp.IsBind(nf.Arch, nf.Nr) {
 		a.foreignNrOnce.Do(func() {
-			log.Printf("notify: notification for syscall %d (not bind=%d) pid=%d: answering CONTINUE; this filter is not drawbridge's (logged once)",
-				nf.Nr, seccomp.NrBind, nf.PID)
+			log.Printf("notify: notification for syscall %d under arch %#x (not bind) pid=%d: answering CONTINUE; this filter is not drawbridge's (logged once)",
+				nf.Nr, nf.Arch, nf.PID)
 		})
 		cont()
 		return

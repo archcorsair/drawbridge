@@ -36,7 +36,7 @@ type Agent struct {
 	trRd  *ringbuf.Reader
 	Hub   *TrackerHub
 	Stats *proxy.Stats
-	pool  *dialPool // parked Mac reverse-stream ('D') conns
+	pool  *dialPool    // parked Mac reverse-stream ('D') conns
 	store *notifyStore // systemd fd store for supervised notify fds (fdstore.go)
 	cap   superviseCap // bound on fds under supervision (notifycap.go)
 

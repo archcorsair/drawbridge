@@ -112,16 +112,32 @@ func InstallBindFilter() (int, error) {
 	return int(fd), nil
 }
 
-// NrBind is bind(2)'s syscall number on the running architecture — the only
-// Nr a supervisor should ever act on (anything else is answered CONTINUE
-// without reading target memory).
+// NrBind is bind(2)'s syscall number under the native ABI: what the probe
+// filter matches. A supervisor must not compare against it directly, because
+// a notification carries the ABI the task used (seccomp_data.arch) and a
+// 32-bit container on a 64-bit guest binds through the compat table with a
+// different number; use IsBind.
 const NrBind int32 = nrBind
+
+// IsBind reports whether (arch, nr) from a notification is bind(2) under
+// that ABI — native, or a compat table the kernel can run (bindNrs, per
+// GOARCH). Anything else is a syscall this supervisor has no business
+// judging and is answered CONTINUE without reading target memory.
+func IsBind(arch uint32, nr int32) bool {
+	for _, n := range bindNrs[arch] {
+		if n == nr {
+			return true
+		}
+	}
+	return false
+}
 
 // Notif is one blocked syscall.
 type Notif struct {
 	ID   uint64
 	PID  uint32
 	Nr   int32
+	Arch uint32 // seccomp_data.arch: the ABI the task made the call under
 	Args [6]uint64
 }
 
@@ -147,6 +163,9 @@ func Recv(fd int) (Notif, error) {
 		ID:  le.Uint64(buf[0:]),
 		PID: le.Uint32(buf[8:]),
 		Nr:  int32(le.Uint32(buf[16:])),
+		// seccomp_notif: id u64 @0, pid u32 @8, flags u32 @12, then
+		// seccomp_data {nr s32 @16, arch u32 @20, ip u64 @24, args @32}.
+		Arch: le.Uint32(buf[20:]),
 	}
 	for i := 0; i < 6; i++ {
 		nf.Args[i] = le.Uint64(buf[32+8*i:])
@@ -342,3 +361,9 @@ func openPidfd(pid uint32) (int, error) {
 	}
 	return pidfd, nil
 }
+
+// NativeArch is seccomp_data.arch for this GOARCH (AUDIT_ARCH_*).
+const NativeArch uint32 = auditArch
+
+// BindNrsForTest exposes the per-ABI bind table to tests in other packages.
+func BindNrsForTest() map[uint32][]int32 { return bindNrs }
