@@ -38,6 +38,9 @@ type Agent struct {
 	Stats *proxy.Stats
 	pool  *dialPool // parked Mac reverse-stream ('D') conns
 	store *notifyStore // systemd fd store for supervised notify fds (fdstore.go)
+	cap   superviseCap // bound on fds under supervision (notifycap.go)
+
+	refusals *peerLimiter // handoff-refusal log throttle, per sender uid
 
 	// SecretFile is the transport secret's path (docs/transport-auth.md §5).
 	// Empty, or a path with no file, means unauthenticated mode: today's
@@ -92,6 +95,8 @@ func New(cgroupPath string) (*Agent, error) {
 		Stats:     &proxy.Stats{},
 		pool:      newDialPool(),
 		store:     newNotifyStore(),
+		cap:       superviseCap{max: maxSupervisedNotifyFds},
+		refusals:  newPeerLimiter(refusalLogEvery),
 		mac:       map[portID]*macEntry{},
 		guest:     map[portID]bpf.PortKey{},
 		syncOwned: map[portID]struct{}{},

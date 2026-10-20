@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 
+	"github.com/archcorsair/drawbridge/internal/acceptloop"
 	"github.com/archcorsair/drawbridge/internal/bpf"
 )
 
@@ -33,13 +34,7 @@ type ControlResponse struct {
 
 // ServeControl accepts control connections until the listener is closed.
 func (a *Agent) ServeControl(ln net.Listener) {
-	for {
-		c, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		go a.serveConn(c)
-	}
+	acceptloop.Serve(ln.Accept, func(c net.Conn) { go a.serveConn(c) }, a.log)
 }
 
 func (a *Agent) serveConn(c net.Conn) {

@@ -156,6 +156,7 @@ func main() {
 		log.Fatalf("drawbridge-agent: control socket: %v", err)
 	}
 	defer os.Remove(*sock)
+	os.Chmod(*sock, 0o600) // root-only: it edits the decision maps (audit finding 17)
 	go a.ServeControl(ln)
 
 	// The gvproxy publish is a startup side effect behind a flag, not a wire

@@ -109,6 +109,10 @@ func (a *Agent) AdoptStoredFds() (int, error) {
 			log.Printf("notify: inherited fd %d (%s) is not a seccomp listener; closing and dropping it from the store", in.Fd, in.Name)
 			unix.Close(in.Fd)
 			a.store.remove(in.Name)
+		case !a.cap.acquire():
+			log.Printf("notify: inherited fd %d (%s): %d fds already under supervision; closing and dropping it from the store", in.Fd, in.Name, maxSupervisedNotifyFds)
+			unix.Close(in.Fd)
+			a.store.remove(in.Name)
 		default:
 			unix.CloseOnExec(in.Fd)
 			adopted++
