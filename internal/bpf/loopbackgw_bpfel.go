@@ -26,16 +26,17 @@ type loopbackgwPortKey struct {
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	loopbackgwMapGuestPorts    = "guest_ports"
-	loopbackgwMapMacPorts      = "mac_ports"
-	loopbackgwProgConnect4     = "connect4"
-	loopbackgwProgConnect6     = "connect6"
-	loopbackgwProgGetpeername4 = "getpeername4"
-	loopbackgwProgGetpeername6 = "getpeername6"
-	loopbackgwProgRecvmsg4     = "recvmsg4"
-	loopbackgwProgRecvmsg6     = "recvmsg6"
-	loopbackgwProgSendmsg4     = "sendmsg4"
-	loopbackgwProgSendmsg6     = "sendmsg6"
+	loopbackgwMapGuestPorts      = "guest_ports"
+	loopbackgwMapMacPorts        = "mac_ports"
+	loopbackgwProgConnect4       = "connect4"
+	loopbackgwProgConnect6       = "connect6"
+	loopbackgwProgGetpeername4   = "getpeername4"
+	loopbackgwProgGetpeername6   = "getpeername6"
+	loopbackgwProgRecvmsg4       = "recvmsg4"
+	loopbackgwProgRecvmsg6       = "recvmsg6"
+	loopbackgwProgSendmsg4       = "sendmsg4"
+	loopbackgwProgSendmsg6       = "sendmsg6"
+	loopbackgwVarHostNetnsCookie = "host_netns_cookie"
 )
 
 // loadLoopbackgw returns the embedded CollectionSpec for loopbackgw.
@@ -102,6 +103,7 @@ type loopbackgwMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type loopbackgwVariableSpecs struct {
+	HostNetnsCookie *ebpf.VariableSpec `ebpf:"host_netns_cookie"`
 }
 
 // loopbackgwObjects contains all objects after they have been loaded into the kernel.
@@ -139,6 +141,7 @@ func (m *loopbackgwMaps) Close() error {
 //
 // It can be passed to loadLoopbackgwObjects or ebpf.CollectionSpec.LoadAndAssign.
 type loopbackgwVariables struct {
+	HostNetnsCookie *ebpf.Variable `ebpf:"host_netns_cookie"`
 }
 
 // loopbackgwPrograms contains all programs after they have been loaded into the kernel.

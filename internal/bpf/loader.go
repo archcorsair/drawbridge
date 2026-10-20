@@ -7,6 +7,7 @@ import (
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"golang.org/x/sys/unix"
 )
 
 // Gateway holds the loaded loopback-gateway programs, their cgroup links,
@@ -23,6 +24,22 @@ func LoadAndAttach(cgroupPath string) (*Gateway, error) {
 	spec, err := loadLoopbackgw()
 	if err != nil {
 		return nil, fmt.Errorf("load spec: %w", err)
+	}
+	// Root-cgroup attach covers bridged containers too, whose 127.0.0.1
+	// is a different loopback: scope every hook to the loading process's
+	// netns (same rule as the tracker's host_netns_inum). The cookie is
+	// mandatory — a gateway attached without it would rewrite
+	// intra-container loopback connects to a dead 127.0.0.2.
+	cookie, err := netnsCookie()
+	if err != nil {
+		return nil, fmt.Errorf("read netns cookie: %w", err)
+	}
+	v, ok := spec.Variables["host_netns_cookie"]
+	if !ok {
+		return nil, fmt.Errorf("host_netns_cookie missing from spec")
+	}
+	if err := v.Set(cookie); err != nil {
+		return nil, fmt.Errorf("set host_netns_cookie: %w", err)
 	}
 	g := &Gateway{}
 	if err := spec.LoadAndAssign(&g.objs, nil); err != nil {
@@ -59,6 +76,26 @@ func LoadAndAttach(cgroupPath string) (*Gateway, error) {
 		g.links = append(g.links, l)
 	}
 	return g, nil
+}
+
+// netnsCookie returns the caller's network-namespace cookie — the value
+// bpf_get_netns_cookie() reports for sockets in this netns. Read through
+// SO_NETNS_COOKIE (kernel 5.14+) on a throwaway socket; the kernel never
+// hands out 0, so a zero is treated as a failed read rather than a scope.
+func netnsCookie() (uint64, error) {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return 0, fmt.Errorf("socket: %w", err)
+	}
+	defer unix.Close(fd)
+	cookie, err := unix.GetsockoptUint64(fd, unix.SOL_SOCKET, unix.SO_NETNS_COOKIE)
+	if err != nil {
+		return 0, fmt.Errorf("getsockopt(SO_NETNS_COOKIE): %w", err)
+	}
+	if cookie == 0 {
+		return 0, fmt.Errorf("getsockopt(SO_NETNS_COOKIE) returned 0")
+	}
+	return cookie, nil
 }
 
 func (g *Gateway) GuestPorts() *ebpf.Map { return g.objs.GuestPorts }

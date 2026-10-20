@@ -187,11 +187,11 @@ last column once committed.
 
 | Item | Finding | Status | Decision / notes | Commit |
 |------|---------|--------|------------------|--------|
-| 1 | Gateway netns cookie | todo | | |
+| 1 | Gateway netns cookie | done | `host_netns_cookie` gates all eight hooks (connect/sendmsg/recvmsg/getpeername, v4+v6); loader reads `SO_NETNS_COOKIE` and fails the load on error or 0. New leg `TestGatewayForeignNetnsPassThrough` (`unshare --net` + `lo` up, self-connect on a Mac-held port). Negative check done: with the gate forced open the leg fails with ECONNREFUSED. | (this commit; hash recorded in item 2's commit) |
 | 2 | Notify fds survive restart | todo | (a) fd store or (b) document+warn: | |
 | 3 | Notify socket + accept loops | todo | | |
 | 4 | listenerPath refusal + nf.Nr gate | todo | | |
 
 Verification log (append one line per run, with date and what was run):
 
-- 
+- 2026-10-19 item 1: `just gen` (guest, clang 18, kernel 6.8); `just test-guest` green (harness 24.1 s incl. the new leg, agent 4.9 s); gate-disabled rerun of `-run TestGatewayForeignNetnsPassThrough` fails with `connect: connection refused` as designed, object restored byte-identical; Mac `go build ./...`, `go vet ./...`, `go test ./internal/... ./cmd/...` green.

@@ -27,6 +27,20 @@ char __license[] SEC("license") = "Dual BSD/GPL";
 #define V4MAPPED_PREFIX bpf_htonl(0x0000FFFF)
 #define GATEWAY_V6_0 bpf_htonl(0xFD770000) /* fd77::2 */
 
+/* Netns scope. The programs attach at the root cgroup, so they also run
+ * for bridged containers' sockets, whose 127.0.0.1 is a different loopback
+ * entirely: rewriting there sends an intra-container connect to a
+ * 127.0.0.2 nothing listens on. Every hook passes through unless the
+ * socket's netns is the one the agent loaded from (set by the loader from
+ * SO_NETNS_COOKIE; 0 is never a valid cookie, so an unset constant fails
+ * closed into "rewrite nothing"). */
+volatile const __u64 host_netns_cookie;
+
+static __always_inline int in_host_netns(struct bpf_sock_addr *ctx)
+{
+	return bpf_get_netns_cookie(ctx) == host_netns_cookie;
+}
+
 /* Explicit padding: hash lookups are byte-wise; implicit compiler padding
  * holes would make lookups miss nondeterministically. Zero-init all keys. */
 struct port_key {
@@ -116,6 +130,8 @@ static __always_inline int handle_v4(struct bpf_sock_addr *ctx)
 	__u8 proto;
 	__u16 port_h;
 
+	if (!in_host_netns(ctx))
+		return 1;
 	if (ctx->user_ip4 != LOOPBACK_V4)
 		return 1;
 	if (!sk_proto(ctx, &proto))
@@ -142,20 +158,25 @@ int sendmsg4(struct bpf_sock_addr *ctx)
 	return handle_v4(ctx);
 }
 
-SEC("cgroup/recvmsg4")
-int recvmsg4(struct bpf_sock_addr *ctx)
+static __always_inline int unrewrite_v4(struct bpf_sock_addr *ctx)
 {
+	if (!in_host_netns(ctx))
+		return 1;
 	if (ctx->user_ip4 == GATEWAY_V4)
 		ctx->user_ip4 = LOOPBACK_V4;
 	return 1;
 }
 
+SEC("cgroup/recvmsg4")
+int recvmsg4(struct bpf_sock_addr *ctx)
+{
+	return unrewrite_v4(ctx);
+}
+
 SEC("cgroup/getpeername4")
 int getpeername4(struct bpf_sock_addr *ctx)
 {
-	if (ctx->user_ip4 == GATEWAY_V4)
-		ctx->user_ip4 = LOOPBACK_V4;
-	return 1;
+	return unrewrite_v4(ctx);
 }
 
 /* ---- IPv6 ---- */
@@ -181,6 +202,8 @@ static __always_inline int handle_v6(struct bpf_sock_addr *ctx)
 	__u8 proto;
 	__u16 port_h;
 
+	if (!in_host_netns(ctx))
+		return 1;
 	if (!sk_proto(ctx, &proto))
 		return 1;
 	port_h = bpf_ntohs((__u16)ctx->user_port);
@@ -220,6 +243,8 @@ int sendmsg6(struct bpf_sock_addr *ctx)
 
 static __always_inline int unrewrite_v6(struct bpf_sock_addr *ctx)
 {
+	if (!in_host_netns(ctx))
+		return 1;
 	if (v6_is(ctx, GATEWAY_V6_0, 0, 0, bpf_htonl(2)))
 		v6_set(ctx, 0, 0, 0, bpf_htonl(1));
 	else if (v6_is(ctx, 0, 0, V4MAPPED_PREFIX, GATEWAY_V4))
