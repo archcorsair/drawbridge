@@ -749,6 +749,16 @@ func sourceNote(sel selection, r limaaddr.Resolution) string {
 	return r.Source + "; the guest agent re-publishes it on every machine start"
 }
 
+// nextStep is the closing hint of `up`: how to keep this VM attached once the
+// command returns. Ref.Spec is the round-tripping spelling (see echoSpelling).
+// Both commands re-parse it with vmprovider.ParseRef, so it has to name this
+// VM and not whichever Lima instance a bare word would mean.
+func nextStep(ref vmprovider.Ref) string {
+	return fmt.Sprintf("\nNext: sudo drawbridge install -vm %s\n"+
+		"      (or, unprivileged and foreground, ports >= 1024 only: drawbridged -vm %s)\n",
+		ref.Spec, ref.Spec)
+}
+
 func handoff(g *guest, sel selection, out io.Writer) {
 	ready, _ := g.sh(readyScript)
 	if strings.TrimSpace(ready) == "timeout" {
@@ -796,9 +806,7 @@ func handoff(g *guest, sel selection, out io.Writer) {
 		}
 	}
 
-	fmt.Fprintf(out, "\nNext: sudo drawbridge install -vm %s\n"+
-		"      (or, unprivileged and foreground, ports >= 1024 only: drawbridged -vm %s)\n",
-		sel.Ref.Spec, sel.Ref.Spec)
+	fmt.Fprint(out, nextStep(sel.Ref))
 }
 
 // parsePositional pulls the optional instance argument out of an argv where

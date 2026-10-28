@@ -303,10 +303,29 @@ func pickInstance(arg string, insts []vmprovider.Instance) (selection, error) {
 	if err != nil {
 		return selection{}, err
 	}
-	// The user's own spelling is what gets echoed back in the next-step line
-	// and what they will paste into `drawbridge install -vm`.
-	ref.Spec = strings.TrimSpace(arg)
+	ref.Spec = echoSpelling(arg, match, ref)
 	return selection{Ref: ref, Instance: match}, nil
+}
+
+// echoSpelling picks the -vm text that gets echoed back in `up`'s next-step
+// lines, which the user pastes into `drawbridge install -vm` and
+// `drawbridged -vm`. Both re-parse it with vmprovider.ParseRef, where a bare
+// name always means a Lima instance.
+//
+// The user's own spelling is kept only when that parse lands on the VM that
+// was selected. `up` resolves a bare name across providers, so `colima`,
+// `default` (the colima profile) and a podman machine name are all legal
+// arguments that ParseRef would read as a different, Lima, VM: the install
+// would then render another VM's transport-secret path and the daemon would
+// exit at boot on a file nothing writes. Those fall back to the canonical
+// `provider:name`; a Lima instance keeps whatever bare or qualified spelling
+// the user typed.
+func echoSpelling(arg string, match vmprovider.Instance, ref vmprovider.Ref) string {
+	if typed, err := vmprovider.ParseRef(arg); err == nil &&
+		typed.Provider == ref.Provider && typed.Instance == ref.Instance {
+		return typed.Spec
+	}
+	return qualify(match)
 }
 
 func pickImplicit(insts []vmprovider.Instance) (selection, error) {

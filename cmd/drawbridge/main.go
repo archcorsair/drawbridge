@@ -233,15 +233,27 @@ func runInstall(args []string) int {
 	}
 	if cfg.SecretFile != "" {
 		if _, err := os.Stat(cfg.SecretFile); err != nil {
-			// Not fatal: `install` before `up` is a legitimate order, and the
-			// daemon re-reads per connection, so the file appearing later
-			// heals without a reinstall.
+			// Not fatal: `install` before `up` is a legitimate order. But the
+			// plist always renders this path as an explicit -secret-file, and
+			// drawbridged treats a missing explicit secret as fatal at boot
+			// (cmd/drawbridged: configured-but-absent fails closed, never
+			// unauthenticated). launchd keeps restarting it, and the first
+			// start after the file appears succeeds, so no reinstall is needed.
+			upVM := qualify(vmprovider.Instance{Provider: ref.Provider, Name: ref.Instance})
+			body := []string{
+				"the daemon will not start until that file exists: drawbridged exits at boot when",
+				"an explicit -secret-file is missing, and launchd retries it every ~10 s.",
+			}
+			if *secretFile == "" {
+				body = append(body,
+					fmt.Sprintf("`drawbridge up %s` writes that file; run it, and the daemon starts on its own", upVM),
+					"(no reinstall needed).")
+			} else {
+				body = append(body, "`drawbridge up` writes only the per-VM default path, so create this one yourself.")
+			}
 			warnings = append(warnings, warning{
 				title: fmt.Sprintf("no transport secret at %s yet", cfg.SecretFile),
-				body: []string{
-					fmt.Sprintf("the daemon will run UNAUTHENTICATED until `drawbridge up %s` writes one", cfg.VM),
-					"(no reinstall needed).",
-				},
+				body:  body,
 			})
 		}
 	}
