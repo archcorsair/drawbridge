@@ -55,6 +55,19 @@ func stepLine(w io.Writer, sty styles) install.Step {
 	}
 }
 
+// installCmd is the install command a remedy prints. It names -vm whenever
+// the VM is known: a bare `sudo drawbridge install` keeps the installed
+// daemon's settings now, but a fix that spells its target cannot re-target
+// anything, even under an older CLI. With nothing known it prints a
+// placeholder, because with nothing installed a bare install means
+// lima:drawbridge, which is rarely the reader's VM (audit 2026-10-28 H3).
+func installCmd(vm string) string {
+	if vm == "" {
+		vm = "<vm>"
+	}
+	return "sudo drawbridge install -vm " + vm
+}
+
 // statusKeyWidth aligns the value column on the widest key, `transport:`.
 const statusKeyWidth = len("transport:")
 
@@ -73,7 +86,7 @@ func renderStatus(w io.Writer, sty styles, st install.Status) {
 		// Pinned low-noise: a Mac with nothing installed gains no decoration
 		// (render_test.go holds these bytes).
 		fmt.Fprintf(w, "drawbridged: not installed\n")
-		fmt.Fprintf(w, "  install with: sudo drawbridge install\n")
+		fmt.Fprintf(w, "  install with: %s\n", installCmd(""))
 		return
 	}
 	kv(w, sty, "label", install.Label)
@@ -81,7 +94,7 @@ func renderStatus(w io.Writer, sty styles, st install.Status) {
 	kv(w, sty, "binary", install.BinaryPath+" "+presence(sty, st.BinaryInstalled))
 	switch {
 	case !st.Loaded:
-		kv(w, sty, "launchd", sty.warn.Render("not loaded")+" — `sudo drawbridge install` to (re)bootstrap")
+		kv(w, sty, "launchd", sty.warn.Render("not loaded")+" — `"+installCmd(st.VM)+"` to (re)bootstrap")
 	case st.PID > 0:
 		kv(w, sty, "launchd", "state="+stateStyle(sty, st.State).Render(st.State)+fmt.Sprintf(" pid=%d", st.PID))
 	default:

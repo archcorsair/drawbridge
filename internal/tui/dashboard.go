@@ -226,8 +226,14 @@ func (m Model) summaryBox(lo layout, s *introspect.Snapshot) []string {
 	// keeps its own weight so the pulse reads as chrome lighting up around
 	// it.
 	borderS, titleS := m.flashStyle()
+	// A skewed daemon's chip carries a whole command (-vm included), and a
+	// truncated remedy is worse than none, so the uptime gives way to it.
+	uptime := "up " + relative(m.now.Sub(st.StartedAt))
+	if st.Version != "" && st.Version != m.version {
+		uptime = ""
+	}
 	title := st.VM.Ref + " ─ " + joinDot(flavor(s.Path)+" socket",
-		fmt.Sprintf("pid %d", st.PID), m.versionChip(pal, st), "up "+relative(m.now.Sub(st.StartedAt)))
+		fmt.Sprintf("pid %d", st.PID), m.versionChip(pal, st), uptime)
 	head := truncEnd(title, inner-4)
 	top := "┌ " + head + " "
 	rule := strings.Repeat("─", max(0, box-1-visWidth(top))) + "┐"
@@ -322,7 +328,9 @@ func (m Model) versionChip(pal palette, st introspect.State) string {
 	if st.Version == "" || st.Version == m.version {
 		return "daemon " + orUnknown(st.Version)
 	}
-	return pal.warn.Render(fmt.Sprintf("daemon %s ≠ CLI %s — sudo drawbridge install", st.Version, m.version))
+	// The remedy names the daemon's own VM: a bare install used to re-target
+	// the root daemon at lima:drawbridge (audit 2026-10-28 H3).
+	return pal.warn.Render(fmt.Sprintf("daemon %s ≠ CLI %s — sudo drawbridge install -vm %s", st.Version, m.version, orPlaceholder(st.VM.Ref)))
 }
 
 func (m Model) versionChipCompact(pal palette, st introspect.State) string {
@@ -789,8 +797,8 @@ func (m Model) noDaemonCard(lo layout) []string {
 		"  " + m.userRunDir,
 		"",
 		styleDim.Render("start one"),
-		"  drawbridged                  foreground; mirrors ports ≥1024",
-		"  sudo drawbridge install      the root LaunchDaemon, for ports <1024",
+		"  drawbridged -vm <vm>              foreground, ports ≥1024",
+		"  sudo drawbridge install -vm <vm>  root LaunchDaemon, ports <1024",
 		"",
 		styleDim.Render("re-checking every second — this screen heals itself"),
 	}
@@ -1155,6 +1163,15 @@ func flavor(path string) string {
 func orUnknown(s string) string {
 	if s == "" {
 		return "unknown"
+	}
+	return oneLine(s)
+}
+
+// orPlaceholder is a -vm value for a printed command: the daemon's own
+// spelling, or <vm> when it reports none, never a silently empty flag.
+func orPlaceholder(s string) string {
+	if s == "" {
+		return "<vm>"
 	}
 	return oneLine(s)
 }

@@ -199,8 +199,11 @@ At 120×40 (the roomy case):
 - Header line: program name, CLI version, daemon position (`1/2`),
   staleness of the last successful fetch, and the help hint. When the
   daemon's `version` ≠ the CLI's, a warn chip appears in the daemon box
-  title: `daemon v0.0.9 ≠ CLI v0.1.0 — sudo drawbridge install` (the §6
-  skew policy, same remedy wording as doctor check 9).
+  title: `daemon v0.0.9 ≠ CLI v0.1.0 — sudo drawbridge install -vm
+  colima:colima` (the §6 skew policy, same remedy wording as doctor check 9;
+  `-vm` is the daemon's own ref, `<vm>` when it reports none). A remedy cut
+  short is worse than none, so the chip displaces the title's uptime field
+  (amended 2026-10-28, audit H3: the bare command re-targeted the daemon).
 - Summary box: `resolution` verbatim (endpoint, source, and the resolver's
   `note` on its own line when non-empty — the strings doctor prints
   unchanged, unchanged here too), auth mode + secret state + path
@@ -370,7 +373,7 @@ is the contract; the TUI adds no posture of its own):
 
 | Condition | Rendering |
 |---|---|
-| No socket answers anywhere | Full-screen calm card: "no drawbridge daemon is answering", the two paths checked (`/var/run/drawbridge/introspect.sock`, `~/Library/Application Support/drawbridge/run/`), how to start one (`drawbridged` foreground for ports ≥1024; `sudo drawbridge install` for the LaunchDaemon), and "re-checking every second — this screen heals itself". Not styled as an error; this is the ordinary pre-start state. |
+| No socket answers anywhere | Full-screen calm card: "no drawbridge daemon is answering", the two paths checked (`/var/run/drawbridge/introspect.sock`, `~/Library/Application Support/drawbridge/run/`), how to start one (`drawbridged -vm <vm>` foreground for ports ≥1024; `sudo drawbridge install -vm <vm>` for the LaunchDaemon), and "re-checking every second — this screen heals itself". Not styled as an error; this is the ordinary pre-start state. |
 | Daemon up, no mirror entries | Dashboard renders normally; the mirror table body is a dim "(no guest listeners mirrored yet)". If `mirror.sessionUp` is false, the summary line styles `○ down` warn and the footer hint suggests `d`. |
 | Selected daemon stops answering | The daemon box renders "this daemon stopped answering Ns ago (path)" over the last-known summary, dimmed; heals on the next successful fetch (D7). |
 | `schema > 1` | The daemon's slot renders the skew card: "daemon at `<path>` speaks introspection schema N; this build knows 1 (daemon `<version>`, CLI `<version>`)" — frozen fields only, same wording family as `status`. |

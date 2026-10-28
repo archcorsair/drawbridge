@@ -221,7 +221,7 @@ homebrew_casks:
       After every install or upgrade, run:
 
         drawbridge up <vm>        # re-pushes the guest agent and any --oci wrapper
-        sudo drawbridge install   # re-installs the matching root daemon
+        sudo drawbridge install   # re-installs the matching root daemon, keeping its -vm and pins (first time: add -vm <vm>)
 
       `drawbridge doctor` reports any remaining skew. Before removing this
       cask, run `sudo drawbridge uninstall` — brew does not manage the root

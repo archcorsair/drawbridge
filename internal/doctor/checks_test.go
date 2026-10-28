@@ -693,6 +693,7 @@ func TestCheckLocalNetworkDiscriminatorTable(t *testing.T) {
 		mustNot  string
 		wantsLS  bool
 		remedyLN bool
+		install  string // "" unchecked, "-" must not offer install, else must contain
 	}{
 		{
 			name: "row 1 — user probe ok",
@@ -703,20 +704,29 @@ func TestCheckLocalNetworkDiscriminatorTable(t *testing.T) {
 			name: "row 2 — user fail, tier-1 root ok",
 			in: LocalNetworkInput{UserProbe: ProbeFail, ProbeAddr: "192.168.64.2:4777",
 				Root: RootEvidence{Kind: "tier1", Probe: ProbeOK}},
-			want: StatusFail, says: "GATE CONFIRMED", wantsLS: true, remedyLN: true,
+			want: StatusFail, says: "GATE CONFIRMED", wantsLS: true, remedyLN: true, install: "sudo drawbridge install -vm <vm>",
 		},
 		{
+			name: "row 2 names the target in the install remedy",
+			in: LocalNetworkInput{UserProbe: ProbeFail, VM: "colima:colima",
+				Root: RootEvidence{Kind: "tier1", Probe: ProbeOK}},
+			want: StatusFail, says: "GATE CONFIRMED", wantsLS: true, remedyLN: true, install: "sudo drawbridge install -vm colima:colima",
+		},
+		// R1: tier-2 evidence exists only because a root daemon already
+		// reaches the guest, so "install the root daemon" is a no-op at
+		// best, and bare it re-targeted that daemon. Row 3 never offers it.
+		{
 			name: "row 3 — user fail, tier-2 daemon vantage, NE filter present",
-			in: LocalNetworkInput{UserProbe: ProbeFail, ProbeAddr: "192.168.64.2:4777",
+			in: LocalNetworkInput{UserProbe: ProbeFail, ProbeAddr: "192.168.64.2:4777", VM: "colima:colima",
 				Root:            RootEvidence{Kind: "tier2", Probe: ProbeOK, Note: "the root daemon resolved vznat-direct"},
 				NEFilterPresent: true},
-			want: StatusFail, says: "does not exonerate the filter for this CLI", wantsLS: true, remedyLN: true,
+			want: StatusFail, says: "Conclusive: `sudo drawbridge doctor -vm colima:colima`", mustNot: "sudo drawbridge install", wantsLS: true, remedyLN: true,
 		},
 		{
 			name: "row 3 without an NE filter drops the per-binary caveat",
 			in: LocalNetworkInput{UserProbe: ProbeFail,
 				Root: RootEvidence{Kind: "tier2", Probe: ProbeOK}},
-			want: StatusFail, says: "gate indicated", mustNot: "does not exonerate", wantsLS: true, remedyLN: true,
+			want: StatusFail, says: "gate indicated", mustNot: "does not exonerate", wantsLS: true, remedyLN: true, install: "-",
 		},
 		{
 			name: "row 4 — both fail",
@@ -728,6 +738,13 @@ func TestCheckLocalNetworkDiscriminatorTable(t *testing.T) {
 			name: "row 5 — no root evidence",
 			in:   LocalNetworkInput{UserProbe: ProbeFail, Root: RootEvidence{Kind: "unknown"}},
 			want: StatusWarn, says: discriminatorInstruction, wantsLS: true,
+		},
+		// M22: root doctor defaults to the installed daemon's VM, which need
+		// not be this run's target, so the instruction names the target.
+		{
+			name: "row 5 names the target in the root-doctor command",
+			in:   LocalNetworkInput{UserProbe: ProbeFail, VM: "podman:spike", Root: RootEvidence{Kind: "unknown"}},
+			want: StatusWarn, says: "run `sudo drawbridge doctor -vm podman:spike` and compare", wantsLS: true,
 		},
 	}
 	for _, tc := range tests {
@@ -742,9 +759,22 @@ func TestCheckLocalNetworkDiscriminatorTable(t *testing.T) {
 				wantContains(t, f, "absence from Little Snitch's Network Monitor is not exoneration")
 			}
 			if tc.remedyLN {
-				for _, want := range []string{"sudo drawbridge install", "Apple Terminal", "AllowedEthernetLocalNetworkAddresses", "AllowedWiFiLocalNetworkAddresses"} {
+				for _, want := range []string{"Apple Terminal", "AllowedEthernetLocalNetworkAddresses", "AllowedWiFiLocalNetworkAddresses"} {
 					wantContains(t, f, want)
 				}
+			}
+			switch tc.install {
+			case "":
+			case "-":
+				wantNotContains(t, f, "sudo drawbridge install")
+			default:
+				wantContains(t, f, tc.install)
+			}
+			// No remedy anywhere may print a bare install: with nothing
+			// installed it means lima:drawbridge (H3).
+			if strings.Contains(f.Remedy, "sudo drawbridge install\n") || strings.HasSuffix(f.Remedy, "sudo drawbridge install") ||
+				strings.Contains(f.Remedy, "sudo drawbridge install ") && !strings.Contains(f.Remedy, "sudo drawbridge install -vm ") {
+				t.Fatalf("bare install remedy:\n%s", f.Remedy)
 			}
 		})
 	}
@@ -863,6 +893,11 @@ func TestCheckNEFilter(t *testing.T) {
 
 // --- 9. daemon -------------------------------------------------------------
 
+func withVM(st install.Status, vm string) install.Status {
+	st.VM = vm
+	return st
+}
+
 func TestCheckDaemon(t *testing.T) {
 	running := install.Status{PlistInstalled: true, BinaryInstalled: true, Loaded: true, State: "running", PID: 4242}
 
@@ -873,11 +908,19 @@ func TestCheckDaemon(t *testing.T) {
 		says string
 	}{
 		{"running and matched", DaemonInput{Status: running, InstalledVersion: "v0.1.0", CLIVersion: "v0.1.0"}, StatusOK, "pid 4242"},
-		{"version skew", DaemonInput{Status: running, InstalledVersion: "v0.0.9", CLIVersion: "v0.1.0"}, StatusFail, "sudo drawbridge install"},
+		{"version skew", DaemonInput{Status: running, InstalledVersion: "v0.0.9", CLIVersion: "v0.1.0"}, StatusFail, "sudo drawbridge install -vm <vm>"},
+		// H3: the upgrade remedy names the installed daemon's VM, so it can
+		// never re-target the daemon at lima:drawbridge.
+		{"version skew names the installed VM", DaemonInput{Status: withVM(running, "colima:default"), InstalledVersion: "v0.0.9", CLIVersion: "v0.1.0"},
+			StatusFail, "sudo drawbridge install -vm colima:default    # after a brew upgrade, run `drawbridge up colima:default && sudo drawbridge install -vm colima:default`"},
 		{"not installed", DaemonInput{CLIVersion: "v0.1.0"}, StatusWarn, "drawbridged -vm <vm>"},
+		{"not installed names a placeholder VM", DaemonInput{CLIVersion: "v0.1.0"}, StatusWarn, "sudo drawbridge install -vm <vm>"},
 		{"installed, not loaded", DaemonInput{
 			Status: install.Status{PlistInstalled: true, BinaryInstalled: true}, CLIVersion: "v0.1.0",
 		}, StatusWarn, "re-bootstraps"},
+		{"installed, not loaded names the installed VM", DaemonInput{
+			Status: install.Status{PlistInstalled: true, BinaryInstalled: true, VM: "podman:spike"}, CLIVersion: "v0.1.0",
+		}, StatusWarn, "`sudo drawbridge install -vm podman:spike` re-bootstraps it"},
 		{"loaded, not running", DaemonInput{
 			Status: install.Status{PlistInstalled: true, BinaryInstalled: true, Loaded: true, State: "waiting"}, CLIVersion: "v0.1.0",
 		}, StatusWarn, "state=waiting"},

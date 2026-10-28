@@ -179,7 +179,7 @@ func (m MacConfig) ClosedEarly(ep string) string {
 	if where == "" {
 		where = "no path derived (pass -secret-file)"
 	}
-	return fmt.Sprintf("agent at %s closed the connection immediately — if that guest was provisioned with a transport secret, this daemon needs one too: expected at %s (not found). 'drawbridge up' writes it; 'sudo drawbridge install' points the daemon at it",
+	return fmt.Sprintf("agent at %s closed the connection immediately — if that guest was provisioned with a transport secret, this daemon needs one too: expected at %s (not found). 'drawbridge up <vm>' writes it; 'sudo drawbridge install -vm <vm>' points the daemon at it",
 		ep, where)
 }
 

@@ -210,7 +210,7 @@ func (s *Syncer) noteEmptied(had int) {
 // this cannot spam.
 func (s *Syncer) noteEmptySession() {
 	line := "session established advertising no Mac listeners — the enumeration returned zero LISTEN sockets, which a Mac never legitimately has; " +
-		"a terminal-launched daemon on macOS 27.0b4 gets a per-responsible-app-filtered pcblist (local-network-permission.md finding 5) — `sudo drawbridge install` runs exempt"
+		"a terminal-launched daemon on macOS 27.0b4 gets a per-responsible-app-filtered pcblist (local-network-permission.md finding 5) — `sudo drawbridge install -vm <vm>` runs exempt"
 	s.log("drawbridged: macsync: %s", line)
 	s.Refusals.Record(introspect.IDAdvertisedNone, line)
 }

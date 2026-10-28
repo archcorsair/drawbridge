@@ -59,6 +59,36 @@ const lsMonitorCaveat = "caveat: absence from Little Snitch's Network Monitor is
 const discriminatorInstruction = "run `sudo drawbridge doctor` and compare: root-ok + user-fail ⇒ Local Network gate; " +
 	"both-fail ⇒ content filter or network fault."
 
+// rootDoctorCmd is the tier-1 command for the VM this run diagnosed. Root
+// doctor defaults to the installed daemon's VM, which need not be this
+// run's target, so the command names it whenever it is known: a comparison
+// against a different VM's root probe discriminates nothing (audit
+// 2026-10-28 M22).
+func rootDoctorCmd(vm string) string {
+	if vm == "" {
+		return "sudo drawbridge doctor"
+	}
+	return "sudo drawbridge doctor -vm " + vm
+}
+
+// discriminator is discriminatorInstruction with the command spelled for vm.
+func discriminator(vm string) string {
+	return strings.Replace(discriminatorInstruction, "`sudo drawbridge doctor`", "`"+rootDoctorCmd(vm)+"`", 1)
+}
+
+// installCmd is the install command a remedy prints, spelled with -vm
+// whenever the VM is known and with a placeholder when it is not. A bare
+// `sudo drawbridge install` keeps the installed daemon's settings now, but
+// with nothing installed it means lima:drawbridge, and a remedy that names
+// its target cannot re-target the daemon even under an older CLI (audit
+// 2026-10-28 H3).
+func installCmd(vm string) string {
+	if vm == "" {
+		vm = "<vm>"
+	}
+	return "sudo drawbridge install -vm " + vm
+}
+
 // ---------------------------------------------------------------------------
 // 1. providers
 // ---------------------------------------------------------------------------
@@ -1243,6 +1273,11 @@ type LocalNetworkInput struct {
 	AgentListening  bool
 	Skip            string
 
+	// VM is the target as provider:instance ("" when none was selected).
+	// Remedies spell it as -vm, so neither the root-doctor comparison nor an
+	// install remedy can land on some other VM (audit 2026-10-28 M22, H3).
+	VM string
+
 	// Podman means loopback, which is not subject to the Local Network gate
 	// at all, so this check has nothing to discriminate and must not print
 	// the sudo instruction for a run that cannot learn anything from it.
@@ -1319,7 +1354,7 @@ func CheckLocalNetwork(in LocalNetworkInput) Finding {
 		f.Status = StatusFail
 		f.Title = "Local Network permission — GATE CONFIRMED (root reaches the guest, this binary does not)"
 		f.Evidence = append(f.Evidence, "root-probe (tier 1, same binary): ok", lsMonitorCaveat)
-		f.Remedy = lnRemedies(subnet)
+		f.Remedy = lnRemedies(subnet, in.VM, false)
 
 	// Row 3 — same verdict, weaker evidence, and the per-binary caveat when
 	// an NE filter is in the picture: a filter can allow the daemon binary
@@ -1330,10 +1365,14 @@ func CheckLocalNetwork(in LocalNetworkInput) Finding {
 		f.Evidence = append(f.Evidence, "root evidence (tier 2, daemon vantage): "+firstNonEmpty(in.Root.Note, "the root daemon resolved vznat-direct"))
 		if in.NEFilterPresent {
 			f.Evidence = append(f.Evidence, "check 7 found an NE content filter, and those are per-binary: the daemon binary being allowed does not "+
-				"exonerate the filter for this CLI. Conclusive: `sudo drawbridge doctor`.")
+				"exonerate the filter for this CLI. Conclusive: `"+rootDoctorCmd(in.VM)+"`.")
 		}
 		f.Evidence = append(f.Evidence, lsMonitorCaveat)
-		f.Remedy = lnRemedies(subnet)
+		// Tier-2 evidence exists only because a root daemon already reaches
+		// the guest, so "install the root daemon" is a no-op here at best,
+		// and spelled bare it used to re-target that daemon (audit
+		// 2026-10-28 R1). The remedies left are the ones for this CLI.
+		f.Remedy = lnRemedies(subnet, in.VM, true)
 
 	// Row 4 — both fail. Never mentions the LN remedies as the fix.
 	case in.Root.Probe == ProbeFail && in.Root.Kind != "unknown" && in.Root.Kind != "":
@@ -1352,23 +1391,35 @@ func CheckLocalNetwork(in LocalNetworkInput) Finding {
 		f.Title = "Local Network permission — undetermined (no root evidence)"
 		f.Evidence = append(f.Evidence,
 			"a user-only probe cannot distinguish the Local Network gate from a content filter or a network fault.",
-			discriminatorInstruction,
+			discriminator(in.VM),
 			lsMonitorCaveat)
-		f.Remedy = "sudo drawbridge doctor"
+		f.Remedy = rootDoctorCmd(in.VM)
 	}
 	return f
 }
 
 // lnRemedies is the TN3179-exemption order: the permanent posture first, the
 // exempt-responsible-process second, the supported subnet exemption last.
-func lnRemedies(subnet netip.Prefix) string {
-	return fmt.Sprintf("in TN3179-exemption order:\n"+
-		"  1. sudo drawbridge install                      # root launchd daemon — exempt twice over, and the permanent posture\n"+
-		"  2. run drawbridge from Apple Terminal or over SSH  # those are exempt responsible processes\n"+
-		"  3. sudo defaults write com.apple.network.local-network AllowedEthernetLocalNetworkAddresses -array %q\n"+
+//
+// daemonReaches is row 3 (tier-2 evidence): a root daemon already reaches the
+// guest, so the data plane is exempt and installing it again changes
+// nothing. The list then starts at the CLI's own exemptions and says why.
+func lnRemedies(subnet netip.Prefix, vm string, daemonReaches bool) string {
+	subnetLines := fmt.Sprintf("sudo defaults write com.apple.network.local-network AllowedEthernetLocalNetworkAddresses -array %q\n"+
 		"     sudo defaults write com.apple.network.local-network AllowedWiFiLocalNetworkAddresses -array %q\n"+
 		"     sudo reboot                                  # Apple-supported subnet exemption (macOS 15.5+)",
 		subnet.String(), subnet.String())
+	if daemonReaches {
+		return "a root daemon already reaches the guest, so mirroring and sync are exempt and reinstalling it changes nothing; " +
+			"the gate is on this CLI's own dials. In TN3179-exemption order:\n" +
+			"  1. run drawbridge from Apple Terminal or over SSH  # those are exempt responsible processes\n" +
+			"  2. " + subnetLines
+	}
+	return fmt.Sprintf("in TN3179-exemption order:\n"+
+		"  1. %-46s # root launchd daemon — exempt twice over, and the permanent posture\n"+
+		"  2. run drawbridge from Apple Terminal or over SSH  # those are exempt responsible processes\n"+
+		"  3. %s",
+		installCmd(vm), subnetLines)
 }
 
 // ---------------------------------------------------------------------------
@@ -1531,12 +1582,19 @@ func CheckDaemon(in DaemonInput) Finding {
 	skewed := snapshotVersionSkew(in.Snapshots, in.CLIVersion)
 	root, user, fighting := fightingDaemons(in.Snapshots)
 	live := liveSnapshot(in.Snapshots)
+	// The VM every install remedy below names: the installed plist's -vm,
+	// else the one a running root daemon serves (audit 2026-10-28 H3).
+	vm := st.VM
+	if vm == "" && root != nil && root.Usable {
+		vm = root.State.VM.Ref
+	}
+	upgrade := installCmd(vm) + "    # after a brew upgrade, run `drawbridge up " + firstNonEmpty(vm, "<vm>") + " && " + installCmd(vm) + "`"
 
 	switch {
 	case in.InstalledVersion != "" && in.InstalledVersion != in.CLIVersion:
 		f.Status = StatusFail
 		f.Title = fmt.Sprintf("Mac daemon — installed %s, this CLI is %s", in.InstalledVersion, in.CLIVersion)
-		f.Remedy = "sudo drawbridge install    # after a brew upgrade, run `drawbridge up && sudo drawbridge install`"
+		f.Remedy = upgrade
 
 	// The running daemon's own word about its version, which the installed
 	// binary's -version cannot give: a daemon started before an upgrade keeps
@@ -1544,7 +1602,7 @@ func CheckDaemon(in DaemonInput) Finding {
 	case skewed != nil:
 		f.Status = StatusFail
 		f.Title = fmt.Sprintf("Mac daemon — the running daemon reports %s, this CLI is %s", skewed.State.Version, in.CLIVersion)
-		f.Remedy = "sudo drawbridge install    # after a brew upgrade, run `drawbridge up && sudo drawbridge install`"
+		f.Remedy = upgrade
 
 	// §D3: the documented dev-posture pathology, detectable for the first
 	// time now that both flavors name themselves.
@@ -1560,18 +1618,18 @@ func CheckDaemon(in DaemonInput) Finding {
 		f.Status = StatusOK
 		f.Title = fmt.Sprintf("Mac daemon — a foreground drawbridged is running (pid %d), nothing installed", live.State.PID)
 		f.Evidence = append(f.Evidence,
-			"a foreground daemon mirrors ports >= 1024 for as long as it runs; `sudo drawbridge install` is the <1024 and survives-reboot posture.")
+			"a foreground daemon mirrors ports >= 1024 for as long as it runs; `"+installCmd(live.State.VM.Ref)+"` is the <1024 and survives-reboot posture.")
 
 	case !st.Installed() && !st.Loaded:
 		f.Status = StatusWarn
 		f.Title = "Mac daemon — not installed"
 		f.Remedy = "nothing is mirroring guest listeners onto this Mac. Either:\n" +
-			"  sudo drawbridge install    # root LaunchDaemon: ports <1024, survives reboot, exempt from the Local Network gate\n" +
-			"  drawbridged -vm <vm>       # unprivileged and foreground, ports >= 1024 only"
+			"  sudo drawbridge install -vm <vm>    # root LaunchDaemon: ports <1024, survives reboot, exempt from the Local Network gate\n" +
+			"  drawbridged -vm <vm>                # unprivileged and foreground, ports >= 1024 only"
 	case st.Installed() && !st.Loaded:
 		f.Status = StatusWarn
 		f.Title = "Mac daemon — installed but not loaded"
-		f.Remedy = "launchd does not know the job (booted out by hand?); `sudo drawbridge install` re-bootstraps it"
+		f.Remedy = "launchd does not know the job (booted out by hand?); `" + installCmd(vm) + "` re-bootstraps it"
 	case st.Loaded && !st.Running():
 		f.Status = StatusWarn
 		f.Title = fmt.Sprintf("Mac daemon — loaded, state=%s", firstNonEmpty(st.State, "unknown"))
@@ -1636,7 +1694,7 @@ func snapshotEvidence(snaps []*introspect.Snapshot) []string {
 			line := "  sync session is up but advertises nothing — a Mac never legitimately has zero LISTEN sockets"
 			if st.EUID != 0 {
 				line += "; a terminal-launched daemon on macOS 27.0b4 gets a per-responsible-app-filtered pcblist " +
-					"(local-network-permission.md finding 5) — `sudo drawbridge install` runs exempt"
+					"(local-network-permission.md finding 5) — `" + installCmd(st.VM.Ref) + "` runs exempt"
 			}
 			out = append(out, line)
 		}
@@ -1926,7 +1984,7 @@ func CheckSkipVisibility(in SkipInput) Finding {
 	}
 	f.Evidence = append(f.Evidence,
 		fmt.Sprintf("the default skip-list is %q: those ports are left alone in both directions.", install.DefaultSkip),
-		"override with -skip on drawbridged or `sudo drawbridge install -skip \"…\"`; -skip \"\" skips nothing.")
+		"override with -skip on drawbridged or `sudo drawbridge install -skip \"…\"` (it keeps the installed daemon's other settings); -skip \"\" skips nothing.")
 	return f
 }
 

@@ -45,8 +45,9 @@ it (nothing in LS's monitor). Errno classification is therefore an input, not
 a verdict. The conclusive discriminator is exemption-based (TN3179: root,
 launchd daemons, and Apple Terminal are exempt) and must be **same-binary**:
 
-- *Tier 1 (conclusive):* `sudo drawbridge doctor` — the same binary probing
-  as root. Unprivileged doctor prints this exact instruction when it needs
+- *Tier 1 (conclusive):* `sudo drawbridge doctor -vm <target>` — the same
+  binary probing as root, against the same VM. Unprivileged doctor prints this
+  exact instruction, with its own target filled in, when it needs
   the root branch; under euid 0 doctor runs the probe and labels the result
   `root-probe`, noting it cannot see the unprivileged branch from there.
   Doctor never spawns `sudo` (no credential prompts mid-run; the user runs
@@ -247,7 +248,7 @@ daemon-independent and tests inject their own).
 | No socket / `ECONNREFUSED` / dial timeout (250 ms) | "no daemon introspection" — doctor/status fall back to `install.Query()` + log-tail inference (today's behavior). Never an error by itself. |
 | Payload unparseable | Treated as absent, plus a `warn` evidence line (corrupt daemon or truncated write). |
 | `schema > 1` | Use the frozen `version` field for the skew check; everything else falls back to inference; evidence line names the schema mismatch. |
-| `version` ≠ CLI version | Version-skew finding (check 9, `fail`), remedy `sudo drawbridge install` — same policy as §6 of ergonomics.md. |
+| `version` ≠ CLI version | Version-skew finding (check 9, `fail`), remedy `sudo drawbridge install -vm <vm>` with the installed (or running root) daemon's VM filled in — same policy as §6 of ergonomics.md. |
 | Root and user sockets both answer | `warn`: the documented fighting-daemons posture, with "stop one of them" remediation naming both PIDs. |
 
 ## 4. The check catalog
@@ -263,8 +264,17 @@ report `skip` with "pass -vm". Doctor also accepts `-vm-subnet`/`-vm-mac`
 (same grammar as the daemon) so its route/lease views match a pinned install.
 **Under euid 0 there is no instance list to select from** (limactl refuses
 root — the vmprovider invariant), so selection mirrors the root *daemon*
-instead: explicit `-vm`, else the daemon's default VM, through `ParseRef`
-(the one vmprovider symbol root may touch) and the lease db. Provider and
+instead: explicit `-vm`, else the installed daemon's `-vm` (read from the
+root-owned 0644 plist, the same read `install.Query` already makes), else
+drawbridged's default VM when nothing is installed, through `ParseRef`
+(the one vmprovider symbol root may touch) and the lease db. The skip
+reason names which of the three it used. Defaulting to the installed VM
+(amendment 2026-10-28, audit M22) is what makes the root run mirror the
+daemon it stands in for: before it, a colima user's `sudo drawbridge
+doctor` probed `lima:drawbridge`. For the same reason every printed
+`sudo drawbridge doctor` instruction carries `-vm <target>` whenever the
+unprivileged run has a target, so the two halves of the discriminator
+compare the same VM. Provider and
 guest-shell checks skip with the root-scoping reason; resolution and check
 6's probe still run — the first cut gated them on the instance list, which
 made `sudo drawbridge doctor` skip the very probe it exists to run
@@ -389,10 +399,10 @@ table — **pure over `(userProbe, rootEvidence, neFilterPresent)`**:
 | user probe | root evidence | Verdict |
 |---|---|---|
 | ok | any | `ok` — the permission is not blocking this binary. |
-| fail | ok (tier 1, same binary) | `fail`: **Local Network gate confirmed.** Remedies, in TN3179-exemption order: `sudo drawbridge install` (root launchd daemon — exempt twice over, the permanent posture); run from Apple Terminal/SSH (exempt responsible process); the subnet-exemption defaults (`sudo defaults write com.apple.network.local-network AllowedEthernetLocalNetworkAddresses -array "<subnet>"` + WiFi key + reboot). |
-| fail | ok (tier 2, daemon vantage) | `fail` with the same remedies **plus the per-binary caveat**: when check 7 found an NE content filter, the daemon binary being allowed does not exonerate the filter for this CLI — "conclusive: `sudo drawbridge doctor`". |
+| fail | ok (tier 1, same binary) | `fail`: **Local Network gate confirmed.** Remedies, in TN3179-exemption order: `sudo drawbridge install -vm <target>` (root launchd daemon — exempt twice over, the permanent posture); run from Apple Terminal/SSH (exempt responsible process); the subnet-exemption defaults (`sudo defaults write com.apple.network.local-network AllowedEthernetLocalNetworkAddresses -array "<subnet>"` + WiFi key + reboot). |
+| fail | ok (tier 2, daemon vantage) | `fail`. Tier-2 evidence exists only because a root daemon already reaches the guest, so the data plane is exempt and installing that daemon again changes nothing (amendment 2026-10-28, audit R1: the first cut led with `sudo drawbridge install`, a no-op at best, and bare it re-targeted the daemon). The remedies are the CLI's own exemptions, in order: run from Apple Terminal/SSH; the subnet-exemption defaults. **Plus the per-binary caveat**: when check 7 found an NE content filter, the daemon binary being allowed does not exonerate the filter for this CLI — "conclusive: `sudo drawbridge doctor -vm <target>`". |
 | fail | fail | `fail`: **not the LN gate alone** — an LS-class content filter (check 7's evidence; root is exempt from the permission but not from an NE filter) or a genuine network fault (check 5). Never mentions the LN remedies as the fix. |
-| fail | unknown | `warn`, never a conclusion: print the discriminator instruction verbatim — "run `sudo drawbridge doctor` and compare: root-ok + user-fail ⇒ Local Network gate; both-fail ⇒ content filter or network fault." |
+| fail | unknown | `warn`, never a conclusion: print the discriminator instruction verbatim — "run `sudo drawbridge doctor -vm <target>` and compare: root-ok + user-fail ⇒ Local Network gate; both-fail ⇒ content filter or network fault." (`-vm <target>` is omitted only when no target was selected.) |
 
 Under euid 0, the check runs the probe, reports the `root-probe` branch, and
 states it cannot see the unprivileged branch from here. In every non-ok
@@ -429,13 +439,17 @@ which own that diagnosis and already print its remedy.
 `install.Query()` (as today), **new** `install.InstalledVersion()` (exec
 `BinaryPath -version` — root-owned 0755, executable unprivileged; absent →
 skip), the introspection snapshot(s), log tail. Classification: installed
-daemon version ≠ CLI → `fail`, remedy `sudo drawbridge install` (§6: brew
-caveat "after upgrade: `drawbridge up && sudo drawbridge install`"); snapshot
+daemon version ≠ CLI → `fail`, remedy `sudo drawbridge install -vm <vm>` (§6: brew
+caveat "after upgrade: `drawbridge up <vm> && sudo drawbridge install -vm <vm>`"); snapshot
 `version` ≠ CLI → same; plist present but not loaded → `warn` (booted out by
-hand); both root and user sockets alive → the D3 fighting-daemons `warn`;
+hand), remedy `sudo drawbridge install -vm <vm>`; both root and user sockets alive → the D3 fighting-daemons `warn`;
 nothing installed and no foreground daemon → `warn` with both options named
-(`sudo drawbridge install` for <1024 + permanence, or foreground
-`drawbridged`). Log tail rides along as evidence lines (row-7 refusals
+(`sudo drawbridge install -vm <vm>` for <1024 + permanence, or foreground
+`drawbridged -vm <vm>`). Every install remedy here fills `<vm>` with the installed plist's
+`-vm`, else a running root daemon's, and prints the placeholder only when
+neither exists (amendment 2026-10-28, audit H3: a bare `sudo drawbridge
+install` used to re-target the daemon at `lima:drawbridge`; it now keeps the
+installed settings, but a remedy that names its VM is right under any CLI). Log tail rides along as evidence lines (row-7 refusals
 surface here per the §7 contract: presence in the tail/ring is the alarm,
 no dedicated check ID).
 
@@ -481,7 +495,7 @@ re-litigated here. Two evidence classes feed them:
 | Finding ID | Condition (state comparison first) | Status + remedy job |
 |---|---|---|
 | `auth` (healthy/unauth umbrella) | Both present, digests equal, modes/format ok → `ok` ("mutual auth on every conn"). Both absent → `warn`: the §6 fail-open state, flagged on sight — "transport is UNAUTHENTICATED; `drawbridge up <vm>` provisions a secret." (Warn not fail: the bare dev flow is legitimate and loudly logged.) |
-| `auth-mac-missing-secret` | Guest file present, Mac file absent at the derived path (or ring/log rows 1/6) | `fail` — point at the Mac side while the guest is healthy: "`drawbridge up` writes it; `sudo drawbridge install` points the daemon at it." |
+| `auth-mac-missing-secret` | Guest file present, Mac file absent at the derived path (or ring/log rows 1/6) | `fail` — point at the Mac side while the guest is healthy: "`drawbridge up <vm>` writes it; `sudo drawbridge install -vm <vm>` points the daemon at it" (both with the target VM filled in). |
 | `auth-guest-missing-secret` | Mac file present, guest file absent (or ring/log row 3) | `fail` — "run `drawbridge up <vm>` to provision one." |
 | `auth-mismatch` | Both present, digests differ (or ring/log rows 2/4) | `fail` — name convergence, not blame: "re-run `drawbridge up <vm>` to converge" (stale snapshot-restored VM walked through in §7). |
 | `auth-wrong-peer` | **Evidence-only** — ring/log row-4 line (per the ratified amendment: row 5 is practically unreachable, the refused side closes first, so row 4's line *is* the wrong-peer evidence) while doctor's own digest comparison says the provisioned pair matches | `fail` — "the daemon authenticated against something that is not this VM's agent — resolution source `<s>`; check `-vm` and whether the transport fell back to the loopback forwarder." Must name the resolution source (the §7 row-5 job, carried by row 4). |

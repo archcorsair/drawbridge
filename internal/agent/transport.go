@@ -143,7 +143,7 @@ func (a *Agent) refuseConn(c net.Conn, typ byte, cause transportauth.Cause, err 
 	var why string
 	switch cause {
 	case transportauth.CausePeerUnauthenticated: // row 1
-		why = "peer sent no authentication but this guest has a transport secret — the Mac daemon has no secret configured or predates transport auth; re-run 'sudo drawbridge install' (or pass -secret-file) and restart it"
+		why = "peer sent no authentication but this guest has a transport secret — the Mac daemon has no secret configured or predates transport auth; re-run 'sudo drawbridge install -vm <vm>' on the Mac (or pass -secret-file) and restart it"
 	case transportauth.CauseProofMismatch: // row 2
 		why = "invalid transport secret — the peer holds a different secret than this guest (stale after re-provisioning?); re-run 'drawbridge up <vm>' to converge, then retry"
 	case transportauth.CauseNoLocalSecret: // row 3

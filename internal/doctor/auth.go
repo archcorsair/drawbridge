@@ -343,7 +343,7 @@ func primaryAuthFinding(in AuthInput) Finding {
 			fmt.Sprintf("guest %s present (sha256 %s…)", in.Guest.Path, in.Guest.prefix()),
 			"Mac "+in.Mac.Path+" absent — the agent will refuse every conn this Mac opens.")
 		f.Evidence = append(f.Evidence, in.evidenceFor(IDAuthMacMissing)...)
-		f.Remedy = "`drawbridge up " + in.VM + "` writes it; `sudo drawbridge install` points the daemon at it"
+		f.Remedy = "`drawbridge up " + in.VM + "` writes it; `" + installCmd(in.VM) + "` points the daemon at it"
 
 	case in.Mac.Present && !in.Guest.Present:
 		f = Finding{ID: IDAuthGuestMissing, Title: "transport authentication — the guest has no secret"}

@@ -482,7 +482,7 @@ func (c *Client) del(l listenerInfo) {
 func (c *Client) logBindError(key mirrorKey, err error) {
 	c.observe(key, introspect.EntryBindFailed)
 	if errors.Is(err, syscall.EACCES) && key.port < 1024 {
-		log.Printf("drawbridged: cannot mirror guest %s :%d — macOS reserves ports <1024 for root; run `sudo drawbridge install` (root LaunchDaemon) or run drawbridged as root to mirror it", key.proto, key.port)
+		log.Printf("drawbridged: cannot mirror guest %s :%d — macOS reserves ports <1024 for root; run `sudo drawbridge install -vm <vm>` (root LaunchDaemon) or run drawbridged as root to mirror it", key.proto, key.port)
 	} else {
 		log.Printf("drawbridged: mirror %s %s:%d unavailable: %v", key.proto, c.MirrorIP, key.port, err)
 	}
