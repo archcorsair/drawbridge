@@ -826,6 +826,7 @@ func resolveEndpoint(sel selection) limaaddr.Resolution {
 	if sel.Ref.Provider != vmprovider.ProviderPodman {
 		return limaaddr.ResolveTarget(limaaddr.Target{
 			VM:        sel.Ref.Instance,
+			Provider:  sel.Ref.Provider,
 			LeaseName: sel.Ref.LeaseName,
 			LimaHome:  sel.Ref.LimaHome,
 		}, controlPort)
@@ -883,7 +884,13 @@ func handoff(g *guest, sel selection, out io.Writer) {
 	}
 
 	r := resolveEndpoint(sel)
-	fmt.Fprintf(out, "drawbridge: transport %s (source %s)\n", r.Endpoint, sourceNote(sel, r))
+	// A colima VM that is up but not answering resolves to no endpoint (no
+	// loopback fallback, audit NEW-X1); say "none" rather than print a blank.
+	endpoint := r.Endpoint
+	if endpoint == "" {
+		endpoint = "none"
+	}
+	fmt.Fprintf(out, "drawbridge: transport %s (source %s)\n", endpoint, sourceNote(sel, r))
 	if r.Note != "" {
 		fmt.Fprintf(out, "drawbridge: %s\n", r.Note)
 	}

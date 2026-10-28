@@ -369,6 +369,8 @@ func Gather(ctx context.Context, o Options) (Inputs, error) {
 		AgentListening: in.Bind.Reachable(),
 		RunningVMs:     running,
 		Skip:           resSkip,
+		GuestUp:        skip == "",
+		GuestUnknown:   euid0,
 	}
 
 	// --- 4. the vzNAT candidate, and everything that needs it --------------
@@ -463,6 +465,7 @@ func resolveTarget(ref vmprovider.Ref, o Options, euid0 bool) limaaddr.Resolutio
 	if ref.Provider != vmprovider.ProviderPodman {
 		return limaaddr.ResolveTarget(limaaddr.Target{
 			VM:        ref.Instance,
+			Provider:  ref.Provider,
 			LeaseName: ref.LeaseName,
 			LimaHome:  ref.LimaHome,
 			Subnet:    o.Subnet,

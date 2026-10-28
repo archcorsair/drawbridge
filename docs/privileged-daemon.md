@@ -187,19 +187,40 @@ SourceVZNATLeases = "vznat-leases"
 ```
 
 Resolution order becomes: `limactl` path (works when run as the VM-owning
-user; fails fast as root) → leases parse for `name=lima-<vm>` candidates,
-newest lease first, each candidate probed with the existing 800 ms dial
-probe → SSH-forwarded loopback `127.0.0.1:4777` (the user-session `lima`
-forward is a plain loopback listener; root can dial it like anyone).
+user; fails fast as root) → leases parse for `name=<lease name>` candidates
+(`lima-<vm>` for Lima, the bare instance name for colima), newest lease
+first, each candidate probed with the existing 800 ms dial probe →
+**Lima targets only:** SSH-forwarded loopback `127.0.0.1:4777` (the
+user-session `lima` forward is a plain loopback listener; root can dial it
+like anyone).
 Stale-lease ambiguity (recreated VM leaves old records) is resolved by the
 probe, same as today's reachability classification. The parser is a pure
 function over the file's text — unit-tested against a fixture, no root
 needed.
 
-What breaks if Apple changes the leases format: the source degrades to the
-forwarder with a resolver `Note` saying so in words (transport.md's
-diagnosis discipline), and option 1 becomes the stopgap. The format has
-been stable for many years and is widely depended on.
+**The loopback fallback belongs to Lima alone (audit NEW-X1, decision E5).**
+`127.0.0.1:4777` is the SSH forward of a Lima instance. A colima instance
+has no such forward, so for a colima target it is some other VM's port: with
+colima stopped, the installed `colima:default` daemon used to dial the Lima
+dev VM's agent and was stopped only by the secret mismatch. The resolver
+takes the provider from `Target.Provider` (`Ref.Provider`, which `ParseRef`
+derives without exec, so root has it) and, for anything but Lima, returns an
+empty `Endpoint` with `Source` `unresolved` and a `Note` that names the
+cause and says the loopback port was not tried. Consumers treat that as
+"nothing to dial yet": `drawbridged` starts (or keeps running) with no
+endpoint instead of exiting, the `'E'` and `'M'` loops and the dial pool back
+off at 1 s without opening a socket, and the shared re-resolve hook (3 s
+minimum interval) ends the state as soon as a lease answers. The introspection
+snapshot reports the empty endpoint and the note, and `doctor` check 4
+reports a `fail`. Podman never reaches the lease resolver (it dials the
+endpoint `install` pinned), and an explicit `-agent host:port` is parsed, not
+resolved, so both are unchanged.
+
+What breaks if Apple changes the leases format: a Lima target degrades to
+the forwarder, and a colima target to no endpoint, each with a resolver
+`Note` saying so in words (transport.md's diagnosis discipline), and option 1
+becomes the stopgap. The format has been stable for many years and is widely
+depended on.
 
 ## 5. What does NOT change
 

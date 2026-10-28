@@ -772,6 +772,13 @@ type ResolutionInput struct {
 	RunningVMs     int
 	Skip           string
 
+	// GuestUp is the user run's confirmation that the guest is running.
+	// GuestUnknown is the root run, which cannot ask (limactl refuses euid
+	// 0). Neither set means the guest is known to be stopped. Only the
+	// no-endpoint verdict reads them: a stopped guest is check 1's finding.
+	GuestUp      bool
+	GuestUnknown bool
+
 	// Podman is the branch where the loopback endpoint is the design rather
 	// than a fallback, and where the record is the thing to compare against
 	// the machine.
@@ -818,6 +825,38 @@ func CheckResolution(in ResolutionInput) Finding {
 		}
 		f.Status = StatusOK
 		f.Title = "endpoint resolution — " + in.Res.Endpoint + " (" + in.Res.Source + ")"
+		return f
+	}
+
+	// The resolver found nothing and was not allowed to invent something: a
+	// target that is not a Lima instance has no loopback forward of its own
+	// (audit NEW-X1), so the daemon has no endpoint and dials nothing. That
+	// is a `fail` when the guest is running, not the `warn` a Lima fallback
+	// earns, because there is no working-but-slower path underneath it. The
+	// Note is already the whole diagnosis (it is printed above, verbatim);
+	// this adds only the verdict and the one next step.
+	//
+	// A stopped guest is check 1's finding, so it is a `skip` here: failing
+	// both would turn one "colima is stopped" into two failures. The root run
+	// cannot tell, and says so with a `warn` rather than guess either way.
+	if in.Res.Source == limaaddr.SourceUnresolved {
+		f.Evidence[0] = "Endpoint: (none)"
+		switch {
+		case in.GuestUp:
+			f.Status = StatusFail
+			f.Title = "endpoint resolution — no endpoint (guest running but unreachable, no loopback fallback for this provider)"
+			f.Remedy = "drawbridged re-resolves on every reconnect and needs no restart once the guest answers; " +
+				"checks 3, 5 and 6 say why its vzNAT address cannot be reached"
+		case in.GuestUnknown:
+			f.Status = StatusWarn
+			f.Title = "endpoint resolution — no endpoint (guest state unknown under root)"
+			f.Remedy = "limactl refuses euid 0, so this run cannot tell a stopped guest from an unreachable one; " +
+				"run `drawbridge doctor` as your own user (check 1 reports whether the VM is running)"
+		default:
+			f.Status = StatusSkip
+			f.Title = "endpoint resolution — no endpoint (guest not running)"
+			f.Evidence = append(f.Evidence, "the guest is not running, so there is nothing to resolve; check 1 reports that.")
+		}
 		return f
 	}
 
@@ -1563,7 +1602,7 @@ func snapshotEvidence(snaps []*introspect.Snapshot) []string {
 			continue
 		}
 		out = append(out, fmt.Sprintf("daemon at %s: %s, pid %d, euid %d, vm %s", s.Path, st.Version, st.PID, st.EUID, firstNonEmpty(st.VM.Ref, "unknown")))
-		line := fmt.Sprintf("  endpoint %s (source=%s)", st.Resolution.Endpoint, st.Resolution.Source)
+		line := fmt.Sprintf("  endpoint %s (source=%s)", firstNonEmpty(st.Resolution.Endpoint, "none"), st.Resolution.Source)
 		out = append(out, line)
 		if st.Resolution.Note != "" {
 			out = append(out, "  note: "+st.Resolution.Note)

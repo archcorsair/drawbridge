@@ -335,7 +335,12 @@ in-guest refutes `NoteAgentNotListening` when the Mac-side probe still fails.
 `limaaddr.ResolveTarget` (live; **no changes to resolver logic** — doctor
 imports and calls) and, when available, the daemon snapshot's `resolution`.
 Print `Endpoint`/`Source`/`Note` exactly. Classification: vznat-direct → `ok`;
-any fallback → `warn` carrying the Note verbatim **plus doctor's
+any fallback → `warn` (a target with no loopback forward of its own, i.e.
+anything but Lima, never falls back: its resolver returns no endpoint and
+`source=unresolved`: a `fail` printing the Note verbatim when the guest is
+running, since there is no slower path underneath it; a `skip` pointing at
+check 1 when the guest is not running; a `warn` under root, which cannot
+tell) carrying the Note verbatim **plus doctor's
 cross-reference lines**: if check 3 proved the agent listening while the Note
 says "agent not reachable", doctor appends "the guest side is listening — the
 errno classification is known to misread host-side gates on macOS 27
