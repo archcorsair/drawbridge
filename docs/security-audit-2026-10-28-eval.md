@@ -159,8 +159,9 @@ contract, or the threat model. Recommendation first.
 
 - `/Library/Logs/drawbridge` is `0744`, not the `0755` install sets, so
   unprivileged doctor cannot read the daemon log here.
-- The Mac's `transport-secret-lima-drawbridge` (2026-07-31) does not match the
-  dev VM's `/etc/drawbridge/transport-secret` (2026-08-01).
+- The Mac's `transport-secret-lima-drawbridge` (2026-07-31) and the dev VM's
+  `/etc/drawbridge/transport-secret` (2026-08-01) have different dates but the
+  same sha256 (corrected 2026-10-28 during the P0-6 live leg).
 - The installed daemon targets `colima:default` with
   `-secret-file …/transport-secret-colima-colima`. A bare
   `sudo drawbridge install` from any upgrade instruction would re-target it
