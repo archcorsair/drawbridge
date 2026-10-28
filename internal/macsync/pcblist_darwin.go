@@ -20,7 +20,11 @@ const (
 	xsoInpcb = 0x010
 	xsoTcpcb = 0x020
 
-	inpIPv6 = 0x2 // inp_vflag
+	// inp_vflag bits. A dual-stack `::` carries both (0x3), a v6-only `::`
+	// or `::1` only INP_IPV6 (0x2), a v4 socket only INP_IPV4 (0x1):
+	// verified live on macOS 27.2 (audit L23).
+	inpIPv4 = 0x1
+	inpIPv6 = 0x2
 
 	tcpsListen = 1 // t_state
 
@@ -142,12 +146,12 @@ func listenerFrom(inp, tcp []byte) (Listener, bool) {
 	if int32(binary.LittleEndian.Uint32(tcp[tcpStateOff:])) != tcpsListen {
 		return Listener{}, false
 	}
-	port := binary.BigEndian.Uint16(inp[inpLportOff:])
-	var addr netip.Addr
-	if inp[inpVflagOff]&inpIPv6 != 0 {
-		addr = netip.AddrFrom16([16]byte(inp[inpLaddrOff : inpLaddrOff+16]))
+	l := Listener{Proto: "tcp", Port: binary.BigEndian.Uint16(inp[inpLportOff:])}
+	if vflag := inp[inpVflagOff]; vflag&inpIPv6 != 0 {
+		l.Addr = netip.AddrFrom16([16]byte(inp[inpLaddrOff : inpLaddrOff+16]))
+		l.V6Only = vflag&inpIPv4 == 0
 	} else {
-		addr = netip.AddrFrom4([4]byte(inp[inpLaddrOff+12 : inpLaddrOff+16]))
+		l.Addr = netip.AddrFrom4([4]byte(inp[inpLaddrOff+12 : inpLaddrOff+16]))
 	}
-	return Listener{Proto: "tcp", Port: port, Addr: addr}, true
+	return l, true
 }

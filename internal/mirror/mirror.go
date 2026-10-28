@@ -120,6 +120,22 @@ type Client struct {
 	// transport.DefaultAgentPort.
 	GuestAgentPort uint16
 
+	// MacHolder, when non-nil, takes a fresh read of the Mac's own TCP
+	// listeners and names a native socket holding proto:port on a wildcard
+	// that serves MirrorIP (0.0.0.0 or dual-stack `::` for a v4 mirror). It
+	// is the backstop for audit H1: on XNU, SO_REUSEADDR lets a mirror's
+	// MirrorIP:port bind succeed beside such a holder and then take its
+	// loopback traffic, so the bind result alone cannot see it. Consulted
+	// before a reservation is answered ok and before an async mirror opens.
+	//
+	// known=false means the read cannot say (empty or failed enumeration,
+	// UDP, a non-literal MirrorIP): the caller then behaves exactly as it
+	// did without the hook, deciding from its own bind result. Nil — the
+	// default, and every non-darwin build — is the same. drawbridged wires
+	// macsync.HolderCheck; the indirection keeps this package free of the
+	// darwin-only poller.
+	MacHolder func(proto string, port uint16) (holder string, known bool)
+
 	agentPort uint16
 	curAddr   atomic.Pointer[string] // last ReResolve result; nil ⇒ AgentAddr
 	mu        sync.Mutex
@@ -472,9 +488,34 @@ func (c *Client) logBindError(key mirrorKey, err error) {
 	}
 }
 
+// macHeld names the native Mac wildcard holder of proto:port, or "" when
+// there is none or the read cannot say (see MacHolder): "" always means
+// "decide from the bind result", which is the pre-H1 behavior. Called under
+// c.mu, so no mirror of ours can appear or vanish for this key between the
+// read and the decision; the read counts wildcard holders only, so it never
+// sees a mirror bound at a loopback MirrorIP either way.
+func (c *Client) macHeld(proto string, port uint16) string {
+	if c.MacHolder == nil {
+		return ""
+	}
+	h, known := c.MacHolder(proto, port)
+	if !known {
+		return ""
+	}
+	return h
+}
+
 func (c *Client) openLocked(key mirrorKey, refs int) {
 	if key.proto == "udp" {
 		c.openUDPLocked(key, refs)
+		return
+	}
+	// A native Mac service already answers MirrorIP:port through a wildcard
+	// bind: our bind would succeed and quietly take its loopback traffic
+	// (H1). Refuse exactly as for a colliding bind: bind-failed, out loud.
+	if h := c.macHeld(key.proto, key.port); h != "" {
+		c.observe(key, introspect.EntryBindFailed)
+		log.Printf("drawbridged: mirror %s %s:%d unavailable: Mac %s already serves it — not mirroring guest :%d over a native Mac service", key.proto, c.MirrorIP, key.port, h, key.port)
 		return
 	}
 	ln, err := net.Listen("tcp", net.JoinHostPort(c.MirrorIP, strconv.Itoa(int(key.port))))
@@ -658,6 +699,17 @@ func (c *Client) handleReserve(r reserveReq) reserveResp {
 		// Already ours (mirror or earlier reservation) — not a Mac-native
 		// conflict; the guest bind succeeds or fails on guest semantics.
 		return reserveResp{OK: true}
+	}
+	// A Mac wildcard holder is a Mac-native conflict the bind below cannot
+	// see (H1): answer inuse before binding anything, so no reservation
+	// exists to hold Mac 127.0.0.1:port for ReserveTTL or to withdraw the
+	// port from the guest's sync (NEW-A1). The guest agent answers this
+	// itself for ports it already has synced; this catches the rest (a
+	// holder that appeared since the last poll, a port the agent's view
+	// missed). An unknown read falls through to the bind, as before.
+	if h := c.macHeld("tcp", r.Port); h != "" {
+		log.Printf("drawbridged: mirror: refusing guest bind :%d (inuse): Mac %s already serves %s:%d", r.Port, h, c.MirrorIP, r.Port)
+		return reserveResp{Reason: "inuse"}
 	}
 	ln, err := net.Listen("tcp", net.JoinHostPort(c.MirrorIP, strconv.Itoa(int(r.Port))))
 	if err != nil {

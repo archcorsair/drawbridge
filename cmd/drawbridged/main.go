@@ -234,6 +234,11 @@ func main() {
 	m.Skip = skip
 	m.Auth = auth
 	m.Refusals = ring
+	// H1 backstop: a fresh Mac listener read before every reservation and
+	// async mirror open, so a native wildcard holder of a port is never
+	// shadowed by a mirror bind that SO_REUSEADDR lets succeed. An empty
+	// (filtered) enumeration is "unknown" and leaves the bind to decide.
+	m.MacHolder = macsync.HolderCheck(*mirrorIP, nil)
 	s := &macsync.Syncer{
 		AgentAddr: agentAddr,
 		ReResolve: reResolve,

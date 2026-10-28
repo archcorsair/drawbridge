@@ -116,11 +116,19 @@ docker run --network host nginx
 nginx binds 0.0.0.0:80
   └─ kernel parks the bind, notifies the agent
        ├─ netns == agent's netns?  stream socket?  mirrorable addr?  port != 0?
-       └─ ReservePort over 'R' (500 ms) → Mac binds mirror-before-ack   [existing]
-            ├─ "inuse"  → SendErrno(EADDRINUSE)  — synchronous, Linux errno 98
-            └─ "ok"/"unknown" → SendContinue — bind proceeds; tracker event
-               adopts the pending mirror (or ReserveTTL releases it)    [existing]
+       └─ ReservePort
+            ├─ port in the agent's synced Mac set → "inuse", no round trip
+            └─ else 'R' (500 ms) → Mac: skip-list? ours already? wildcard
+               holder in a fresh listener read? then binds mirror-before-ack
+                 ├─ "inuse"  → SendErrno(EADDRINUSE)  — synchronous, Linux errno 98
+                 └─ "ok"/"unknown" → SendContinue — bind proceeds; tracker event
+                    adopts the pending mirror (or ReserveTTL releases it)
 ```
+
+The synced-set answer and the wildcard-holder read are the 2026-10-28 audit's
+H1 fix (plan.md §"Phase 4 results"): on XNU the Mac's `127.0.0.1:P` bind
+succeeds beside a `0.0.0.0:P` or dual-stack `[::]:P` holder, so the bind result
+alone allowed a guest loopback bind to take a Mac service's loopback traffic.
 
 `docker exec` processes inherit the container's seccomp config from the saved state,
 so runc installs the filter (and delivers a fresh notify fd) for them too — exec'd
