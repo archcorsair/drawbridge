@@ -30,6 +30,9 @@ func tuiFlags(args []string) (tui.Options, error) {
 	mac := fs.String("vm-mac", "", "guest's hardware address, passed through so the doctor view's lease view matches a pinned install")
 	timeout := fs.Duration("timeout", 30*time.Second, "overall budget for the doctor view's probes; same default as `drawbridge doctor`")
 	_ = fs.Parse(args)
+	if err := rejectLeftovers(fs, "tui takes the VM as -vm NAME"); err != nil {
+		return tui.Options{}, err
+	}
 
 	opts := tui.Options{VM: *vm, HWAddr: *mac, Timeout: *timeout, CLIVersion: buildinfo.Version}
 	// A bad -vm is rejected here rather than silently ignored: it would

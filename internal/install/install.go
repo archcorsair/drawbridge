@@ -165,6 +165,7 @@ func queryFrom(since int64) Status {
 		PlistInstalled:  fileExists(PlistPath),
 		BinaryInstalled: fileExists(BinaryPath),
 	}
+	st.VM, _ = InstalledVM()
 	st.Loaded, st.State, st.PID = printJob()
 	tail, agent, err := tailLog(LogPath, since, 8)
 	switch {

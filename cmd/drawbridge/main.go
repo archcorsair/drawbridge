@@ -96,17 +96,24 @@ Usage:
         Remove the agent, its unit and the wrapper from the guest, and revert
         the daemon.json changes `+"`up --oci`"+` recorded. Idempotent: a guest
         that never had drawbridge is a no-op.
-  drawbridge install [-vm NAME] [-vm-mac MAC] [-vm-subnet CIDR] [-udp P,P]
-                     [-skip P,P] [-bin PATH] [-print]
+  drawbridge install [INSTANCE] [-vm NAME] [-vm-mac MAC] [-vm-subnet CIDR]
+                     [-udp P,P] [-skip P,P] [-secret-file PATH] [-bin PATH]
+                     [-print]
         Install drawbridged as a root LaunchDaemon (needs sudo).
         Ports <1024 need this; -print previews the files and writes nothing.
         There is one daemon, not one per VM: installing for a different -vm
         REPLACES the installed one and stops the old VM's sessions. The
         command says which VM it is replacing when it does.
-        -vm takes a bare Lima instance name (default `+install.DefaultVM+`) or
-        provider:name, lima:myvm, colima:default, colima:<profile>,
-        podman:<machine>. A podman install pins the transport endpoint
-        `+"`drawbridge up`"+` recorded, so run that first.
+        Re-running it upgrades in place: every flag left out keeps the
+        installed daemon's value, and each kept value is printed first.
+        An explicit flag wins, "" included (-vm-mac "" drops a pin).
+        -vm-mac and -secret-file belong to one VM: when -vm names a
+        different one they are derived for it as a fresh install would.
+        -vm (or INSTANCE) takes a bare Lima instance name or provider:name,
+        lima:myvm, colima:default, colima:<profile>, podman:<machine>; with
+        nothing installed it defaults to `+install.DefaultVM+`. A podman install
+        pins the transport endpoint `+"`drawbridge up`"+` recorded, so run that
+        first.
         -skip lists ports drawbridged leaves alone in both directions
         (default `+install.DefaultSkip+`; -skip "" skips nothing).
         -vm-mac pins which VM the root daemon will trust (Lima and Colima
@@ -154,24 +161,59 @@ See docs/ergonomics.md §4 and docs/privileged-daemon.md.
 
 func runInstall(args []string) int {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
-	vm := fs.String("vm", install.DefaultVM, "VM the daemon resolves (-vm in the installed plist): a bare name is a Lima instance, `provider:name` selects one explicitly (lima:myvm, colima:default)")
-	mac := fs.String("vm-mac", "", "guest's hardware address to pin (-vm-mac in the installed plist); without it the root daemon trusts DHCP lease records matched by the guest-chosen name alone. `limactl list --format json NAME` reports it")
-	subnet := fs.String("vm-subnet", "", "vmnet subnet lease addresses must fall inside (-vm-subnet in the installed plist); only needed when this Mac's vmnet is not on "+limaaddr.DefaultSubnet)
-	udp := fs.String("udp", "", "comma-separated Mac UDP ports to offer the guest (-udp in the installed plist)")
-	skip := fs.String("skip", install.DefaultSkip, "comma-separated ports the daemon ignores in both directions (-skip in the installed plist); \"\" installs a daemon that skips nothing")
-	secretFile := fs.String("secret-file", "", "transport secret the daemon reads (-secret-file in the installed plist); default is the per-VM file `drawbridge up` writes under ~/Library/Application Support/drawbridge")
+	// Every default below is the fresh-install default. On a Mac with a
+	// daemon already installed, a flag left out keeps the installed value
+	// instead (inheritInstall, decision E3).
+	vm := fs.String("vm", install.DefaultVM, "VM the daemon resolves (-vm in the installed plist): a bare name is a Lima instance, `provider:name` selects one explicitly (lima:myvm, colima:default). Also accepted as the one positional argument. Left out, the installed daemon's VM is kept")
+	mac := fs.String("vm-mac", "", "guest's hardware address to pin (-vm-mac in the installed plist); without it the root daemon trusts DHCP lease records matched by the guest-chosen name alone. `limactl list --format json NAME` reports it. Kept from the installed daemon while the VM is the same; -vm-mac \"\" drops it")
+	subnet := fs.String("vm-subnet", "", "vmnet subnet lease addresses must fall inside (-vm-subnet in the installed plist); only needed when this Mac's vmnet is not on "+limaaddr.DefaultSubnet+". Kept from the installed daemon; -vm-subnet \"\" drops it")
+	udp := fs.String("udp", "", "comma-separated Mac UDP ports to offer the guest (-udp in the installed plist). Kept from the installed daemon; -udp \"\" drops it")
+	skip := fs.String("skip", install.DefaultSkip, "comma-separated ports the daemon ignores in both directions (-skip in the installed plist); \"\" installs a daemon that skips nothing. Kept from the installed daemon")
+	secretFile := fs.String("secret-file", "", "transport secret the daemon reads (-secret-file in the installed plist); default is the per-VM file `drawbridge up` writes under ~/Library/Application Support/drawbridge. Kept from the installed daemon while the VM is the same; -secret-file \"\" re-derives it")
 	bin := fs.String("bin", "", "drawbridged binary to install (default: the drawbridged next to this CLI)")
 	print := fs.Bool("print", false, "print the files that would be installed and exit; writes nothing, needs no root")
-	_ = fs.Parse(args)
-
-	ports, err := install.ParseUDPPorts(*udp)
+	// The VM may also come positionally, the grammar `up` and `down` take, and
+	// flags may sit on either side of it: `install colima:default -print` is a
+	// preview. Anything beyond one positional is a usage error, never a
+	// silently ignored tail (audit 2026-10-28 M11: the tail used to swallow
+	// -print and turn a preview into a real install).
+	positional, err := parsePositional(fs, args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "drawbridge install: %v\n", err)
 		return 2
 	}
+	set := explicitFlags(fs)
+	if positional != "" {
+		if set["vm"] {
+			fmt.Fprintf(os.Stderr, "drawbridge install: the VM is given twice (%s and -vm %s); name it once\n", positional, *vm)
+			return 2
+		}
+		*vm, set["vm"] = positional, true
+	}
+
+	// Inherit every flag not given from the installed daemon, and say so
+	// before anything is installed. Notes go where the verb's progress goes:
+	// stdout for a real install, stderr under -print, whose stdout is the
+	// rendered files and nothing else.
+	note := stepLine(os.Stdout, stdoutStyles)
+	if *print {
+		note = stepLine(os.Stderr, stderrStyles)
+	}
+	prev, hasPrev := readInstalledArgs()
+	inh := inheritInstall(installFlags{vm: *vm, mac: *mac, subnet: *subnet, udp: *udp, skip: *skip, secretFile: *secretFile}, set, prev, hasPrev)
+	*vm, *mac, *subnet, *udp, *skip, *secretFile = inh.flags.vm, inh.flags.mac, inh.flags.subnet, inh.flags.udp, inh.flags.skip, inh.flags.secretFile
+	for _, n := range inh.notes {
+		note("%s", n)
+	}
+
+	ports, err := install.ParseUDPPorts(*udp)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drawbridge install: %v%s\n", err, inh.fromInstalled("udp"))
+		return 2
+	}
 	cfg := install.Config{VM: *vm, UDP: ports}
 	if err := cfg.SetSkip(*skip); err != nil {
-		fmt.Fprintf(os.Stderr, "drawbridge install: -skip: %v\n", err)
+		fmt.Fprintf(os.Stderr, "drawbridge install: -skip: %v%s\n", err, inh.fromInstalled("skip"))
 		return 2
 	}
 
@@ -181,7 +223,7 @@ func runInstall(args []string) int {
 	if *mac != "" {
 		hw, err := limaaddr.ParseHWAddr(*mac)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "drawbridge install: -vm-mac: %v\n", err)
+			fmt.Fprintf(os.Stderr, "drawbridge install: -vm-mac: %v%s\n", err, inh.fromInstalled("vm-mac"))
 			return 2
 		}
 		cfg.MAC = hw
@@ -189,7 +231,7 @@ func runInstall(args []string) int {
 	if *subnet != "" {
 		p, err := limaaddr.ParseSubnet(*subnet)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "drawbridge install: -vm-subnet: %v\n", err)
+			fmt.Fprintf(os.Stderr, "drawbridge install: -vm-subnet: %v%s\n", err, inh.fromInstalled("vm-subnet"))
 			return 2
 		}
 		cfg.Subnet = p.String()
@@ -200,7 +242,7 @@ func runInstall(args []string) int {
 	// neither the flag value nor "lima-"+it.
 	ref, err := vmprovider.ParseRef(cfg.VM)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "drawbridge install: -vm: %v\n", err)
+		fmt.Fprintf(os.Stderr, "drawbridge install: -vm: %v%s\n", err, inh.fromInstalled("vm"))
 		return 2
 	}
 	// Advisory warnings are collected here and printed last — after the
@@ -244,7 +286,10 @@ func runInstall(args []string) int {
 				"the daemon will not start until that file exists: drawbridged exits at boot when",
 				"an explicit -secret-file is missing, and launchd retries it every ~10 s.",
 			}
-			if *secretFile == "" {
+			// "Is this the file `up` writes" is a question about the path, not
+			// about whether -secret-file was typed: an inherited or explicit
+			// value can be exactly the per-VM default.
+			if def, derr := transportauth.PathForRef(ref); derr == nil && cfg.SecretFile == def {
 				body = append(body,
 					fmt.Sprintf("`drawbridge up %s` writes that file; run it, and the daemon starts on its own", upVM),
 					"(no reinstall needed).")
@@ -304,6 +349,10 @@ func runInstall(args []string) int {
 		}
 	}
 
+	if n := inh.agentNote(cfg.Agent); n != "" {
+		note("%s", n)
+	}
+
 	if cfg.MAC == "" && ref.Provider != vmprovider.ProviderPodman {
 		// No auto-discovery of the address: reading it for the user and
 		// pinning it silently would decide their fail-open-vs-fail-closed
@@ -320,6 +369,9 @@ func runInstall(args []string) int {
 	}
 
 	if *print {
+		if inh.prevVM != "" && !inh.sameVM {
+			note("this would replace the installed daemon for %s with %s", inh.prevVM, cfg.VM)
+		}
 		plist, err := install.RenderPlist(cfg)
 		if err != nil {
 			flushWarnings()
@@ -335,10 +387,12 @@ func runInstall(args []string) int {
 	// stop. Said out loud because it cost a user their colima install during
 	// the 7.1 acceptance run (docs/podman.md §"7.1 results"). Printed, not
 	// prompted: `install` has to stay scriptable, and `uninstall` plus a
-	// re-install is the undo.
+	// re-install is the undo. Compared as canonical refs, not spellings: a
+	// re-install that spells colima:default where the plist says
+	// colima:colima replaces nothing (audit 2026-10-28 I6).
 	step := stepLine(os.Stdout, stdoutStyles)
-	if prev, ok := install.InstalledVM(); ok && prev != cfg.VM {
-		step("replacing the installed daemon for %s with %s; the old VM's mirror and sync sessions stop", prev, cfg.VM)
+	if inh.prevVM != "" && !inh.sameVM {
+		step("replacing the installed daemon for %s with %s; the old VM's mirror and sync sessions stop", inh.prevVM, cfg.VM)
 	}
 
 	st, err := install.Install(cfg, *bin, step)
@@ -436,9 +490,25 @@ func limactlShow(r vmprovider.Ref) string {
 	return cmd
 }
 
+// rejectLeftovers is the usage error for a verb that takes no positional
+// argument. Go's flag package stops at the first non-flag token, so without
+// this `drawbridge doctor podman:spike -json` silently diagnosed the implicit
+// VM and printed text (audit 2026-10-28 M11): everything after the stray
+// word, flags included, was dropped on the floor.
+func rejectLeftovers(fs *flag.FlagSet, hint string) error {
+	if fs.NArg() == 0 {
+		return nil
+	}
+	return fmt.Errorf("unexpected argument %q (%s); nothing ran", fs.Arg(0), hint)
+}
+
 func runUninstall(args []string) int {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
 	_ = fs.Parse(args)
+	if err := rejectLeftovers(fs, "uninstall takes no arguments: there is one daemon"); err != nil {
+		fmt.Fprintf(os.Stderr, "drawbridge uninstall: %v\n", err)
+		return 2
+	}
 	if err := install.Uninstall(stepLine(os.Stdout, stdoutStyles)); err != nil {
 		fmt.Fprintf(os.Stderr, "drawbridge uninstall: %v\n", err)
 		return 1
@@ -450,6 +520,10 @@ func runStatus(args []string) int {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	verbose := fs.Bool("v", false, "the full form: launchctl state, artifact paths, the log tail, and every daemon field")
 	_ = fs.Parse(args)
+	if err := rejectLeftovers(fs, "status takes no arguments: it reports every daemon"); err != nil {
+		fmt.Fprintf(os.Stderr, "drawbridge status: %v\n", err)
+		return 2
+	}
 	st := install.Query()
 	snaps, problems := introspect.FetchAll(introspect.DialTimeout)
 	// The calm default (same rule as doctor): a live daemon's snapshot IS

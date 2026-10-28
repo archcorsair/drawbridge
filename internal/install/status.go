@@ -21,6 +21,11 @@ type Status struct {
 	PlistInstalled  bool
 	BinaryInstalled bool
 
+	// VM is the installed plist's -vm, verbatim ("" when there is no plist
+	// or it names none). Remedies that re-run install spell it as -vm, so a
+	// printed fix can never re-target the daemon at some other VM.
+	VM string
+
 	Loaded bool   // launchctl knows the job
 	State  string // launchd's own word, e.g. "running", "waiting"
 	PID    int    // 0 when not running

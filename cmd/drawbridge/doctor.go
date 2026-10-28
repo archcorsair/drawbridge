@@ -41,6 +41,9 @@ func doctorFlags(args []string) (doctor.Options, doctorOutput, error) {
 	timeout := fs.Duration("timeout", 30*time.Second, "overall budget for every probe; doctor terminates against a wedged VM rather than hanging")
 	probe := fs.Bool("probe", false, "run check 8: open one read-only event session to the agent, half-close it, and see whether the path still delivers server bytes. Costs ~20s (it outlasts the agent's liveness ping) and raises -timeout to that floor")
 	_ = fs.Parse(args)
+	if err := rejectLeftovers(fs, "doctor takes the VM as -vm NAME"); err != nil {
+		return doctor.Options{}, doctorOutput{}, err
+	}
 
 	opts := doctor.Options{
 		VM:         *vm,
