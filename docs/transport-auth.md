@@ -281,6 +281,31 @@ and it makes rotation live: delete Mac file → `drawbridge up` → new secret
 on both sides → in-flight *new* conns use it immediately, no restarts.
 Established conns keep running (they were mutually verified at open).
 
+**Configured is sticky for the life of the process**
+(`transportauth.LoadLatched`, audit 2026-10-28 M6 and NEW-A2). A path is
+*configured* for a process once a read has found a file there, at boot or
+on any later read and whether or not it parsed (a present file is evidence
+a secret was configured, so "absent, then malformed, then deleted" does not
+return to unauthenticated mode), or from the start when `-secret-file` was passed
+explicitly (`transportauth.Require`; on the Mac that case is already fatal
+at boot when the file is absent, on the agent it boots and refuses). From
+then on the re-read has only three outcomes: the current secret, a
+malformed-file refusal, or, when the file is gone, a refusal with cause
+`secret-unreadable` (row 8, `auth-file-perms`) naming `drawbridge up <vm>`
+as the remedy. It never falls back to unauthenticated mode: the Mac
+returns before writing the hello, so no `auth=0` frame is sent, and the
+agent closes before `ServerHandshake`, so no `auth=0` peer is accepted.
+Without the latch, the rotation recipe run against a stopped VM (`rm`,
+then an `up` that fails before rewriting the file) left the root daemon
+dialing `127.0.0.1:4777` unauthenticated, trusting whatever local process
+had bound it. So between the `rm` and the `up` that rewrites the file,
+dials are refused, and the first dial after the rewrite heals. A process
+that has never seen a file at its path keeps the §6 unauthenticated mode
+exactly; the only way back to that mode for a process that has is a
+restart. The latch is process-wide and keyed by path, because the Mac's
+`MacConfig` is a value copied into each client before any of them dials;
+it holds no secret bytes.
+
 **`up` re-run semantics** (deterministic, stated): Mac file exists → reuse;
 absent → generate. Then converge the guest: compare via a root digest
 (`sudoSh("sha256sum " + SecretPath)` — the guest file is `0600` root, so
@@ -297,7 +322,7 @@ modes, and enabled/disabled; log a digest prefix only in `doctor` (Phase
 5), where comparison is the point. This becomes an AGENTS.md invariant
 (§11).
 
-## 6. Mode matrix (per side: configured = file present at its path)
+## 6. Mode matrix (per side: configured = file present at its path, or ever seen or explicitly required by this process, §5)
 
 | Mac secret | Agent secret | Outcome |
 |---|---|---|
@@ -371,7 +396,7 @@ to each so Phase 5 does not re-litigate.
 | 5 | Mac | `proof_agent` invalid | `peer at <ep> presented an invalid transport secret: this is NOT the agent '<vm>' was provisioned for — wrong VM or a squatter answered (source=<resolution source>); refusing. Check -vm, and whether the transport fell back to the loopback forwarder` | `auth-wrong-peer` — job: THE line for the demonstrated failure; must name the resolution source so forwarder-fallback attaches are self-explaining |
 | 6 | Mac | sent `auth=0` (no local secret), conn died right after the frame | `agent at <ep> closed the connection immediately — if that guest was provisioned with a transport secret, this daemon needs one too: expected at <derived path> (not found). 'drawbridge up' writes it; 'sudo drawbridge install' points the daemon at it` | `auth-mac-missing-secret` |
 | 7 | Mac (syncer) | `'D'` activation names an unadvertised port | `refused reverse dial to 127.0.0.1:<port> (proto <p>): not a port this Mac advertised — the guest asked for something the syncer never offered (agent bug or hostile peer); conn closed` | none — runtime alarm; doctor surfaces its presence in the log tail as evidence |
-| 8 | both | secret file present but malformed / unreadable | startup: fatal, naming file, expected format (64 hex chars), and mode; per-conn re-read failure post-startup: refuse conn + log same shape | `auth-file-perms` — checks existence, mode 0600, format, both sides |
+| 8 | both | secret file present but malformed / unreadable, or absent after this process saw a file there (§5 latch) | startup: fatal, naming file, expected format (64 hex chars), and mode; per-conn re-read failure post-startup: refuse conn + log same shape; a vanished file logs `transport secret is unusable (<path>: configured transport secret is missing)` with `drawbridge up <vm>` as the remedy instead of the format rule | `auth-file-perms` — checks existence, mode 0600, format, both sides; when the Mac file is absent its remedy is `drawbridge up <vm>` |
 | 9 | Mac (syncer) | activation header reserved byte nonzero | `dropping reverse-stream conn: nonzero reserved byte in activation header (incompatible agent?)` | folded into version-skew check |
 
 Stale-secret after VM recreation, walked through: user deletes the colima
@@ -547,6 +572,7 @@ delta explicitly rather than hiding it in "noise".
    ahead of the S-header read (protocol allows it; ordering is
    agent-internal).
 4. **Rotation UX**: no `drawbridge secret rotate` in 4.5 — documented
-   `rm <mac file> && drawbridge up` (live-heals, §5). Recommendation:
+   `rm <mac file> && drawbridge up` (live-heals, §5; dials refuse
+   between the two steps rather than run unauthenticated). Recommendation:
    defer the subcommand until someone asks; the primitive is complete
    without it.

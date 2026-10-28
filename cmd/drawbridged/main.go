@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -106,17 +107,23 @@ func main() {
 		Throttle:   transportauth.NewThrottle(transportauth.RefusalLogEvery),
 		Refusals:   ring,
 	}
-	secret, err := transportauth.LoadOptional(secretPath)
-	if err != nil {
-		log.Fatalf("drawbridged: %v — the transport secret must be 64 hex characters, mode 0600; re-run `drawbridge up %s` to reprovision", err, ref.Spec)
+	// The boot read latches (transportauth.LoadLatched): from the first
+	// secret this daemon loads, a vanished file is a refusal on every dial,
+	// never a fall back to an unauthenticated transport (§5). An explicit
+	// flag latches before the read, so it is configured even if absent.
+	if explicitSecret {
+		transportauth.Require(secretPath)
 	}
+	secret, err := transportauth.LoadLatched(secretPath)
 	switch {
-	case secret != nil:
-		log.Printf("drawbridged: transport auth: enabled (%s)", secretPath)
-	case explicitSecret:
+	case errors.Is(err, transportauth.ErrConfiguredMissing):
 		// An explicit flag states intent; degrading to unauthenticated
 		// silently would be the forbidden weakening (§5).
 		log.Fatalf("drawbridged: -secret-file %s: no such file — pass a path that exists, or omit the flag to use the per-VM default; `drawbridge up %s` writes it", secretPath, ref.Spec)
+	case err != nil:
+		log.Fatalf("drawbridged: %v — the transport secret must be 64 hex characters, mode 0600; re-run `drawbridge up %s` to reprovision", err, ref.Spec)
+	case secret != nil:
+		log.Printf("drawbridged: transport auth: enabled (%s)", secretPath)
 	default:
 		lookedFor := secretPath
 		if lookedFor == "" {
@@ -323,9 +330,16 @@ func serveIntrospection(ctx context.Context, flagValue string, ref vmprovider.Re
 // every per-conn read, so a rotation or a broken file shows up without a
 // restart. Bytes, proofs, and digests never enter the payload — doctor
 // compares digests itself, directly against the files.
+//
+// It reads through the same latch as the dials, so a secret that vanished
+// after this daemon loaded it reports the mode still in force
+// (static-hmac-v1: every dial refuses) with the file absent, not "none":
+// the daemon is not unauthenticated, it is refusing.
 func authState(path string) introspect.Auth {
 	a := introspect.Auth{Mode: introspect.AuthModeNone, SecretPath: path, SecretState: introspect.SecretAbsent}
-	switch sec, err := transportauth.LoadOptional(path); {
+	switch sec, err := transportauth.LoadLatched(path); {
+	case errors.Is(err, transportauth.ErrConfiguredMissing):
+		a.Mode = introspect.AuthModeStaticHMACv1
 	case err != nil:
 		a.Mode, a.SecretState = introspect.AuthModeStaticHMACv1, introspect.SecretMalformed
 	case sec != nil:

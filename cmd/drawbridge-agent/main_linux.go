@@ -118,13 +118,28 @@ func main() {
 	// Transport auth mode, decided from our own file and never from the wire
 	// (docs/transport-auth.md §6). Malformed is fatal at boot: a configured
 	// secret that cannot be read must never degrade into trusting everyone.
-	secret, err := transportauth.LoadOptional(*secretFile)
-	if err != nil {
-		log.Fatalf("drawbridge-agent: %v — the transport secret must be 64 hex characters, mode 0600; re-run `drawbridge up <vm>` to reprovision", err)
+	// The boot read latches (transportauth.LoadLatched): a secret present
+	// now keeps this agent authenticated for life, so a file deleted under
+	// it (down's best-effort agent stop failing before `rm -rf StateDir`)
+	// refuses conns instead of accepting auth=0. An explicit -secret-file
+	// latches before the read: it states intent, like drawbridged's.
+	explicitSecret := false
+	flag.Visit(func(f *flag.Flag) { explicitSecret = explicitSecret || f.Name == "secret-file" })
+	if explicitSecret {
+		transportauth.Require(*secretFile)
 	}
-	if secret != nil {
+	secret, err := transportauth.LoadLatched(*secretFile)
+	switch {
+	case errors.Is(err, transportauth.ErrConfiguredMissing):
+		// Not fatal: the default path is absent-tolerant at boot, and an
+		// explicit one only changes what absence means. Every conn is
+		// refused until `up` writes the file, then the next conn heals.
+		log.Printf("drawbridge-agent: transport auth: required by -secret-file %s, but no file is there yet — every conn is refused until `drawbridge up <vm>` writes one", *secretFile)
+	case err != nil:
+		log.Fatalf("drawbridge-agent: %v — the transport secret must be 64 hex characters, mode 0600; re-run `drawbridge up <vm>` to reprovision", err)
+	case secret != nil:
 		log.Printf("drawbridge-agent: transport auth: enabled (%s)", *secretFile)
-	} else {
+	default:
 		log.Printf("drawbridge-agent: transport auth: no secret configured (looked for %s) — transport is UNAUTHENTICATED; any process that reaches it is trusted. Run `drawbridge up` to provision one", *secretFile)
 	}
 

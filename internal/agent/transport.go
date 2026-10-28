@@ -5,6 +5,7 @@ package agent
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -79,8 +80,10 @@ func (a *Agent) handleTransportConn(c net.Conn) {
 		return
 	}
 	// Re-read per accepted conn: rotation heals live, without an agent
-	// restart (§5). The file is ~65 bytes next to a TCP accept.
-	sec, err := transportauth.LoadOptional(a.SecretFile)
+	// restart (§5). The file is ~65 bytes next to a TCP accept. Latched: once
+	// this agent has had a secret, a vanished file refuses every conn here
+	// instead of letting ServerHandshake accept an auth=0 peer.
+	sec, err := transportauth.LoadLatched(a.SecretFile)
 	if err != nil {
 		a.refuseConn(c, frame[0], transportauth.CauseSecretUnreadable, err)
 		return
@@ -146,6 +149,10 @@ func (a *Agent) refuseConn(c net.Conn, typ byte, cause transportauth.Cause, err 
 	case transportauth.CauseNoLocalSecret: // row 3
 		why = fmt.Sprintf("peer requires authentication but this guest has no transport secret (%s missing) — run 'drawbridge up <vm>' to provision one", a.SecretFile)
 	case transportauth.CauseSecretUnreadable: // row 8
+		if errors.Is(err, transportauth.ErrConfiguredMissing) {
+			why = fmt.Sprintf("this guest's transport secret is unusable (%v) — this agent was configured with it, so it refuses the conn rather than fall back to an unauthenticated transport; re-run 'drawbridge up <vm>' to reprovision (the next conn picks it up, no restart)", err)
+			break
+		}
 		why = fmt.Sprintf("this guest's transport secret is unusable (%v) — it must be 64 hex characters, mode 0600; re-run 'drawbridge up <vm>' to reprovision", err)
 	default: // stalled or vanished mid-handshake
 		why = fmt.Sprintf("peer closed or stalled during transport authentication (%v)", err)

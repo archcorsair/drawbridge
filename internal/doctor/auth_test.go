@@ -145,6 +145,30 @@ func TestCheckAuthFilePermsSilentWhenHealthy(t *testing.T) {
 	noFindingByID(t, CheckAuth(AuthInput{VM: "lima:dev", Mac: macSecret(digestA), Guest: guestSecret(digestA)}), IDAuthFilePerms)
 }
 
+// A daemon that loaded its secret and then lost the file refuses every dial
+// with row 8's cause (transport-auth §5). The remedy must not tell the user
+// to delete a file that is already gone, nor lecture about the hex format.
+func TestCheckAuthFilePermsVanishedSecret(t *testing.T) {
+	mac := macSecret("")
+	mac.Present = false
+	got := CheckAuth(AuthInput{
+		VM: "lima:dev", Mac: mac, Guest: guestSecret(digestA),
+		Evidence: MatchAuthRing([]introspect.Refusal{{
+			At: time.Now(), ID: IDAuthFilePerms,
+			Line: "drawbridged: macsync: this Mac's transport secret is unusable (" + mac.Path + ": configured transport secret is missing) — refusing",
+		}}),
+	})
+	f := findingByID(t, got, IDAuthFilePerms)
+	wantStatus(t, f, StatusFail)
+	wantContains(t, f, "is now missing")
+	wantContains(t, f, "drawbridge up lima:dev")
+	if strings.Contains(f.Remedy, "Delete the Mac file") || strings.Contains(f.Remedy, "64 lowercase hex") {
+		t.Errorf("remedy for a vanished file still prescribes the malformed-file fix:\n%s", f.Remedy)
+	}
+	// The primary finding still names the missing Mac half, with up's remedy.
+	wantStatus(t, findingByID(t, got, IDAuthMacMissing), StatusFail)
+}
+
 // --- runtime evidence ------------------------------------------------------
 
 const (

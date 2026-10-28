@@ -332,6 +332,92 @@ func TestAuthModeMatrixDispatch(t *testing.T) {
 	})
 }
 
+// NEW-A2 (M6's guest half): once this agent has had a secret, a file deleted
+// under it (down's best-effort agent stop failing before `rm -rf StateDir`)
+// refuses every conn, auth=0 included, and never dispatches one. A rewritten
+// file heals the next conn with no restart. A path this process never saw a
+// secret at stays today's unauthenticated mode; an explicit -secret-file
+// (transportauth.Require) is configured from the start.
+func TestVanishedSecretRefusesNotDowngrades(t *testing.T) {
+	t.Run("loaded then deleted, then rotated", func(t *testing.T) {
+		secret := newSecret(t)
+		path := writeSecret(t, secret)
+		a, dial, logs := serveDispatch(t, path)
+
+		mutualPark := func(s transportauth.Secret, want int) {
+			t.Helper()
+			c := dial(t)
+			frame, err := transportauth.ClientHello(c, &s, 'D', nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := transportauth.AwaitAgentProof(c, &s, frame, 3*time.Second); err != nil {
+				t.Fatalf("agent proof: %v", err)
+			}
+			waitPoolLen(t, a, want)
+		}
+		mutualPark(secret, 1) // the accept path loaded, and latched, the secret
+
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		c := dial(t)
+		if _, err := transportauth.ClientHello(c, nil, 'D', nil); err != nil {
+			t.Fatal(err)
+		}
+		expectClosed(t, c, "auth=0 after the guest secret vanished")
+		line := waitLog(t, logs, "transport secret is unusable")
+		for _, want := range []string{path, "configured with it", "drawbridge up", "no restart"} {
+			if !strings.Contains(line, want) {
+				t.Errorf("log line %q missing %q", line, want)
+			}
+		}
+		if strings.Contains(line, "64 hex") {
+			t.Errorf("log line %q prescribes the malformed-file fix", line)
+		}
+
+		c = dial(t)
+		if _, err := transportauth.ClientHello(c, &secret, 'D', nil); err != nil {
+			t.Fatal(err)
+		}
+		expectClosed(t, c, "auth=1 after the guest secret vanished")
+		if got := poolLen(a); got != 1 {
+			t.Fatalf("pool holds %d conns, want 1: a conn was dispatched with no secret", got)
+		}
+
+		rotated := newSecret(t)
+		if err := os.WriteFile(path, []byte(rotated.Format()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		mutualPark(rotated, 2)
+	})
+
+	t.Run("explicit flag, file never present", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "transport-secret")
+		transportauth.Require(missing)
+		a, dial, logs := serveDispatch(t, missing)
+		c := dial(t)
+		if _, err := transportauth.ClientHello(c, nil, 'D', nil); err != nil {
+			t.Fatal(err)
+		}
+		expectClosed(t, c, "auth=0 against a required-but-absent secret")
+		waitLog(t, logs, "transport secret is unusable")
+		if got := poolLen(a); got != 0 {
+			t.Fatalf("pool holds %d conns, want 0", got)
+		}
+	})
+
+	t.Run("never configured stays unauthenticated", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "transport-secret")
+		a, dial, _ := serveDispatch(t, missing)
+		c := dial(t)
+		if _, err := transportauth.ClientHello(c, nil, 'D', nil); err != nil {
+			t.Fatal(err)
+		}
+		waitPoolLen(t, a, 1)
+	})
+}
+
 // Refusal lines are throttled to one per (cause, source) per 30s: the Mac
 // retries every second, and journal spam would bury the diagnosis (§7).
 func TestRefusalLogThrottle(t *testing.T) {

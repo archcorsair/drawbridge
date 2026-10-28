@@ -81,8 +81,11 @@ type Recorder interface {
 //
 // The zero value is unauthenticated mode: today's wire, byte-identical.
 type MacConfig struct {
-	// SecretFile is the secret's path. Empty, or a path with no file, means
-	// unauthenticated. Re-read per dial, so rotation heals live (§5).
+	// SecretFile is the secret's path. Empty, or a path that has never held
+	// a file in this process's life, means unauthenticated. Re-read per
+	// dial, so rotation heals live (§5); once a file has been seen there,
+	// even a malformed one (or Require named it), its absence is a refusal,
+	// never a downgrade.
 	SecretFile string
 	// VM is the -vm spelling, named in the remedies ("drawbridge up <vm>").
 	VM string
@@ -102,11 +105,13 @@ type MacConfig struct {
 }
 
 // Secret loads the configured secret, or reports nil for unauthenticated
-// mode. A malformed file is a refusal, not an ordinary error:
-// configured-but-unusable always fails closed, and it must reach the log as
-// row 8's diagnosis rather than as a bare parse failure (§5).
+// mode. A malformed file, or one that is gone after this process had a
+// secret there, is a refusal, not an ordinary error: configured-but-unusable
+// always fails closed, and it must reach the log as row 8's diagnosis rather
+// than as a bare parse failure (§5). Callers return before ClientHello, so a
+// refused dial never puts auth=0 on the wire.
 func (m MacConfig) Secret() (*Secret, error) {
-	s, err := LoadOptional(m.SecretFile)
+	s, err := LoadLatched(m.SecretFile)
 	if err != nil {
 		return nil, refuse(CauseSecretUnreadable, err)
 	}
@@ -145,6 +150,12 @@ func (m MacConfig) Diagnose(err error, ep string) string {
 		return fmt.Sprintf("peer at %s presented an invalid transport secret: this is NOT the agent '%s' was provisioned for — wrong VM or a squatter answered (source=%s); refusing. Check -vm, and whether the transport fell back to the loopback forwarder",
 			ep, m.vm(), m.source())
 	case CauseSecretUnreadable: // row 8, this side's half
+		if errors.Is(err, ErrConfiguredMissing) {
+			// Not a format problem, so the format remedy would mislead. The
+			// phrase "transport secret is unusable" is what doctor's log
+			// matcher keys row 8 on; keep it.
+			return fmt.Sprintf("this Mac's transport secret is unusable (%v) — this daemon was configured with it, so it refuses to dial rather than fall back to an unauthenticated transport; re-run 'drawbridge up %s' to reprovision (the next dial picks it up, no restart)", innermost(err), m.vm())
+		}
 		return fmt.Sprintf("this Mac's transport secret is unusable (%v) — it must be 64 hex characters, mode 0600; re-run 'drawbridge up %s' to reprovision", innermost(err), m.vm())
 	default: // row 4
 		// Row 4 also carries row 5's wrong-peer job: in the live mismatch

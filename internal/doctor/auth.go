@@ -272,6 +272,17 @@ func checkAuthFilePerms(in AuthInput) (Finding, bool) {
 		Remedy: "a transport secret is 64 lowercase hex characters plus a newline, mode 0600 (root:root in the guest);\n" +
 			"a malformed one fails closed. Delete the Mac file and re-run `drawbridge up " + in.VM + "` to reprovision both sides",
 	}
+	if len(bad) == 0 && !in.Mac.Present && in.Mac.Path != "" {
+		// No file problem doctor can see, yet the daemon refused over its own
+		// secret, and the Mac file is gone: the shape a daemon that loaded
+		// the file and then lost it produces (transport-auth §5). It refuses
+		// every dial rather than downgrade, so "delete the file" is a no-op
+		// and the format lecture is beside the point.
+		f.Title = "transport secret — the daemon's secret file is gone"
+		f.Remedy = "the daemon loaded " + in.Mac.Path + " earlier and it is now missing, so it refuses every dial\n" +
+			"rather than fall back to an unauthenticated transport. Re-run `drawbridge up " + in.VM + "` to reprovision both sides;\n" +
+			"the daemon picks the new file up on its next dial, no restart"
+	}
 	return f, true
 }
 

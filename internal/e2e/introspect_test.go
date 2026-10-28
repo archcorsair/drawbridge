@@ -10,6 +10,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -146,7 +147,9 @@ func TestIntrospectionSnapshotFromLiveDaemon(t *testing.T) {
 // usability, never bytes, proofs, or digests.
 func snapshotAuth(path string) introspect.Auth {
 	a := introspect.Auth{Mode: introspect.AuthModeNone, SecretPath: path, SecretState: introspect.SecretAbsent}
-	switch sec, err := transportauth.LoadOptional(path); {
+	switch sec, err := transportauth.LoadLatched(path); {
+	case errors.Is(err, transportauth.ErrConfiguredMissing):
+		a.Mode = introspect.AuthModeStaticHMACv1
 	case err != nil:
 		a.Mode, a.SecretState = introspect.AuthModeStaticHMACv1, introspect.SecretMalformed
 	case sec != nil:

@@ -40,6 +40,7 @@ type fakeAgent struct {
 	closeAfterFrame bool
 
 	refusals chan string   // why a conn was refused
+	frames   chan [4]byte  // every type frame received, in arrival order
 	streams  chan *sConn   // accepted 'S' conns, post-handshake
 	payloads chan []byte   // bytes an 'S' conn received after its header
 	parked   chan net.Conn // 'R' and other parked conns
@@ -62,6 +63,7 @@ func newFakeAgent(t *testing.T, listeners []listenerInfo) *fakeAgent {
 		ln:        ln,
 		listeners: listeners,
 		refusals:  make(chan string, 16),
+		frames:    make(chan [4]byte, 256),
 		streams:   make(chan *sConn, 16),
 		payloads:  make(chan []byte, 16),
 		parked:    make(chan net.Conn, 16),
@@ -158,6 +160,10 @@ func (a *fakeAgent) handle(c net.Conn) {
 	if _, err := io.ReadFull(c, frame[:]); err != nil {
 		c.Close()
 		return
+	}
+	select {
+	case a.frames <- frame:
+	default:
 	}
 	if frame[2] != 0 || frame[3] != 0 {
 		c.Close()
