@@ -270,6 +270,248 @@ func TestUpOCIProvisionFailureIsDiagnosed(t *testing.T) {
 	}
 }
 
+// --- a plain `up` refreshes an --oci guest's wrapper (audit 2026-10-28 M13) -
+
+// runUpOut is runUpOn with the output kept, for the refresh's notes.
+func runUpOut(t *testing.T, f *fakeGuest, o upOptions) (string, error) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	sel := testSelection(t, "lima:drawbridge")
+	var out strings.Builder
+	err := up(&guest{p: f, inst: sel.Ref.Instance, out: &out}, sel, o)
+	return out.String(), err
+}
+
+// dockerOCIGuest is a docker guest as a past `up --oci` left it: daemon.json
+// merged, a version-1 state file, and the wrapper that run installed.
+func dockerOCIGuest(t *testing.T, wrapper string) *fakeGuest {
+	t.Helper()
+	f := newFakeGuest(t).withDocker()
+	merged, st, _, err := guestbin.Merge(nil, runcGuest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := guestbin.EncodeState(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.files[guestbin.DaemonJSONPath] = string(merged)
+	f.files[guestbin.ProvisionPath] = string(blob)
+	f.files[runcGuest] = wrapper
+	return f
+}
+
+// assertNoEngineChange is the contract every plain-`up` refresh keeps: no
+// registration written, no state rewritten, no engine touched.
+func assertNoEngineChange(t *testing.T, f *fakeGuest, before map[string]string) {
+	t.Helper()
+	for _, p := range []string{guestbin.DaemonJSONPath, guestbin.ProvisionPath, guestbin.DropinPath} {
+		was, had := before[p]
+		now, has := f.files[p]
+		if had != has || was != now {
+			t.Fatalf("a plain up changed %s:\n--- was (present=%v) ---\n%s\n--- now (present=%v) ---\n%s", p, had, was, has, now)
+		}
+	}
+	for _, forbidden := range []string{
+		"provision-docker",   // the docker script: it would `systemctl start docker`
+		"--restart-docker",   // its restart branch
+		"drawbridge-docker=", // down's docker restart
+		"drawbridge-podman=", // the API-service restart
+		"systemctl restart 'docker'",
+		"systemctl start 'docker'",
+	} {
+		if f.ran(forbidden) {
+			t.Fatalf("a plain up touched the engine (%q):\n%s", forbidden, strings.Join(f.calls, "\n"))
+		}
+	}
+	if f.podmanRestarted {
+		t.Fatal("a plain up restarted podman.service")
+	}
+}
+
+func snapshot(f *fakeGuest) map[string]string {
+	m := make(map[string]string, len(f.files))
+	for k, v := range f.files {
+		m[k] = v
+	}
+	return m
+}
+
+// The upgrade path: a docker guest provisioned with --oci by an older build,
+// then a plain `up` with this one. The wrapper is replaced, atomically, and
+// nothing about the registration moves.
+func TestUpRefreshesDockerWrapperFromState(t *testing.T) {
+	f := dockerOCIGuest(t, "old-wrapper")
+	before := snapshot(f)
+	out, err := runUpOut(t, f, upOptions{agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "new-wrapper")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.files[runcGuest] != "new-wrapper" {
+		t.Fatalf("plain up did not refresh %s: %q", runcGuest, f.files[runcGuest])
+	}
+	if !f.ran("mv -f '" + runcGuest + ".drawbridge-new' '" + runcGuest + "'") {
+		t.Fatalf("the wrapper was not installed beside and renamed over:\n%s", strings.Join(f.calls, "\n"))
+	}
+	if _, ok := f.files[guestbin.WrapperPath(guestbin.EnginePodman)]; ok {
+		t.Fatal("a docker guest got the podman wrapper name too")
+	}
+	assertNoEngineChange(t, f, before)
+	if !strings.Contains(out, "refreshed "+runcGuest) {
+		t.Fatalf("the refresh was not reported:\n%s", out)
+	}
+}
+
+// The same upgrade on a podman machine: the version-2 state names crun's
+// wrapper, the drop-in stays byte-identical and the API service is not
+// bounced (it caches the path, which the rename leaves valid).
+func TestUpRefreshesPodmanWrapperFromState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	f := newFakeGuest(t).withFCOS()
+	agent := writeTempBinary(t, "agent")
+	if _, err := upPodman(t, f, upOptions{oci: true, agentBin: agent, runcBin: writeTempBinary(t, "old-wrapper")}); err != nil {
+		t.Fatal(err)
+	}
+	crunGuest := guestbin.WrapperPath(guestbin.EnginePodman)
+	f.podmanAPIActive = true // so a restart would be observable if one happened
+	f.calls, f.podmanRestarted = nil, false
+	before := snapshot(f)
+
+	if _, err := upPodman(t, f, upOptions{agentBin: agent, runcBin: writeTempBinary(t, "new-wrapper")}); err != nil {
+		t.Fatal(err)
+	}
+	if f.files[crunGuest] != "new-wrapper" {
+		t.Fatalf("plain up did not refresh %s: %q", crunGuest, f.files[crunGuest])
+	}
+	if _, ok := f.files[runcGuest]; ok {
+		t.Fatal("a podman guest got the runc wrapper name too")
+	}
+	if !f.ran("mv -f '" + crunGuest + ".drawbridge-new' '" + crunGuest + "'") {
+		t.Fatalf("the wrapper was not installed beside and renamed over:\n%s", strings.Join(f.calls, "\n"))
+	}
+	assertNoEngineChange(t, f, before)
+	if len(f.relabelled) == 0 || f.relabelled[len(f.relabelled)-1] != crunGuest {
+		t.Fatalf("the refreshed wrapper was not relabelled on an SELinux guest: %v", f.relabelled)
+	}
+}
+
+// The dev flow: `just vm-docker` installs the wrapper and registers it but
+// writes no state file. The wrapper's presence is what says "refresh".
+func TestUpRefreshesDevFlowWrapperWithoutState(t *testing.T) {
+	f := newFakeGuest(t).withDocker()
+	f.files[runcGuest] = "dev-wrapper"
+	before := snapshot(f)
+	if _, err := runUpOut(t, f, upOptions{agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "new-wrapper")}); err != nil {
+		t.Fatal(err)
+	}
+	if f.files[runcGuest] != "new-wrapper" {
+		t.Fatalf("plain up did not refresh the dev wrapper: %q", f.files[runcGuest])
+	}
+	assertNoEngineChange(t, f, before)
+}
+
+// The digest already matches: nothing is streamed, nothing installed.
+func TestUpWrapperRefreshSkipsSameDigest(t *testing.T) {
+	f := dockerOCIGuest(t, "same-wrapper")
+	before := snapshot(f)
+	out, err := runUpOut(t, f, upOptions{agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "same-wrapper")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.ran("dd of=/tmp/usr-local-bin-drawbridge-runc.new") || f.ran("'"+runcGuest+".drawbridge-new'") {
+		t.Fatalf("an identical wrapper was re-streamed or reinstalled:\n%s", strings.Join(f.calls, "\n"))
+	}
+	assertNoEngineChange(t, f, before)
+	if !strings.Contains(out, runcGuest+" already current") {
+		t.Fatalf("the no-op was not reported:\n%s", out)
+	}
+}
+
+// A guest that never had --oci gets no wrapper from a plain `up`, on either
+// engine: refreshing is not provisioning.
+func TestUpWithoutOCINeverInstallsAWrapper(t *testing.T) {
+	f := newFakeGuest(t).withDocker()
+	if _, err := runUpOut(t, f, upOptions{agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "wrapper")}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{runcGuest, guestbin.WrapperPath(guestbin.EnginePodman), guestbin.DaemonJSONPath, guestbin.ProvisionPath} {
+		if _, ok := f.files[p]; ok {
+			t.Fatalf("a plain up on an unprovisioned guest created %s", p)
+		}
+	}
+	assertNoEngineChange(t, f, map[string]string{})
+
+	pm := newFakeGuest(t).withFCOS()
+	if _, err := runUpOnPodman(t, pm, upOptions{agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "wrapper")}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{runcGuest, guestbin.WrapperPath(guestbin.EnginePodman), guestbin.DropinPath, guestbin.ProvisionPath} {
+		if _, ok := pm.files[p]; ok {
+			t.Fatalf("a plain up on an unprovisioned podman machine created %s", p)
+		}
+	}
+	assertNoEngineChange(t, pm, map[string]string{})
+}
+
+// A state file that records --oci while the wrapper is gone is reported, not
+// healed: installing a wrapper where none is is `--oci`'s job.
+func TestUpWithoutOCIDoesNotReinstallAMissingWrapper(t *testing.T) {
+	f := dockerOCIGuest(t, "")
+	delete(f.files, runcGuest)
+	before := snapshot(f)
+	out, err := runUpOut(t, f, upOptions{agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "wrapper")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := f.files[runcGuest]; ok {
+		t.Fatal("a plain up reinstalled a missing wrapper")
+	}
+	assertNoEngineChange(t, f, before)
+	if !strings.Contains(out, "`drawbridge up --oci` reinstalls it") {
+		t.Fatalf("the missing wrapper was not reported:\n%s", out)
+	}
+}
+
+// A state file from a newer drawbridge: this build leaves that guest's
+// wrapper alone rather than downgrade it, and the run still succeeds (the
+// same skip readPodmanState gives a version it does not know).
+func TestUpWithoutOCILeavesANewerStateAlone(t *testing.T) {
+	f := newFakeGuest(t).withDocker()
+	f.files[guestbin.ProvisionPath] = "{\n  \"version\": 3\n}\n"
+	f.files[runcGuest] = "newer-wrapper"
+	before := snapshot(f)
+	out, err := runUpOut(t, f, upOptions{agentBin: writeTempBinary(t, "agent"), runcBin: writeTempBinary(t, "older-wrapper")})
+	if err != nil {
+		t.Fatalf("plain up on a guest with a newer state: %v", err)
+	}
+	if f.files[runcGuest] != "newer-wrapper" {
+		t.Fatalf("a newer drawbridge's wrapper was replaced: %q", f.files[runcGuest])
+	}
+	assertNoEngineChange(t, f, before)
+	if !strings.Contains(out, "state version 3") {
+		t.Fatalf("the skip was not explained:\n%s", out)
+	}
+}
+
+// A dev build with no bundled wrapper and no -runc-bin still upgrades the
+// agent, and says the wrapper was left behind.
+func TestUpWrapperRefreshUnbundledWarns(t *testing.T) {
+	if guestbin.Bundled() {
+		t.Skip("this tree has been built; ErrNotBundled is not reachable")
+	}
+	f := dockerOCIGuest(t, "old-wrapper")
+	out, err := runUpOut(t, f, upOptions{agentBin: writeTempBinary(t, "agent")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.files[runcGuest] != "old-wrapper" {
+		t.Fatalf("the wrapper changed without a source: %q", f.files[runcGuest])
+	}
+	if !strings.Contains(out, "not refreshing "+runcGuest) || !strings.Contains(out, "-runc-bin") {
+		t.Fatalf("the skipped refresh was not reported:\n%s", out)
+	}
+}
+
 func writeTempBinary(t *testing.T, content string) string {
 	t.Helper()
 	path := t.TempDir() + "/bin"

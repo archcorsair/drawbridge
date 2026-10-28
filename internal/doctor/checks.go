@@ -700,7 +700,7 @@ func CheckAgent(g GuestProbe, bind AgentBind, cliVersion, skip string, pm Podman
 	if g.AgentVersion != "" && g.AgentVersion != cliVersion {
 		f.Status = StatusFail
 		f.Title = fmt.Sprintf("guest agent — version %s, this CLI is %s", g.AgentVersion, cliVersion)
-		f.Remedy = "the guest agent predates this CLI; `drawbridge up <vm>` re-pushes the embedded agent and heals the skew"
+		f.Remedy = "the guest agent predates this CLI; `drawbridge up <vm>` re-pushes the embedded agent (and any --oci runtime wrapper) and heals the skew"
 		return f
 	}
 	if !bind.Any {

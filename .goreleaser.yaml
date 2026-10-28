@@ -212,14 +212,15 @@ homebrew_casks:
       email: noreply@github.com
     commit_msg_template: "drawbridge {{ .Tag }}"
     # §6 version-skew policy: lockstep by construction, healed by re-running
-    # the two commands that push the other two copies of this build.
+    # the two commands that push the other copies of this build.
     caveats: |
-      drawbridge ships three parts that must be the same version: this CLI,
-      the agent inside your VM, and the privileged daemon on this Mac.
+      drawbridge ships parts that must be the same version: this CLI, the
+      agent inside your VM, the runtime wrapper in that VM if you ran
+      `drawbridge up --oci`, and the privileged daemon on this Mac.
 
       After every install or upgrade, run:
 
-        drawbridge up <vm>        # re-pushes the matching guest agent
+        drawbridge up <vm>        # re-pushes the guest agent and any --oci wrapper
         sudo drawbridge install   # re-installs the matching root daemon
 
       `drawbridge doctor` reports any remaining skew. Before removing this

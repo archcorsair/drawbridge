@@ -144,7 +144,9 @@ drawbridge up podman:mymachine --oci # a Podman machine, the same three commands
 
 No sudo on the Mac — the privileged half happens inside the guest. `up`
 installs the agent as a systemd unit and writes a per-VM transport secret on
-both sides. It is idempotent: re-run it to upgrade. `drawbridge down`
+both sides. It is idempotent: re-run it to upgrade. A plain re-run also
+refreshes the runtime wrapper an earlier `--oci` installed, and leaves the
+engine's registration and the engine itself alone. `drawbridge down`
 reverses exactly what it did.
 
 `--oci` is opt-in because it registers a wrapper runtime with your container
