@@ -273,7 +273,8 @@ func (s *suite) run() {
 			// The supervised probe the e2e leg uses: a bind that goes through
 			// the agent's seccomp arbitration and reports the errno as one JSON
 			// line. The off-thread variant binds from a non-leader thread, the
-			// placement that once degraded to CONTINUE.
+			// placement that once degraded to CONTINUE. The sudo is load-bearing:
+			// the agent's probe socket is root-only (0600) in production.
 			out, err := s.prov.Shell(s.ref.Instance, nil, argv...)
 			if err != nil {
 				return lastLine(out), err

@@ -76,7 +76,7 @@ func main() {
 			fs := flag.NewFlagSet("bindprobe", flag.ExitOnError)
 			network := fs.String("network", "tcp4", "listen network")
 			addr := fs.String("addr", "", "listen address, e.g. 127.0.0.1:8080")
-			nsock := fs.String("notify-sock", "/run/drawbridge-notify.sock", "agent notify socket")
+			nsock := fs.String("notify-sock", "/run/drawbridge-notify.sock", "agent notify socket (root-only unless the agent runs with -notify-sock-unprivileged)")
 			hold := fs.Duration("hold", 2*time.Second, "keep a successful listener open this long")
 			offThread := fs.Bool("off-thread", false, "bind from a non-leader thread (the notification then carries a TID, not the PID)")
 			fs.Parse(os.Args[2:])
@@ -100,7 +100,10 @@ func main() {
 			"The publish is re-established on every agent start, which is what brings the forward back after `podman machine stop`")
 	gvproxyGateway := flag.String("gvproxy-gateway", agent.DefaultGvproxyGateway,
 		"gvproxy's in-guest forwarding API base URL, used by -gvproxy-publish")
-	notifySock := flag.String("notify-sock", "/run/drawbridge-notify.sock", "seccomp notify-fd handoff socket (Phase 4)")
+	notifySock := flag.String("notify-sock", "/run/drawbridge-notify.sock", "seccomp notify-fd handoff socket for bindprobe (Phase 4), mode 0600 root-only")
+	notifySockUnprivileged := flag.Bool("notify-sock-unprivileged", false,
+		"make the notify socket 0666 so unprivileged processes can hand over notify fds. For tests and smoke legs only; "+
+			"`drawbridge up` never sets it. Container runtimes use -oci-sock and are unaffected")
 	ociSock := flag.String("oci-sock", "/run/drawbridge-oci.sock", "OCI seccomp-agent listenerPath socket (runc/crun handoffs)")
 	ociSockOwner := flag.String("oci-sock-owner", "",
 		"local user to give the OCI socket to, mode unchanged at 0600 (empty: root only). "+
@@ -191,13 +194,15 @@ func main() {
 	}
 	defer tset.Close()
 
-	os.Remove(*notifySock)
-	nln, err := net.ListenUnix("unix", &net.UnixAddr{Name: *notifySock, Net: "unix"})
+	nln, err := listenNotify(*notifySock, *notifySockUnprivileged)
 	if err != nil {
 		log.Fatalf("drawbridge-agent: notify socket: %v", err)
 	}
 	defer os.Remove(*notifySock)
-	os.Chmod(*notifySock, 0o666) // hooked container processes are not root
+	if *notifySockUnprivileged {
+		log.Printf("drawbridge-agent: %s is mode %o (-notify-sock-unprivileged): any guest process can hand over notify fds; tests and smoke legs only",
+			*notifySock, notifySockModeUnprivileged)
+	}
 	go a.ServeNotify(nln)
 
 	os.Remove(*ociSock)

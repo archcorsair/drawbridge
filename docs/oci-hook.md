@@ -179,15 +179,34 @@ per exec; supervision ends when the filter's last task exits.
 
 - `ServeOCISeccomp(ln *net.UnixListener)` in new `internal/agent/ociseccomp.go`:
   accept → `ReadMsgUnix` (large buf + oob; fds arrive in the first message per
-  spec) → drain to EOF appending JSON → parse `ContainerProcessState` → index of
-  `"seccompFd"` in `fds` selects the notify fd (close any others) → log
-  `state.id`/metadata → `go a.superviseNotify(fd)` (existing, unchanged core) →
-  close conn. Malformed message: log, close everything, never crash — worst case is
-  that container's start erroring, stock containers unaffected.
-- Socket: `/run/drawbridge-oci.sock`, mode 0600 (runc runs as root; unlike the
-  probe socket there is no non-root sender — rootless engines are out of scope).
+  spec) → parse `ContainerProcessState`, reading more only while the JSON is
+  incomplete → index of `"seccompFd"` in `fds` selects the notify fd (close any
+  others) → log `state.id`/metadata → supervise it (shared core) → close conn.
+  Malformed message: log, close everything, never crash — worst case is that
+  container's start erroring, stock containers unaffected.
+  *Amended 2026-10-28 (M3, L14, NEW-1; decision E2):* the read never waits for
+  EOF. The spec says the sender closes, but runc before 1.3.3 never closes its
+  dialed conn (only its `conn.File()` dup), so draining to EOF held a container's
+  binds until runc exited. The handoff is bounded by a 10 s read deadline and a
+  1 MiB JSON limit; the runtime writes the state in one `sendmsg` right after it
+  connects, so neither fires on a working runc or crun. A listener handed over
+  here is **never refused or closed for capacity**: it is the container's only
+  reference, and closing it makes every later `bind()` in the container `ENOSYS`
+  for life. It is supervised under its own uncapped count (shared with fd-store
+  adoption); only the probe socket keeps the 4096 cap.
+- Socket: `/run/drawbridge-oci.sock`, mode 0600 (runc runs as root; there is no
+  non-root sender — rootless engines are out of scope).
   New flag `-oci-sock` in `cmd/drawbridge-agent/main_linux.go`, wired like
   `-notify-sock`.
+- *Added 2026-10-28:* the probe socket (`/run/drawbridge-notify.sock`, `-notify-sock`)
+  is also 0600 root-only. It used to be 0666, which let any guest process hand
+  one listener over 4096 times, fill the shared cap, and turn every new
+  host-network container's `bind()` into `ENOSYS`. It is 0666 only behind
+  `-notify-sock-unprivileged` (tests and smoke legs; `drawbridge up` never sets
+  it). Probe handoffs keep the 4096 cap, are refused when the listener is already
+  under supervision (same open file by `kcmp(KCMP_FILE)`; an inode compare
+  cannot work, since every seccomp listener shares one anon inode), and must
+  deliver within 2 s of connecting.
 - **Netns backstop** in `answerBind` (`internal/agent/notify.go`): before
   classification, compare `readlink /proc/<nf.PID>/ns/net` against
   `/proc/self/ns/net` (helper `seccomp.SameNetNS(pid)` in `internal/seccomp`);
