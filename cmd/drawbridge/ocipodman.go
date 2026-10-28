@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/archcorsair/drawbridge/internal/guestbin"
@@ -97,7 +98,7 @@ func provisionOCIPodman(g *guest, wrapper []byte, pf preflight, sockOwner string
 	// podman CLI re-reads its config per invocation, so there is no daemon
 	// to bounce and nothing to lose if the service is not running.
 	if changed {
-		reportPodmanRestart(g, g.restartPodmanAPI(pf.Rootful, pf.User), "--oci")
+		reportPodmanRestart(g, g.restartPodmanAPI(pf.Rootful, pf.User), "--oci", pf.Rootful)
 	}
 	return nil
 }
@@ -183,6 +184,13 @@ const (
 // machine, and `systemctl --user -M <user>@.host` for a rootless one, where
 // the API service lives in the login user's own manager and root reaches it
 // through machinectl's host container.
+//
+// SC is rendered as one single-quoted word (renderRestartPodmanAPIScript) and
+// every use is an unquoted `$SC`, deliberately: the value is several words
+// and must field-split. Rendered bare, `SC=systemctl --user -M core@.host`
+// parses as the one-shot assignment `SC=systemctl` prefixed to a command
+// named `--user`, which leaves SC empty and reports "absent" without ever
+// calling systemctl (audit M9).
 const restartPodmanAPIScript = `
 SC=%s
 U=podman.service
@@ -197,17 +205,57 @@ fi
 exit 0
 `
 
+// podmanUserRE is the set of login names rendered into the script. It is
+// stricter than what useradd accepts on purpose: the name becomes part of a
+// `-M <user>@.host` machine spec, so a name that would need care in the shell
+// or in machinectl is refused rather than escaped. shquote is applied on top
+// regardless.
+var podmanUserRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]*$`)
+
+// podmanManager returns the systemctl command words that address the manager
+// holding podman.service, and false when there is none this can address
+// safely. The failure remedy (podmanRemedy) is derived from the same rootful
+// value, so the two cannot disagree.
+func podmanManager(rootful bool, user string) (string, bool) {
+	if rootful {
+		return "systemctl", true
+	}
+	if !podmanUserRE.MatchString(user) {
+		return "", false
+	}
+	return "systemctl --user -M " + user + "@.host", true
+}
+
+// renderRestartPodmanAPIScript renders restartPodmanAPIScript for a manager.
+func renderRestartPodmanAPIScript(sc string) string {
+	return fmt.Sprintf(restartPodmanAPIScript, shquote(sc))
+}
+
+// podmanRemedy is the command a person types in the guest to do what the
+// failed restart could not, for the manager actually targeted. Rootful is the
+// system manager, which needs root (`podman machine ssh` is already root
+// there, where sudo is redundant but harmless). Rootless is the login user's
+// own manager, reached with --user as that user.
+func podmanRemedy(rootful bool) string {
+	if rootful {
+		return "sudo systemctl reset-failed podman.service && sudo systemctl restart podman.service"
+	}
+	return "systemctl --user reset-failed podman.service && systemctl --user restart podman.service"
+}
+
 func (g *guest) restartPodmanAPI(rootful bool, user string) podmanRestart {
-	sc := "systemctl"
-	if !rootful {
+	sc, ok := podmanManager(rootful, user)
+	if !ok {
 		if user == "" {
 			// No user to aim at and not rootful: there is no manager this
 			// can address, and guessing one would restart the wrong thing.
 			return podmanAbsent
 		}
-		sc = "systemctl --user -M " + user + "@.host"
+		// A login name outside the conservative set: do not guess an
+		// escaping, and do not stay silent either.
+		return podmanFailed
 	}
-	out, err := g.sudoSh(fmt.Sprintf(restartPodmanAPIScript, sc))
+	out, err := g.sudoSh(renderRestartPodmanAPIScript(sc))
 	if err != nil {
 		return podmanFailed
 	}
@@ -232,7 +280,7 @@ func (g *guest) restartPodmanAPI(rootful bool, user string) podmanRestart {
 // service affects is clients of the socket (docker-compose through
 // podman's docker-compatible endpoint, Podman Desktop), so the message
 // names the one command that fixes it rather than failing the run.
-func reportPodmanRestart(g *guest, r podmanRestart, phase string) {
+func reportPodmanRestart(g *guest, r podmanRestart, phase string, rootful bool) {
 	switch r {
 	case podmanRestarted:
 		fmt.Fprintf(g.out, "drawbridge: restarted podman.service (the API socket's cached runtime path)\n")
@@ -244,7 +292,7 @@ func reportPodmanRestart(g *guest, r podmanRestart, phase string) {
 		fmt.Fprintf(g.out, "drawbridge: WARNING: podman.service did not restart after the %s change.\n"+
 			"  `podman run` is unaffected (the CLI re-reads its config every invocation), but a client\n"+
 			"  of the API socket (docker-compose, Podman Desktop) keeps the old runtime path until it does.\n"+
-			"  In the guest:  systemctl --user reset-failed podman.service && systemctl --user restart podman.service\n", phase)
+			"  In the guest:  %s\n", phase, podmanRemedy(rootful))
 	}
 }
 
@@ -285,7 +333,7 @@ func revertOCIPodman(g *guest, st guestbin.PodmanState) error {
 	// not a coincidence: on a rootless machine both are the machine's login
 	// user, the one `up` recorded. On a rootful machine it is empty and
 	// Rootful sends the restart at the system manager instead.
-	reportPodmanRestart(g, g.restartPodmanAPI(st.Rootful, st.OCISockOwner), "revert")
+	reportPodmanRestart(g, g.restartPodmanAPI(st.Rootful, st.OCISockOwner), "revert", st.Rootful)
 	return nil
 }
 

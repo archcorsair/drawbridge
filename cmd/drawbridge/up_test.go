@@ -589,7 +589,7 @@ func TestUpOCIPodmanRestartTargetsTheRightManager(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !rootless.ran("SC=systemctl --user -M core@.host") {
+	if !rootless.ran("SC='systemctl --user -M core@.host'\n") {
 		t.Fatalf("rootless restart did not address core's manager:\n%s", strings.Join(rootless.calls, "\n"))
 	}
 	if !rootless.ran("reset-failed $U") {
@@ -602,7 +602,7 @@ func TestUpOCIPodmanRestartTargetsTheRightManager(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !rootful.ran("SC=systemctl\n") {
+	if !rootful.ran("SC='systemctl'\n") {
 		t.Fatalf("rootful restart did not address the system manager:\n%s", strings.Join(rootful.calls, "\n"))
 	}
 }
