@@ -183,6 +183,26 @@ func TestCheckGuestPrereqs(t *testing.T) {
 		// A distro backport below the OCI wrapper's own floor: the agent
 		// runs, containerized arbitration may not.
 		{"probe ok on a backported 4.18", func(g *GuestProbe) { g.Kernel = "4.18.0-553.el8" }, "", StatusWarn, "kernel >= 5.7"},
+		// The tracker's fentry/fexit floor: ftrace direct calls.
+		{"arm64 without direct calls", func(g *GuestProbe) {
+			g.Kernel = "5.15.0-185-generic"
+			g.Features.Arch, g.Features.DirectCalls = "aarch64", kernelfeat.ConfigNo
+		}, "", StatusFail, "cannot attach the tracker's fentry hooks"},
+		{"arm64 without direct calls names the HWE kernel", func(g *GuestProbe) {
+			g.Kernel = "5.15.0-185-generic"
+			g.Features.Arch, g.Features.DirectCalls = "aarch64", kernelfeat.ConfigNo
+		}, "", StatusFail, "linux-generic-hwe-22.04"},
+		{"arm64 6.8 with direct calls", func(g *GuestProbe) {
+			g.Features.Arch, g.Features.DirectCalls = "aarch64", kernelfeat.ConfigYes
+		}, "", StatusOK, "DIRECT_CALLS=y"},
+		{"arm64 6.3 without a readable config", func(g *GuestProbe) {
+			g.Kernel = "6.3.0"
+			g.Features.Arch, g.Features.DirectCalls = "aarch64", kernelfeat.ConfigUnknown
+		}, "", StatusFail, "older than 6.4"},
+		{"x86 5.15 without a readable config", func(g *GuestProbe) {
+			g.Kernel = "5.15.0"
+			g.Features.Arch, g.Features.DirectCalls = "x86_64", kernelfeat.ConfigUnknown
+		}, "", StatusOK, "since 5.5"},
 		{"oci with old runc", func(g *GuestProbe) {
 			g.OCI, g.Runc = true, "runc version 1.0.3"
 		}, "", StatusWarn, "runc >= 1.1.0"},
@@ -267,6 +287,22 @@ func TestParseGuestProbeFeatures(t *testing.T) {
 	g = ParseGuestProbe("kernel=5.11.0\n")
 	if g.Features.Ran || g.Features.Why != kernelfeat.NotAsked {
 		t.Fatalf("features = %+v, want not asked", g.Features)
+	}
+
+	// The throwaway Ubuntu 22.04 GA guest (5.15.0-185, aarch64), as the
+	// script answered live on 2026-10-29 with no agent installed: the cookie
+	// falls back to the version and passes, the tracker fails on the config.
+	g = ParseGuestProbe("kernel=5.15.0-185-generic\nfeatures-arch=aarch64\nfeatures-ftrace-direct-calls=n\nfeatures=absent\n" +
+		"btf=yes\ncgroup2=yes\nsystemd=yes\nsudo=yes\n")
+	if g.Features.Arch != "aarch64" || g.Features.DirectCalls != kernelfeat.ConfigNo || g.Features.Why != kernelfeat.Absent {
+		t.Fatalf("features = %+v", g.Features)
+	}
+	f := CheckGuestPrereqs(g, "", PodmanInput{})
+	wantStatus(t, f, StatusFail)
+	wantContains(t, f, "5.15 >= 5.14")
+	wantContains(t, f, "CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS is not set")
+	if f.Remedy != kernelfeat.TracerRemedy {
+		t.Fatalf("remedy = %q, want the shared tracker remedy", f.Remedy)
 	}
 }
 

@@ -320,9 +320,10 @@ the vz switch line (`colima start --vm-type vz` / lima `vmType: vz` — §3.1
 matrix verdict "rejected with doctor message"). Running vz → `ok`, listed
 with MAC (the pin candidates).
 
-**2. `guest-prereqs` — BTF, cgroup v2, systemd, `SO_NETNS_COOKIE`, runtime
-versions.** Inputs: one stdin script emitting `key=value` lines (`btf=`,
-`cgroup2=`, `systemd=`, `kernel=`, `features=`, `runc=`, `oci=` from
+**2. `guest-prereqs` — BTF, cgroup v2, systemd, `SO_NETNS_COOKIE`, ftrace
+direct calls, runtime versions.** Inputs: one stdin script emitting
+`key=value` lines (`btf=`, `cgroup2=`, `systemd=`, `kernel=`, `features=`,
+`features-arch=`, `features-ftrace-direct-calls=`, `runc=`, `oci=` from
 `/etc/drawbridge/provision.json` presence); parser + classifier pure.
 Alpine/OpenRC (no systemd) → `fail` with the §3.1 rejection message. VM not
 running → `skip` with the start hint.
@@ -343,6 +344,21 @@ back to the version, numerically: ≥ 5.14 `ok`; 5.12 or 5.13 `warn` ("cannot
 confirm"), with the remedy to re-run `drawbridge up`, which asks the kernel
 itself; below 5.12 `fail`. The 5.8 floor the agent has had since the tracker
 landed (ring buffer events, cgroup `getpeername` hooks) is implied.
+
+The agent's second kernel floor is ftrace direct calls: the listener
+tracker attaches fentry/fexit programs to kernel functions, which needs
+`CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS`. x86_64 has had them since 5.5,
+below the cookie's floor; arm64 got the BPF trampoline in 6.0 and direct
+calls only in 6.4. On Ubuntu 22.04's GA arm64 kernel (5.15.0-185, verified
+live 2026-10-29) the cookie probe says yes and the gateway attaches, then
+the tracker's first fentry program fails to load with "operation not
+supported". `features-ftrace-direct-calls=` is that option read from the
+kernel config (`/boot/config-<release>`, else
+`/lib/modules/<release>/config`, else `/proc/config.gz`; no privilege):
+`y` → `ok`, `n` → `fail`. With no readable config the check falls back to
+the arch (`features-arch=`, `uname -m`): arm64 ≥ 6.4 `ok`, older `fail`;
+x86_64 `ok`. The remedy is shared with `up`: on arm64, a kernel ≥ 6.4
+(Ubuntu 24.04, Ubuntu 22.04's HWE kernel, Fedora CoreOS).
 
 The OCI wrapper's own floor, kernel ≥ 5.7 for the seccomp `listenerPath`
 contract, is then a `warn`, reachable only on a kernel the probe passed

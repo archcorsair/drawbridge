@@ -374,8 +374,8 @@ func ParseGuestProbe(out string) GuestProbe {
 		switch k {
 		case "kernel":
 			g.Kernel = v
-		case kernelfeat.Key:
-			g.Features = kernelfeat.Parse(v)
+		case kernelfeat.Key, kernelfeat.KeyArch, kernelfeat.KeyDirectCalls:
+			g.Features.Set(k, v)
 		case "btf":
 			g.BTF = yes
 		case "cgroup2":
@@ -474,7 +474,8 @@ var minRunc = [3]int{1, 1, 0}
 var minCrun = [3]int{0, 19, 0}
 
 // CheckGuestPrereqs classifies BTF, cgroup v2, systemd, SO_NETNS_COOKIE (probed,
-// else judged by kernel version), the listenerPath kernel floor
+// else judged by kernel version), ftrace direct calls for the tracker
+// (kernel config, else an arch-aware version), the listenerPath kernel floor
 // and, only when the guest was provisioned `--oci`, the runtime version.
 func CheckGuestPrereqs(g GuestProbe, skip string, pm PodmanInput) Finding {
 	f := Finding{ID: IDGuestPrereqs, Title: "guest prerequisites"}
@@ -522,23 +523,24 @@ func CheckGuestPrereqs(g GuestProbe, skip string, pm PodmanInput) Finding {
 	}
 
 	// The agent's own kernel floor: getsockopt(SO_NETNS_COOKIE), asked of
-	// the kernel through the installed agent when it can be, judged by
-	// version only when it cannot (internal/kernelfeat).
+	// the kernel through the installed agent, and the ftrace direct calls the
+	// tracker's fentry/fexit hooks need, read from the kernel config; each
+	// judged by version only when the guest cannot answer
+	// (internal/kernelfeat).
 	kv := kernelfeat.Classify(g.Features, g.Kernel)
-	f.Evidence = append(f.Evidence, kv.Evidence)
+	f.Evidence = append(f.Evidence, kv.Evidence...)
 	switch kv.Status {
 	case kernelfeat.Fail:
 		f.Status = StatusFail
-		f.Title = fmt.Sprintf("guest prerequisites — kernel %s lacks SO_NETNS_COOKIE", g.Kernel)
+		f.Title = fmt.Sprintf("guest prerequisites — kernel %s %s", g.Kernel, kv.Short)
 		f.Evidence = append(f.Evidence, kv.Problem)
-		f.Remedy = kernelfeat.Remedy
+		f.Remedy = kv.Remedy
 		return f
 	case kernelfeat.Warn:
 		f.Status = StatusWarn
-		f.Title = fmt.Sprintf("guest prerequisites — kernel %s, SO_NETNS_COOKIE unconfirmed", g.Kernel)
+		f.Title = fmt.Sprintf("guest prerequisites — kernel %s, %s", g.Kernel, kv.Short)
 		f.Evidence = append(f.Evidence, kv.Problem)
-		f.Remedy = "re-run `drawbridge up <vm>`: it asks the kernel directly and refuses with this explanation if the answer is no.\n" +
-			"The agent will not start without the cookie; a guest kernel >= 5.14 settles it"
+		f.Remedy = kv.Remedy
 		return f
 	}
 

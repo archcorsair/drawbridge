@@ -92,7 +92,7 @@ func TestUpRefusesAKernelWithoutTheCookie(t *testing.T) {
 		t.Fatal("up continued on a kernel that said no to SO_NETNS_COOKIE")
 	}
 	t.Logf("drawbridge up: %v", err)
-	for _, want := range []string{"5.13.0-generic", "SO_NETNS_COOKIE", "protocol not available", ">= 5.14"} {
+	for _, want := range []string{"5.13.0-generic", "SO_NETNS_COOKIE", "protocol not available", ">= 6.4"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal does not say %q:\n%v", want, err)
 		}
@@ -152,4 +152,48 @@ func TestUpOldAgentFallsBackToTheKernelVersion(t *testing.T) {
 			t.Fatal("a refused run installed the agent")
 		}
 	})
+}
+
+// The arm64 tracker floor, as reproduced live on Ubuntu 22.04's GA kernel
+// (5.15.0-185, aarch64): the cookie probe says yes, the kernel config has no
+// ftrace direct calls, and the agent would die loading the tracker's first
+// fentry program. `up` refuses before installing, with the shared remedy.
+func TestUpRefusesArm64WithoutDirectCalls(t *testing.T) {
+	f := withKernel(newFakeGuest(t), "5.15.0-185-generic")
+	f.directCalls = kernelfeat.ConfigNo
+	_, err := runUpCapture(t, f, upOptions{agentBin: probingAgent(t, "new")})
+	if err == nil {
+		t.Fatal("up continued on an arm64 kernel without ftrace direct calls")
+	}
+	t.Logf("drawbridge up: %v", err)
+	for _, want := range []string{"5.15.0-185-generic", "aarch64", "CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS",
+		"listener tracker", "linux-generic-hwe-22.04"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not say %q:\n%v", want, err)
+		}
+	}
+	if !strings.Contains(err.Error(), strings.ReplaceAll(kernelfeat.TracerRemedy, "\n", "\n  ")) {
+		t.Errorf("refusal does not carry the shared tracker remedy:\n%v", err)
+	}
+	if _, ok := f.files[agentPath]; ok {
+		t.Fatal("a refused run installed the agent")
+	}
+	if _, ok := f.files[guestbin.UnitPath]; ok {
+		t.Fatal("a refused run installed the unit")
+	}
+}
+
+// With no readable kernel config, arm64 falls back to the 6.4 version floor.
+func TestUpArm64VersionFallbackWithoutConfig(t *testing.T) {
+	for kernel, refuse := range map[string]bool{"6.3.0": true, "6.4.0": false, "6.8.0-51-generic": false} {
+		f := withKernel(newFakeGuest(t), kernel)
+		f.directCalls = kernelfeat.ConfigUnknown
+		_, err := runUpCapture(t, f, upOptions{agentBin: probingAgent(t, "new")})
+		if refuse && (err == nil || !strings.Contains(err.Error(), "older than 6.4")) {
+			t.Errorf("%s: got %v, want the 6.4 refusal", kernel, err)
+		}
+		if !refuse && err != nil {
+			t.Errorf("%s: %v", kernel, err)
+		}
+	}
 }

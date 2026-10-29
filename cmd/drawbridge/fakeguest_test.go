@@ -69,9 +69,12 @@ type fakeGuest struct {
 	// asked only when its content carries the marker, which is what the
 	// real script's grep does, so the plain "agent-bytes" fixtures model an
 	// agent from before the probe. noCookie is the kernel's answer when it
-	// is asked; probed records every path the probe ran against, and
-	// probedAsRoot whether any probe arrived through sudo.
+	// is asked; directCalls is the kernel config's
+	// CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS as the script reports it ("" is
+	// y, the 6.x answer); probed records every path the probe ran against,
+	// and probedAsRoot whether any probe arrived through sudo.
 	noCookie     bool
+	directCalls  string
 	probed       []string
 	probedAsRoot bool
 
@@ -221,8 +224,9 @@ func (f *fakeGuest) Shell(_ string, stdin io.Reader, argv ...string) ([]byte, er
 
 var reFeatBin = regexp.MustCompile(`db_feat_bin='([^']*)'`)
 
-// execFeatures answers kernelfeat.Script the way the real one does: absent,
-// predates (no marker in the binary), or the agent's JSON report.
+// execFeatures answers kernelfeat.Script the way the real one does: the
+// arch and the kernel config's direct-call option, then absent, predates (no
+// marker in the binary), or the agent's JSON report.
 func (f *fakeGuest) execFeatures(script string) ([]byte, error) {
 	m := reFeatBin.FindStringSubmatch(script)
 	if m == nil {
@@ -230,17 +234,22 @@ func (f *fakeGuest) execFeatures(script string) ([]byte, error) {
 	}
 	path := m[1]
 	f.probed = append(f.probed, path)
+	cfg := f.directCalls
+	if cfg == "" {
+		cfg = kernelfeat.ConfigYes
+	}
+	head := kernelfeat.KeyArch + "=aarch64\n" + kernelfeat.KeyDirectCalls + "=" + cfg + "\n"
 	body, ok := f.files[path]
 	switch {
 	case !ok:
-		return []byte(kernelfeat.Key + "=" + kernelfeat.Absent + "\n"), nil
+		return []byte(head + kernelfeat.Key + "=" + kernelfeat.Absent + "\n"), nil
 	case !strings.Contains(body, kernelfeat.Marker):
-		return []byte(kernelfeat.Key + "=" + kernelfeat.Predates + "\n"), nil
+		return []byte(head + kernelfeat.Key + "=" + kernelfeat.Predates + "\n"), nil
 	case f.noCookie:
-		return []byte(kernelfeat.Key + `={"probe":"` + kernelfeat.Marker +
+		return []byte(head + kernelfeat.Key + `={"probe":"` + kernelfeat.Marker +
 			`","so_netns_cookie":false,"so_netns_cookie_error":"getsockopt(SO_NETNS_COOKIE): protocol not available"}` + "\n"), nil
 	}
-	return []byte(kernelfeat.Key + `={"probe":"` + kernelfeat.Marker + `","so_netns_cookie":true}` + "\n"), nil
+	return []byte(head + kernelfeat.Key + `={"probe":"` + kernelfeat.Marker + `","so_netns_cookie":true}` + "\n"), nil
 }
 
 // exec runs one snippet. `&&` chains stop at the first failure, exactly as

@@ -139,7 +139,8 @@ func effectiveTimeout(o Options) time.Duration {
 // subcommand as the login user: a socket, a getsockopt and a close, and only
 // for an agent binary that carries the probe's marker, because an older one
 // would ignore the argument and start as the daemon
-// (internal/kernelfeat). Read-only either way.
+// (internal/kernelfeat). It also reads `uname -m` and the kernel config's
+// CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS. Read-only either way.
 var guestScript = `
 echo "kernel=$(uname -r 2>/dev/null)"
 ` + kernelfeat.Script(guestbin.GuestPath(guestbin.NameAgent)) + guestScriptRest

@@ -775,18 +775,20 @@ func checkPreflight(p preflight, oci bool) error {
 	return nil
 }
 
-// checkKernelFeatures is the agent's own kernel floor, asked of the kernel
+// checkKernelFeatures is the agent's own kernel floor, asked of the guest
 // rather than read off its version (audit 2026-10-28 L5): the gateway will
-// not attach without getsockopt(SO_NETNS_COOKIE), which landed in 5.14 and
-// was backported to some 5.12.y/5.13.y stables, and before this check an
+// not attach without getsockopt(SO_NETNS_COOKIE) (5.14, or a 5.12.y/5.13.y
+// stable with the backport), and the listener tracker's fentry/fexit hooks
+// need ftrace direct calls (arm64 from 6.4). Before this check an
 // unsupported kernel showed up only as an agent dying at start.
 //
-// It runs the agent binary this `up` is about to install: the staged copy
-// when the guest's differs, else the installed one, which is then this
-// build's. As the login user, with no sudo: the probe is one socket and one
-// getsockopt. A binary that cannot be asked (a `-agent-bin` from before the
-// probe, a /tmp that will not exec) degrades to the version compare, where
-// 5.12 and 5.13 warn rather than refuse.
+// The cookie is asked of the agent binary this `up` is about to install:
+// the staged copy when the guest's differs, else the installed one, which is
+// then this build's. The direct-call question is a read of the kernel
+// config. All of it as the login user, with no sudo. Whatever cannot be
+// answered (a `-agent-bin` from before the probe, a /tmp that will not exec,
+// no readable kernel config) degrades to a version compare, where 5.12 and
+// 5.13 warn rather than refuse.
 func (g *guest) checkKernelFeatures(staged, installed, kernel string) error {
 	path, script := installed, kernelfeat.Script(installed)
 	if staged != "" {
@@ -796,22 +798,22 @@ func (g *guest) checkKernelFeatures(staged, installed, kernel string) error {
 	}
 	out, err := g.sh(script)
 	if err != nil {
-		return fmt.Errorf("asking the guest kernel whether it supports SO_NETNS_COOKIE (%s features): %w", path, err)
+		return fmt.Errorf("asking the guest kernel about the agent's requirements (%s features): %w", path, err)
 	}
-	p := kernelfeat.Parse("")
+	p := kernelfeat.Parse("") // no report line at all is a failed probe
 	for _, line := range strings.Split(out, "\n") {
-		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok && k == kernelfeat.Key {
-			p = kernelfeat.Parse(v)
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok {
+			p.Set(k, v)
 		}
 	}
 	v := kernelfeat.Classify(p, kernel)
 	switch v.Status {
 	case kernelfeat.Fail:
-		return fmt.Errorf("%s.\n  %s", v.Problem, strings.ReplaceAll(kernelfeat.Remedy, "\n", "\n  "))
+		return fmt.Errorf("%s.\n  %s", v.Problem, strings.ReplaceAll(v.Remedy, "\n", "\n  "))
 	case kernelfeat.Warn:
 		fmt.Fprintf(g.out, "drawbridge: warning: %s.\n"+
-			"  Continuing: if the kernel lacks it, the agent will fail at start and `sudo journalctl -u %s`\n"+
-			"  in the guest will say getsockopt(SO_NETNS_COOKIE)\n", v.Problem, guestbin.UnitName)
+			"  Continuing: if the kernel lacks it, the agent will fail at start, and `sudo journalctl -u %s`\n"+
+			"  in the guest will say which load failed\n", v.Problem, guestbin.UnitName)
 	}
 	return nil
 }
