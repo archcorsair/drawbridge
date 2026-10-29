@@ -75,6 +75,11 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// init runs on the main goroutine, so this pins it to the main thread for
+// the life of the test binary and the scheduler never runs another
+// goroutine there. threadListener relies on that.
+func init() { runtime.LockOSThread() }
+
 // threadListener installs an allow-everything filter with
 // SECCOMP_FILTER_FLAG_NEW_LISTENER on one locked OS thread and returns the
 // listener fd. A real listener, so IsListener and kcmp see what they see
@@ -83,6 +88,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 // exits takes its thread with it), which is the filter's only task: the
 // listener then reports POLLHUP and its supervisor returns. Each call
 // needs its own thread: the kernel allows one listener per filter chain.
+// The thread is never the main one: see init.
 func threadListener(t *testing.T) (fd int, release func()) {
 	t.Helper()
 	type result struct {
@@ -93,20 +99,13 @@ func threadListener(t *testing.T) (fd int, release func()) {
 	done := make(chan struct{})
 	go func() {
 		// Never unlocked once the filter is in: the thread carries it.
-		// Not the main thread, though: a locked goroutine exiting there
-		// wedges the thread instead of ending it, and the filter would
-		// keep a live task for the rest of the test binary.
-		for tries := 0; ; tries++ {
-			runtime.LockOSThread()
-			if unix.Gettid() != unix.Getpid() {
-				break
-			}
-			runtime.UnlockOSThread()
-			if tries == 100 {
-				ch <- result{-1, errors.New("could not get off the main thread")}
-				return
-			}
-			time.Sleep(time.Millisecond)
+		// init pins the main goroutine, so this thread is never the main
+		// one (a locked goroutine exiting there wedges the thread instead
+		// of ending it); the check guards that.
+		runtime.LockOSThread()
+		if unix.Gettid() == unix.Getpid() {
+			ch <- result{-1, errors.New("locked the main thread; init should have pinned it")}
+			return
 		}
 		if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 			ch <- result{-1, err}
