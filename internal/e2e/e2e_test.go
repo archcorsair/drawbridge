@@ -641,26 +641,42 @@ func guestBindProbeOpts(t *testing.T, port int, offThread bool) (seccompProbeRes
 	return seccompProbeResult{}, fmt.Errorf("no probe result in %q", out)
 }
 
-// waitBindArbitrationLive blocks until a guest bind onto a known-free port
+// waitBindArbitrationLive blocks until a guest bind onto a Mac-free port
 // round-trips with errno 0 — proof that the 'R' reservation session is up (and
 // that the CONTINUE path works), so a later refusal is a real verdict rather
 // than a not-yet-connected supervisor.
+//
+// Every attempt picks a fresh Mac-free port. Mac-free is not guest-free: the
+// guest's ephemeral range overlaps the Mac's, and a guest socket already
+// holding the chosen port (forwarder connections arrive from guest loopback
+// ephemeral ports) fails the probe on every retry, which a single port picked
+// up front can never get past (seen 2026-10-29: ~40 failed tries on one port
+// while the agent answered `ok` each time). On timeout the last attempt's
+// port, errno and error go into the failure.
 func waitBindArbitrationLive(t *testing.T) {
 	t.Helper()
-	free, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	freePort := free.Addr().(*net.TCPAddr).Port
-	free.Close()
-
+	var (
+		attempts int
+		lastPort int
+		lastRes  seccompProbeResult
+		lastErr  error
+	)
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		if time.Now().After(deadline) {
-			t.Fatalf("guest bind to free port :%d never succeeded — is the agent's notify socket up?", freePort)
+			t.Fatalf("guest bind to a Mac-free port never succeeded after %d attempts — is the agent's notify socket up? last attempt :%d: probe err=%v errno=%d error=%q",
+				attempts, lastPort, lastErr, lastRes.Errno, lastRes.Error)
 		}
-		r, err := guestBindProbe(t, freePort)
-		if err == nil && r.Errno == 0 {
+		free, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lastPort = free.Addr().(*net.TCPAddr).Port
+		free.Close()
+
+		attempts++
+		lastRes, lastErr = guestBindProbe(t, lastPort)
+		if lastErr == nil && lastRes.Errno == 0 {
 			return
 		}
 		time.Sleep(500 * time.Millisecond)
