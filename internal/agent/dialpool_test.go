@@ -138,6 +138,19 @@ func TestPopSkipsDeadPicksLive(t *testing.T) {
 	p.park(liveLocal)
 	deadPeer.Close()
 
+	// FIN delivery is asynchronous; the test is about a pool holding a known-dead conn.
+	for deadline := time.Now().Add(2 * time.Second); ; time.Sleep(time.Millisecond) {
+		p.mu.Lock()
+		n := len(p.conns)
+		p.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("watchdog never dropped the dead conn (pool size %d)", n)
+		}
+	}
+
 	c, err := p.pop(2 * time.Second)
 	if err != nil {
 		t.Fatal(err)
