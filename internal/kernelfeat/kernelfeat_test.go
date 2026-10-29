@@ -1,6 +1,9 @@
 package kernelfeat
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -211,6 +214,149 @@ func TestScript(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("script does not contain %q:\n%s", want, s)
 		}
+	}
+}
+
+// TestScript only reads the script's text, and the fake guest in
+// cmd/drawbridge emulates it instead of running it, so a broken shell branch
+// would pass both. This runs the rendered fragment under /bin/sh against
+// fixture agents, one per branch, the way ocipodman_test.go runs the restart
+// script.
+func TestScriptRunsUnderSh(t *testing.T) {
+	// A fixture agent: records its argv to ran when executed, then does what
+	// the case asks. body is appended after the recording line.
+	agent := func(t *testing.T, dir, body string) (path, ran string) {
+		t.Helper()
+		path, ran = filepath.Join(dir, "agent"), filepath.Join(dir, "ran")
+		src := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + ran + "'\n" + body
+		if err := os.WriteFile(path, []byte(src), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path, ran
+	}
+	const report = `{"probe":"` + Marker + `","so_netns_cookie":true}`
+
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, dir string) (path, ran string)
+		want    string // the features= value
+		wantRan string // what the fixture recorded, "" when it must not have run
+		cookie  bool   // the parsed report's so_netns_cookie
+	}{
+		{
+			name: "report",
+			setup: func(t *testing.T, dir string) (string, string) {
+				return agent(t, dir, "# "+Marker+"\necho '"+report+"'\necho 'a second line the script must drop'\n")
+			},
+			want: report, wantRan: Subcommand + "\n", cookie: true,
+		},
+		{
+			// Without the marker the binary is an agent from before the
+			// probe, and running it would start the daemon.
+			name: "predates",
+			setup: func(t *testing.T, dir string) (string, string) {
+				// Nothing here may spell Marker, not even the report.
+				return agent(t, dir, "echo '{\"probe\":\"older-agent\",\"so_netns_cookie\":true}'\n")
+			},
+			want: Predates,
+		},
+		{
+			name: "failed, no output",
+			setup: func(t *testing.T, dir string) (string, string) {
+				return agent(t, dir, "# "+Marker+"\nexit 0\n")
+			},
+			want: Failed, wantRan: Subcommand + "\n",
+		},
+		{
+			name: "failed, non-zero exit",
+			setup: func(t *testing.T, dir string) (string, string) {
+				return agent(t, dir, "# "+Marker+"\nexit 3\n")
+			},
+			want: Failed, wantRan: Subcommand + "\n",
+		},
+		{
+			name: "absent",
+			setup: func(t *testing.T, dir string) (string, string) {
+				return filepath.Join(dir, "no-such-agent"), filepath.Join(dir, "ran")
+			},
+			want: Absent,
+		},
+		{
+			name: "unreadable",
+			setup: func(t *testing.T, dir string) (string, string) {
+				if os.Geteuid() == 0 {
+					t.Skip("root reads a mode 0000 file, so the unreadable branch cannot be reached")
+				}
+				path, ran := agent(t, dir, "# "+Marker+"\n")
+				if err := os.Chmod(path, 0); err != nil {
+					t.Fatal(err)
+				}
+				return path, ran
+			},
+			want: Unreadable,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			// Script documents a space-free, quote-free path.
+			if strings.ContainsAny(dir, " \t\n'\"") {
+				t.Skipf("temp dir %q is not a space-free word, which Script requires", dir)
+			}
+			path, ran := tc.setup(t, dir)
+
+			cmd := exec.Command("/bin/sh")
+			cmd.Stdin = strings.NewReader(Script(path))
+			cmd.Env = []string{"PATH=/usr/bin:/bin"}
+			var stderr strings.Builder
+			cmd.Stderr = &stderr
+			out, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("script failed: %v\nstderr: %s\noutput: %s", err, stderr.String(), out)
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("script wrote to stderr (a shell parse error looks like this):\n%s", stderr.String())
+			}
+
+			var features []string
+			p := Parse("")
+			for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+				k, v, ok := strings.Cut(line, "=")
+				if !ok || !p.Set(k, v) {
+					t.Fatalf("line %q is not a key=value line Script owns:\n%s", line, out)
+				}
+				if k == Key {
+					features = append(features, v)
+				}
+			}
+			if len(features) != 1 || features[0] != tc.want {
+				t.Fatalf("%s lines = %q, want exactly [%q]\noutput:\n%s", Key, features, tc.want, out)
+			}
+			if p.Arch == "" {
+				t.Errorf("%s is empty:\n%s", KeyArch, out)
+			}
+			switch p.DirectCalls {
+			case ConfigYes, ConfigNo, ConfigUnknown:
+			default:
+				t.Errorf("%s = %q, want %q, %q or %q", KeyDirectCalls, p.DirectCalls, ConfigYes, ConfigNo, ConfigUnknown)
+			}
+			t.Logf("this host: %s=%s %s=%s", KeyArch, p.Arch, KeyDirectCalls, p.DirectCalls)
+
+			if wantRan := tc.want == report; p.Ran != wantRan || p.Report.NetnsCookie != tc.cookie {
+				t.Errorf("probe = %+v, want ran=%v cookie=%v", p, wantRan, tc.cookie)
+			}
+			if !p.Ran && p.Why != tc.want {
+				t.Errorf("Why = %q, want %q", p.Why, tc.want)
+			}
+
+			got, err := os.ReadFile(ran)
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if string(got) != tc.wantRan {
+				t.Errorf("fixture recorded %q, want %q", got, tc.wantRan)
+			}
+		})
 	}
 }
 
