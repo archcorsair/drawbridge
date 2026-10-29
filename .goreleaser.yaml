@@ -24,16 +24,20 @@ project_name: drawbridge
 # Global before-hooks are plain command strings (no per-hook `env:` map), and
 # they are shellword-split rather than run through a shell — hence the
 # explicit `env` prefix for GOOS/GOARCH/CGO_ENABLED.
+#
+# Every release build, the guest cross-builds here and the Mac `builds`
+# below, carries -trimpath (audit #24): no runner checkout or module-cache
+# paths in the shipped binaries, the embedded guest binaries included.
 before:
   hooks:
     - go mod download
 
     - mkdir -p bin internal/guestbin/bin
 
-    - env GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}" -o bin/drawbridge-agent-linux-arm64 ./cmd/drawbridge-agent
-    - env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}" -o bin/drawbridge-agent-linux-amd64 ./cmd/drawbridge-agent
-    - env GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags "-X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}" -o bin/drawbridge-runc-linux-arm64 ./cmd/drawbridge-runc
-    - env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}" -o bin/drawbridge-runc-linux-amd64 ./cmd/drawbridge-runc
+    - env GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}" -o bin/drawbridge-agent-linux-arm64 ./cmd/drawbridge-agent
+    - env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}" -o bin/drawbridge-agent-linux-amd64 ./cmd/drawbridge-agent
+    - env GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}" -o bin/drawbridge-runc-linux-arm64 ./cmd/drawbridge-runc
+    - env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}" -o bin/drawbridge-runc-linux-amd64 ./cmd/drawbridge-runc
 
     # …into the embed directory under the names embed_darwin.go expects.
     - cp bin/drawbridge-agent-linux-arm64 internal/guestbin/bin/agent_linux_arm64
@@ -51,6 +55,7 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [darwin]
     goarch: [arm64, amd64]
+    flags: [-trimpath]
     ldflags:
       - -X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}
     mod_timestamp: "{{ .CommitTimestamp }}"
@@ -61,6 +66,7 @@ builds:
     env: [CGO_ENABLED=0]
     goos: [darwin]
     goarch: [arm64, amd64]
+    flags: [-trimpath]
     ldflags:
       - -X github.com/archcorsair/drawbridge/internal/buildinfo.Version=v{{ .Version }}
     mod_timestamp: "{{ .CommitTimestamp }}"

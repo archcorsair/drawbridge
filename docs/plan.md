@@ -96,7 +96,7 @@ follow-up and belongs in the Phase 2 harness.
 Implementation notes for future phases:
 - BPF C lives in `internal/bpf/c/` (a `.c` file in a Go package dir breaks non-cgo builds).
 - `clang -target bpf` needs explicit `-I/usr/include/<triple>-linux-gnu` on Ubuntu multiarch.
-- cilium/ebpf v0.22 requires Go ≥ 1.25 (both sides run current stable 1.26.5, pinned in mise.toml and the Lima provision script; go.mod keeps the 1.25.0 minimum).
+- cilium/ebpf v0.22 requires Go ≥ 1.25 (go.mod keeps the 1.25.0 minimum, which CI's matrix tests). The Mac side and release builds use exactly go1.26.10, pinned in mise.toml and `release.yml` (never `go-version-file: go.mod`, which builds on the bare 1.25.0 stdlib; audit M28). The guest's Go comes from the Lima provision script, which still installs 1.26.5; it only runs bpf2go and the guest tests and ships nothing.
 
 ## Phase 2 results (2026-07-30)
 
