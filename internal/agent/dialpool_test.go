@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -157,5 +158,55 @@ func TestPopSkipsDeadPicksLive(t *testing.T) {
 	}
 	if c != liveLocal {
 		t.Fatal("pop returned the dead conn")
+	}
+}
+
+// TestPopSkipsDeadEntries covers pop's own skip, which the watchdog usually
+// pre-empts: entries are inserted by hand with done already closed, so no
+// watchdog runs. A is live but watchdog-flagged, B's peer has closed
+// (found through probeLive), C is live. Map order picks the entry pop
+// visits first, so the loop covers the orderings.
+func TestPopSkipsDeadEntries(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		p := newDialPool()
+		aLocal, aPeer := tcpPair(t)
+		bLocal, bPeer := tcpPair(t)
+		cLocal, cPeer := tcpPair(t)
+		_, _ = aPeer, cPeer
+		bPeer.Close()
+		// FIN delivery is asynchronous; wait until the conn is known dead.
+		for deadline := time.Now().Add(2 * time.Second); probeLive(bLocal); time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatal("FIN never reached the dead conn")
+			}
+		}
+		entry := func(c net.Conn, bad bool) *parked {
+			done := make(chan struct{})
+			close(done)
+			return &parked{c: c, bad: bad, done: done}
+		}
+		p.mu.Lock()
+		p.conns[entry(aLocal, true)] = struct{}{}
+		p.conns[entry(bLocal, false)] = struct{}{}
+		p.conns[entry(cLocal, false)] = struct{}{}
+		p.mu.Unlock()
+
+		c, err := p.pop(2 * time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c != cLocal {
+			t.Fatalf("iteration %d: pop returned a flagged or dead conn", i)
+		}
+		// pop stops at the first live entry, so a skipped one the map
+		// ordered after C is still pooled. A second pop visits the rest.
+		if c, err := p.pop(10 * time.Millisecond); err == nil {
+			t.Fatalf("iteration %d: second pop returned %v from a pool with no live conn", i, c)
+		}
+		for name, skipped := range map[string]net.Conn{"flagged": aLocal, "dead": bLocal} {
+			if _, err := skipped.Write([]byte{0}); !errors.Is(err, net.ErrClosed) {
+				t.Fatalf("iteration %d: skipped %s conn not closed: %v", i, name, err)
+			}
+		}
 	}
 }
