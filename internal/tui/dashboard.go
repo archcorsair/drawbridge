@@ -226,14 +226,8 @@ func (m Model) summaryBox(lo layout, s *introspect.Snapshot) []string {
 	// keeps its own weight so the pulse reads as chrome lighting up around
 	// it.
 	borderS, titleS := m.flashStyle()
-	// A skewed daemon's chip carries a whole command (-vm included), and a
-	// truncated remedy is worse than none, so the uptime gives way to it.
-	uptime := "up " + relative(m.now.Sub(st.StartedAt))
-	if st.Version != "" && st.Version != m.version {
-		uptime = ""
-	}
 	title := st.VM.Ref + " ─ " + joinDot(flavor(s.Path)+" socket",
-		fmt.Sprintf("pid %d", st.PID), m.versionChip(pal, st), uptime)
+		fmt.Sprintf("pid %d", st.PID), m.versionChip(pal, st), "up "+relative(m.now.Sub(st.StartedAt)))
 	head := truncEnd(title, inner-4)
 	top := "┌ " + head + " "
 	rule := strings.Repeat("─", max(0, box-1-visWidth(top))) + "┐"
@@ -241,6 +235,14 @@ func (m Model) summaryBox(lo layout, s *introspect.Snapshot) []string {
 	var body []string
 	if stale {
 		body = append(body, styleWarn.Render(truncEnd(m.stoppedText(s)+" ("+s.Path+")", iw)))
+	}
+	if m.versionSkew(st) {
+		// The remedy lives in the body, not the title: a title is truncated to
+		// fit, and a remedy cut short is worse than none. It names the daemon's
+		// own VM: a bare install used to re-target the root daemon at
+		// lima:drawbridge (audit 2026-10-28 H3).
+		body = append(body, field(pal, "upgrade",
+			pal.warn.Render("sudo drawbridge install -vm "+orPlaceholder(st.VM.Ref))))
 	}
 	body = append(body,
 		field(pal, "endpoint", joinFields(orUnknown(st.Resolution.Endpoint),
@@ -321,16 +323,18 @@ func field(pal palette, label, value string) string {
 // joinFields is the box's four-space column gap.
 func joinFields(parts ...string) string { return strings.Join(parts, "    ") }
 
-// versionChip is §3.1's skew chip: when the daemon's version differs from this
-// CLI's, the box title carries the remedy rather than a bare mismatch — same
-// wording as doctor check 9.
+// versionSkew reports a daemon whose version is known and differs from this CLI's.
+func (m Model) versionSkew(st introspect.State) bool {
+	return st.Version != "" && st.Version != m.version
+}
+
+// versionChip is §3.1's skew chip: the short mismatch in the box title. The
+// remedy is the body's `upgrade` line, which is never truncated.
 func (m Model) versionChip(pal palette, st introspect.State) string {
-	if st.Version == "" || st.Version == m.version {
+	if !m.versionSkew(st) {
 		return "daemon " + orUnknown(st.Version)
 	}
-	// The remedy names the daemon's own VM: a bare install used to re-target
-	// the root daemon at lima:drawbridge (audit 2026-10-28 H3).
-	return pal.warn.Render(fmt.Sprintf("daemon %s ≠ CLI %s — sudo drawbridge install -vm %s", st.Version, m.version, orPlaceholder(st.VM.Ref)))
+	return pal.warn.Render(fmt.Sprintf("daemon %s ≠ CLI %s", st.Version, m.version))
 }
 
 func (m Model) versionChipCompact(pal palette, st introspect.State) string {

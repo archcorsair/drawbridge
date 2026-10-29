@@ -198,12 +198,16 @@ At 120×40 (the roomy case):
 
 - Header line: program name, CLI version, daemon position (`1/2`),
   staleness of the last successful fetch, and the help hint. When the
-  daemon's `version` ≠ the CLI's, a warn chip appears in the daemon box
-  title: `daemon v0.0.9 ≠ CLI v0.1.0 — sudo drawbridge install -vm
+  daemon's `version` ≠ the CLI's, a short warn chip appears in the daemon box
+  title (`daemon v0.0.9 ≠ CLI v0.1.0`, ahead of the uptime), and the box body
+  gains an `upgrade` line on top: `upgrade    sudo drawbridge install -vm
   colima:colima` (the §6 skew policy, same remedy wording as doctor check 9;
-  `-vm` is the daemon's own ref, `<vm>` when it reports none). A remedy cut
-  short is worse than none, so the chip displaces the title's uptime field
-  (amended 2026-10-28, audit H3: the bare command re-targeted the daemon).
+  `-vm` is the daemon's own ref, `<vm>` when it reports none). The command
+  lives in the body because the title is truncated to fit and a remedy cut
+  short is worse than none; the line is never clipped at the 120-column wide
+  layout, whatever the ref's length (amended 2026-10-28, audit H3: the bare
+  command re-targeted the daemon; the first fix put the command in the title,
+  where `-vm` clipped at 120 columns for the longer refs).
 - Summary box: `resolution` verbatim (endpoint, source, and the resolver's
   `note` on its own line when non-empty — the strings doctor prints
   unchanged, unchanged here too), auth mode + secret state + path
@@ -916,7 +920,8 @@ layout.
   §3.1's "auth path drops below 70" degradation rule is retired along
   with `layout.showAuthPath`. The secret state is the bare word after
   the mode. The skew chip, the resolver-note line and the D8 banner are
-  untouched.
+  untouched; a skewed daemon's `upgrade` line sits above both content lines
+  (three lines, not two, for as long as the skew lasts).
 - **The skip list docks into the mirror header** —
   `MIRROR — guest listeners on Mac localhost (3) · skip: 22`, dim,
   only when non-empty — and the floating `skip list: 22` line under the
