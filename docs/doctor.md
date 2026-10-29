@@ -370,9 +370,10 @@ script — `systemctl is-active` on both unit names (persistent from `up`,
 transient from `agent-up`), `cat /run/drawbridge-agent.version`, `ss -ltn`
 filtered to :4777 (pure parse: loopback bind, vzNAT bind, or both).
 Classification: no unit active → `fail` ("run `drawbridge up <vm>`");
-version ≠ `buildinfo.Version` → `fail`, remedy "`drawbridge up` re-pushes the
-embedded agent" (§6 skew policy — `up` auto-heals this side); listening on
-loopback but not the vzNAT address → `warn` (agent predates scoped bind or
+version ≠ `buildinfo.Version` → `fail`, remedy "`drawbridge up <vm>`
+re-pushes the embedded agent (and any `--oci` runtime wrapper)" (§6 skew
+policy — `up` auto-heals this side); listening on loopback but not the
+vzNAT address → `warn` (agent predates scoped bind or
 `-transport` overridden; vznat-direct impossible, name it). **The `ss`
 result is retained as cross-evidence for checks 4/6:** an agent listening
 in-guest refutes `NoteAgentNotListening` when the Mac-side probe still fails.
