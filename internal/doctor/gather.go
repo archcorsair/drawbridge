@@ -32,6 +32,7 @@ import (
 	"github.com/archcorsair/drawbridge/internal/guestbin"
 	"github.com/archcorsair/drawbridge/internal/install"
 	"github.com/archcorsair/drawbridge/internal/introspect"
+	"github.com/archcorsair/drawbridge/internal/kernelfeat"
 	"github.com/archcorsair/drawbridge/internal/limaaddr"
 	"github.com/archcorsair/drawbridge/internal/podmanaddr"
 	"github.com/archcorsair/drawbridge/internal/transport"
@@ -133,8 +134,17 @@ func effectiveTimeout(o Options) time.Duration {
 // answers as key=value lines, with the multi-line `ss` output fenced by
 // markers. It rides on stdin, so nothing in it depends on how a provider
 // shell quotes argv.
-const guestScript = `
+//
+// The kernel feature probe (check 2) runs the installed agent's `features`
+// subcommand as the login user: a socket, a getsockopt and a close, and only
+// for an agent binary that carries the probe's marker, because an older one
+// would ignore the argument and start as the daemon
+// (internal/kernelfeat). Read-only either way.
+var guestScript = `
 echo "kernel=$(uname -r 2>/dev/null)"
+` + kernelfeat.Script(guestbin.GuestPath(guestbin.NameAgent)) + guestScriptRest
+
+const guestScriptRest = `
 [ -r /sys/kernel/btf/vmlinux ] && echo btf=yes || echo btf=no
 [ -e /sys/fs/cgroup/cgroup.controllers ] && echo cgroup2=yes || echo cgroup2=no
 command -v systemctl >/dev/null 2>&1 && echo systemd=yes || echo systemd=no

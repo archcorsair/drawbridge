@@ -320,14 +320,34 @@ the vz switch line (`colima start --vm-type vz` / lima `vmType: vz` — §3.1
 matrix verdict "rejected with doctor message"). Running vz → `ok`, listed
 with MAC (the pin candidates).
 
-**2. `guest-prereqs` — BTF, cgroup v2, systemd, kernel ≥ 5.7, runtime
+**2. `guest-prereqs` — BTF, cgroup v2, systemd, `SO_NETNS_COOKIE`, runtime
 versions.** Inputs: one stdin script emitting `key=value` lines (`btf=`,
-`cgroup2=`, `systemd=`, `kernel=`, `runc=`, `oci=` from
+`cgroup2=`, `systemd=`, `kernel=`, `features=`, `runc=`, `oci=` from
 `/etc/drawbridge/provision.json` presence); parser + classifier pure.
-Kernel compare is a parsed semver-ish check, not a string compare. runc/crun
-lines only classified when the guest was provisioned `--oci`. Alpine/OpenRC
-(no systemd) → `fail` with the §3.1 rejection message. VM not running →
-`skip` with the start hint.
+Alpine/OpenRC (no systemd) → `fail` with the §3.1 rejection message. VM not
+running → `skip` with the start hint.
+
+The agent's kernel floor is `getsockopt(SO_NETNS_COOKIE)`: the loopback
+gateway scopes its hooks to the guest's own netns by that cookie and will
+not start without it. It landed in Linux 5.14 and was backported to some
+5.12.y and 5.13.y stable kernels, so the check asks the kernel rather than
+reading its version (audit 2026-10-28 L5). `features=` is the installed
+agent's `drawbridge-agent features` subcommand, run as the login user (one
+socket, one getsockopt, no sudo), which prints one JSON line. The script runs
+it only when the binary carries the probe's marker string: an agent from
+before the subcommand would ignore the argument and start as the daemon.
+The probe's answer wins in both directions: yes → `ok` whatever the
+version, no → `fail` naming the kernel's error. Only when it cannot run (no
+agent installed yet, or one that predates the probe) does the check fall
+back to the version, numerically: ≥ 5.14 `ok`; 5.12 or 5.13 `warn` ("cannot
+confirm"), with the remedy to re-run `drawbridge up`, which asks the kernel
+itself; below 5.12 `fail`. The 5.8 floor the agent has had since the tracker
+landed (ring buffer events, cgroup `getpeername` hooks) is implied.
+
+The OCI wrapper's own floor, kernel ≥ 5.7 for the seccomp `listenerPath`
+contract, is then a `warn`, reachable only on a kernel the probe passed
+despite an older version (a distro backport). runc/crun lines are only
+classified when the guest was provisioned `--oci`.
 
 **3. `agent` — unit active, version, transport listening.** Inputs: guest
 script — `systemctl is-active` on both unit names (persistent from `up`,

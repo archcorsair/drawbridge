@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/archcorsair/drawbridge/internal/guestbin"
+	"github.com/archcorsair/drawbridge/internal/kernelfeat"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
 )
 
@@ -770,6 +771,47 @@ func checkPreflight(p preflight, oci bool) error {
 		return fmt.Errorf("no docker in the guest: --oci registers the drawbridge runc wrapper in Docker Engine's\n" +
 			"  /etc/docker/daemon.json and has nothing to register it with.\n" +
 			"  Install Docker Engine in the VM (a Colima VM already has one), or re-run without --oci")
+	}
+	return nil
+}
+
+// checkKernelFeatures is the agent's own kernel floor, asked of the kernel
+// rather than read off its version (audit 2026-10-28 L5): the gateway will
+// not attach without getsockopt(SO_NETNS_COOKIE), which landed in 5.14 and
+// was backported to some 5.12.y/5.13.y stables, and before this check an
+// unsupported kernel showed up only as an agent dying at start.
+//
+// It runs the agent binary this `up` is about to install: the staged copy
+// when the guest's differs, else the installed one, which is then this
+// build's. As the login user, with no sudo: the probe is one socket and one
+// getsockopt. A binary that cannot be asked (a `-agent-bin` from before the
+// probe, a /tmp that will not exec) degrades to the version compare, where
+// 5.12 and 5.13 warn rather than refuse.
+func (g *guest) checkKernelFeatures(staged, installed, kernel string) error {
+	path, script := installed, kernelfeat.Script(installed)
+	if staged != "" {
+		// dd wrote the staged copy as the login user, mode 0644.
+		path = staged
+		script = "chmod 0755 " + shquote(staged) + " 2>/dev/null\n" + kernelfeat.Script(staged)
+	}
+	out, err := g.sh(script)
+	if err != nil {
+		return fmt.Errorf("asking the guest kernel whether it supports SO_NETNS_COOKIE (%s features): %w", path, err)
+	}
+	p := kernelfeat.Parse("")
+	for _, line := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok && k == kernelfeat.Key {
+			p = kernelfeat.Parse(v)
+		}
+	}
+	v := kernelfeat.Classify(p, kernel)
+	switch v.Status {
+	case kernelfeat.Fail:
+		return fmt.Errorf("%s.\n  %s", v.Problem, strings.ReplaceAll(kernelfeat.Remedy, "\n", "\n  "))
+	case kernelfeat.Warn:
+		fmt.Fprintf(g.out, "drawbridge: warning: %s.\n"+
+			"  Continuing: if the kernel lacks it, the agent will fail at start and `sudo journalctl -u %s`\n"+
+			"  in the guest will say getsockopt(SO_NETNS_COOKIE)\n", v.Problem, guestbin.UnitName)
 	}
 	return nil
 }

@@ -272,10 +272,19 @@ Steps:
    (BTF); `test -d /sys/fs/cgroup/cgroup.controllers` (cgroup v2);
    `command -v systemctl` (systemd; §9 Q6); kernel ≥ 5.7 for the seccomp
    listenerPath contract (`uname -r` parse — informational unless `--oci`).
+   The agent's own kernel floor is not a version compare: step 3 probes it.
 3. **Push the agent.** Stream the embedded binary over the provider shell
    (`cat > /tmp/… && sudo install -m 0755 -o root /tmp/… /usr/local/bin/drawbridge-agent`).
    Compare a sha256 first; skip the copy when current (fast idempotent
-   re-run).
+   re-run). Before the install, ask the guest kernel whether
+   `getsockopt(SO_NETNS_COOKIE)` works, by running the staged binary's
+   `features` subcommand as the login user (the installed one when the copy
+   was skipped). The gateway will not attach without the cookie (Linux 5.14,
+   or a 5.12.y/5.13.y stable with the backport), so a "no" refuses here with
+   the kernel's error and leaves the installed agent untouched. A binary that
+   cannot be asked (a `-agent-bin` from before the probe) falls back to the
+   kernel version: ≥ 5.14 passes, 5.12/5.13 warns and continues, older
+   refuses (audit 2026-10-28 L5; `internal/kernelfeat`).
 4. **Install the unit.** Render the embedded
    `drawbridge-agent.service` (plain persistent unit:
    `ExecStart=/usr/local/bin/drawbridge-agent`, `Restart=on-failure`,
@@ -339,7 +348,7 @@ tables). The knowledge encoded, with its provenance:
 | # | Check | Source of the knowledge |
 |---|---|---|
 | 1 | Providers present + running vz instances; qemu instances flagged with the vz switch instruction | §3.1 matrix |
-| 2 | Guest prereqs: BTF, cgroup v2, systemd, kernel ≥5.7, runc ≥1.1.0/crun (when `--oci`/wrapper present) | oci-hook.md; dev-VM template |
+| 2 | Guest prereqs: BTF, cgroup v2, systemd, `SO_NETNS_COOKIE` (probed through `drawbridge-agent features`; version fallback ≥5.14, 5.12/5.13 warn), runc ≥1.1.0/crun (when `--oci`/wrapper present) | oci-hook.md; dev-VM template; audit 2026-10-28 L5 |
 | 3 | Agent: unit active, `/run/drawbridge-agent.version` vs CLI version, transport listening (`ss` via provider shell) | §6 |
 | 4 | Endpoint resolution: run `limaaddr.Resolve`, print `Endpoint`/`Source`/`Note` verbatim — the probe classification (EHOSTUNREACH→Local Network denial, ECONNREFUSED→agent not listening, no-guest-IP) already is the diagnosis text | transport.md §2.2 |
 | 5 | vzNAT route: `192.168.64.0/24` route present + ARP entry; missing → the Tailscale/Little Snitch route-deletion pathology and the exact `sudo route -n add -net 192.168.64.0/24 192.168.64.1` remediation | local-network-permission.md finding 1 |

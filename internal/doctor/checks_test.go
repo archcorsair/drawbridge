@@ -8,6 +8,7 @@ import (
 
 	"github.com/archcorsair/drawbridge/internal/install"
 	"github.com/archcorsair/drawbridge/internal/introspect"
+	"github.com/archcorsair/drawbridge/internal/kernelfeat"
 	"github.com/archcorsair/drawbridge/internal/limaaddr"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
 )
@@ -117,10 +118,19 @@ func TestCheckProvidersReportsListErrors(t *testing.T) {
 
 // --- 2. guest-prereqs ------------------------------------------------------
 
+// probeOK is `drawbridge-agent features` as the dev VM (6.8.0, arm64)
+// answered it live on 2026-10-29; probeNo is the shape a kernel without the
+// option produces.
+const (
+	probeOK = `{"probe":"drawbridge-features/v1","so_netns_cookie":true}`
+	probeNo = `{"probe":"drawbridge-features/v1","so_netns_cookie":false,"so_netns_cookie_error":"getsockopt(SO_NETNS_COOKIE): protocol not available"}`
+)
+
 func healthyGuest() GuestProbe {
 	return GuestProbe{
 		Ran: true, Kernel: "6.8.0-51-generic",
 		BTF: true, CGroup2: true, Systemd: true, Sudo: true,
+		Features:    kernelfeat.Parse(probeOK),
 		AgentActive: "active", AgentVersion: "dev",
 		GuestIPs:  []string{"192.168.64.2", "192.168.5.15"},
 		Listeners: []Listener{{Addr: "192.168.64.2", Port: ControlPort}, {Addr: "127.0.0.1", Port: ControlPort}},
@@ -141,8 +151,38 @@ func TestCheckGuestPrereqs(t *testing.T) {
 		{"no btf", func(g *GuestProbe) { g.BTF = false }, "", StatusFail, "CONFIG_DEBUG_INFO_BTF"},
 		{"no cgroup2", func(g *GuestProbe) { g.CGroup2 = false }, "", StatusFail, "unified hierarchy"},
 		{"no sudo", func(g *GuestProbe) { g.Sudo = false }, "", StatusFail, "sudoers.d"},
-		{"old kernel", func(g *GuestProbe) { g.Kernel = "4.19.0" }, "", StatusWarn, "kernel >= 5.7"},
-		{"unparsable kernel", func(g *GuestProbe) { g.Kernel = "linux" }, "", StatusWarn, "kernel >= 5.7"},
+		// The agent's floor, SO_NETNS_COOKIE: the probe wins when it ran.
+		{"probe ok", nil, "", StatusOK, "asked the kernel"},
+		{"probe says no on a new kernel", func(g *GuestProbe) {
+			g.Features = kernelfeat.Parse(probeNo)
+		}, "", StatusFail, "protocol not available"},
+		{"probe says no names the remedy", func(g *GuestProbe) {
+			g.Features = kernelfeat.Parse(probeNo)
+		}, "", StatusFail, "kernel >= 5.14"},
+		// An old agent cannot be asked: judged by version, never failed for
+		// being old itself.
+		{"old agent on 6.8", func(g *GuestProbe) {
+			g.Features = kernelfeat.Parse(kernelfeat.Predates)
+		}, "", StatusOK, "6.8 >= 5.14"},
+		{"old agent on 5.13", func(g *GuestProbe) {
+			g.Kernel, g.Features = "5.13.19", kernelfeat.Parse(kernelfeat.Predates)
+		}, "", StatusWarn, "cannot confirm getsockopt(SO_NETNS_COOKIE)"},
+		{"old agent on 5.12", func(g *GuestProbe) {
+			g.Kernel, g.Features = "5.12.0", kernelfeat.Parse(kernelfeat.Predates)
+		}, "", StatusWarn, "re-run `drawbridge up"},
+		{"no agent on 5.11", func(g *GuestProbe) {
+			g.Kernel, g.Features = "5.11.0", kernelfeat.Parse(kernelfeat.Absent)
+		}, "", StatusFail, "older than 5.12"},
+		{"no agent on 4.19", func(g *GuestProbe) {
+			g.Kernel, g.Features = "4.19.0", kernelfeat.Parse(kernelfeat.Absent)
+		}, "", StatusFail, "lacks SO_NETNS_COOKIE"},
+		{"no agent, unparsable kernel", func(g *GuestProbe) {
+			g.Kernel, g.Features = "linux", kernelfeat.Parse(kernelfeat.Absent)
+		}, "", StatusWarn, "SO_NETNS_COOKIE unconfirmed"},
+		{"probe ok, unparsable kernel", func(g *GuestProbe) { g.Kernel = "linux" }, "", StatusOK, "asked the kernel"},
+		// A distro backport below the OCI wrapper's own floor: the agent
+		// runs, containerized arbitration may not.
+		{"probe ok on a backported 4.18", func(g *GuestProbe) { g.Kernel = "4.18.0-553.el8" }, "", StatusWarn, "kernel >= 5.7"},
 		{"oci with old runc", func(g *GuestProbe) {
 			g.OCI, g.Runc = true, "runc version 1.0.3"
 		}, "", StatusWarn, "runc >= 1.1.0"},
@@ -196,12 +236,47 @@ func TestParseKernel(t *testing.T) {
 	}
 }
 
-// The compare is numeric, not lexical: "5.10" must not read as older than
-// "5.7" the way a string compare would have it.
+// The compare is numeric, not lexical, in both directions: "5.10" must not
+// read as older than "5.7", and "5.9" must not read as newer than "5.14",
+// the way a string compare would have them.
 func TestKernelCompareIsNumeric(t *testing.T) {
 	g := healthyGuest()
 	g.Kernel = "5.10.0-generic"
+	wantStatus(t, CheckGuestPrereqs(g, "", PodmanInput{}), StatusOK) // probe ok, above 5.7
+
+	g.Features = kernelfeat.Parse(kernelfeat.Predates) // version fallback
+	g.Kernel = "5.9.0-generic"
+	wantStatus(t, CheckGuestPrereqs(g, "", PodmanInput{}), StatusFail)
+	g.Kernel = "5.15.0-generic"
 	wantStatus(t, CheckGuestPrereqs(g, "", PodmanInput{}), StatusOK)
+}
+
+// Doctor reads the probe out of the one guest script: the real key, the
+// real JSON, and the old-agent answer the dev VM gave live.
+func TestParseGuestProbeFeatures(t *testing.T) {
+	g := ParseGuestProbe("kernel=6.8.0-147-generic\nfeatures=" + probeOK + "\nbtf=yes\n")
+	if !g.Features.Ran || !g.Features.Report.NetnsCookie {
+		t.Fatalf("features = %+v, want a probed yes", g.Features)
+	}
+	g = ParseGuestProbe("kernel=6.8.0-147-generic\nfeatures=predates\n")
+	if g.Features.Ran || g.Features.Why != kernelfeat.Predates {
+		t.Fatalf("features = %+v, want predates", g.Features)
+	}
+	// No key at all (a script from before the probe): not asked, which
+	// falls back to the version rather than passing.
+	g = ParseGuestProbe("kernel=5.11.0\n")
+	if g.Features.Ran || g.Features.Why != kernelfeat.NotAsked {
+		t.Fatalf("features = %+v, want not asked", g.Features)
+	}
+}
+
+// The probe rides in the one guest script and is gated on the marker, so an
+// agent from before it is never run (it would start as the daemon), and it
+// asks for no privilege (doctor never spawns sudo for it).
+func TestGuestScriptCarriesTheGatedProbe(t *testing.T) {
+	if !strings.Contains(guestScript, kernelfeat.Script("/usr/local/bin/drawbridge-agent")) {
+		t.Fatalf("the guest script does not carry the feature probe for the installed agent:\n%s", guestScript)
+	}
 }
 
 func TestParseRuncVersion(t *testing.T) {

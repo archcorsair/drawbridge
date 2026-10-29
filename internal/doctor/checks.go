@@ -15,6 +15,7 @@ import (
 
 	"github.com/archcorsair/drawbridge/internal/install"
 	"github.com/archcorsair/drawbridge/internal/introspect"
+	"github.com/archcorsair/drawbridge/internal/kernelfeat"
 	"github.com/archcorsair/drawbridge/internal/limaaddr"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
 )
@@ -265,6 +266,12 @@ type GuestProbe struct {
 	Systemd bool
 	Sudo    bool
 
+	// Features is the installed agent's kernel feature probe
+	// (`drawbridge-agent features`, internal/kernelfeat), or why it could
+	// not be asked. The zero value is "not asked": a guest that never
+	// answered the probe is judged by its kernel version, never passed.
+	Features kernelfeat.Probe
+
 	OCI  bool   // /etc/drawbridge/provision.json present: the VM was provisioned --oci
 	Runc string // `runc --version` first line
 	Crun string // `crun --version` first line
@@ -367,6 +374,8 @@ func ParseGuestProbe(out string) GuestProbe {
 		switch k {
 		case "kernel":
 			g.Kernel = v
+		case kernelfeat.Key:
+			g.Features = kernelfeat.Parse(v)
 		case "btf":
 			g.BTF = yes
 		case "cgroup2":
@@ -450,7 +459,9 @@ func parseSSLine(line string) (Listener, bool) {
 // ---------------------------------------------------------------------------
 
 // minKernel is the seccomp listenerPath contract's floor, same value `up`'s
-// preflight enforces.
+// `--oci` preflight enforces. It is not the agent's floor: that is
+// SO_NETNS_COOKIE (5.14, or a 5.12.y/5.13.y with the backport), which
+// internal/kernelfeat probes for and which sits above this one.
 var minKernel = [2]int{5, 7}
 
 // minRunc is the oldest runc whose OCI seccomp config carries listenerPath.
@@ -462,8 +473,9 @@ var minRunc = [3]int{1, 1, 0}
 // provisioned by the time anyone runs this.
 var minCrun = [3]int{0, 19, 0}
 
-// CheckGuestPrereqs classifies BTF, cgroup v2, systemd, the kernel version
-// and — only when the guest was provisioned `--oci` — the runtime version.
+// CheckGuestPrereqs classifies BTF, cgroup v2, systemd, SO_NETNS_COOKIE (probed,
+// else judged by kernel version), the listenerPath kernel floor
+// and, only when the guest was provisioned `--oci`, the runtime version.
 func CheckGuestPrereqs(g GuestProbe, skip string, pm PodmanInput) Finding {
 	f := Finding{ID: IDGuestPrereqs, Title: "guest prerequisites"}
 	if skip != "" {
@@ -509,8 +521,32 @@ func CheckGuestPrereqs(g GuestProbe, skip string, pm PodmanInput) Finding {
 		return f
 	}
 
-	maj, min, ok := parseKernel(g.Kernel)
-	if !ok || maj < minKernel[0] || (maj == minKernel[0] && min < minKernel[1]) {
+	// The agent's own kernel floor: getsockopt(SO_NETNS_COOKIE), asked of
+	// the kernel through the installed agent when it can be, judged by
+	// version only when it cannot (internal/kernelfeat).
+	kv := kernelfeat.Classify(g.Features, g.Kernel)
+	f.Evidence = append(f.Evidence, kv.Evidence)
+	switch kv.Status {
+	case kernelfeat.Fail:
+		f.Status = StatusFail
+		f.Title = fmt.Sprintf("guest prerequisites — kernel %s lacks SO_NETNS_COOKIE", g.Kernel)
+		f.Evidence = append(f.Evidence, kv.Problem)
+		f.Remedy = kernelfeat.Remedy
+		return f
+	case kernelfeat.Warn:
+		f.Status = StatusWarn
+		f.Title = fmt.Sprintf("guest prerequisites — kernel %s, SO_NETNS_COOKIE unconfirmed", g.Kernel)
+		f.Evidence = append(f.Evidence, kv.Problem)
+		f.Remedy = "re-run `drawbridge up <vm>`: it asks the kernel directly and refuses with this explanation if the answer is no.\n" +
+			"The agent will not start without the cookie; a guest kernel >= 5.14 settles it"
+		return f
+	}
+
+	// The OCI wrapper's floor, below the agent's. Reachable only on a kernel
+	// the probe proved has the cookie despite its version (a distro
+	// backport); an unparsable release with a passing probe says nothing
+	// against it.
+	if maj, min, ok := parseKernel(g.Kernel); ok && (maj < minKernel[0] || (maj == minKernel[0] && min < minKernel[1])) {
 		f.Status = StatusWarn
 		f.Title = fmt.Sprintf("guest prerequisites — kernel %s", g.Kernel)
 		f.Evidence = append(f.Evidence, fmt.Sprintf("cannot confirm kernel >= %d.%d, which the runc wrapper's seccomp listenerPath contract needs", minKernel[0], minKernel[1]))
