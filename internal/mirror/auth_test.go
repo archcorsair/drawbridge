@@ -257,3 +257,78 @@ func TestMalformedSecretRefusesToDial(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 }
+
+// M6: a secret that vanishes after the client authenticated must refuse, not
+// downgrade. The topology is the live one: the VM is stopped, its forward is
+// gone, and a local process answers on the same endpoint speaking auth=0. Not
+// one auth=0 frame may reach it, from the per-client splice dial or from a
+// session redial, and a rotated file heals the next dial with no restart.
+func TestVanishedSecretRefusesInsteadOfDowngrading(t *testing.T) {
+	sink := captureLog(t)
+	secret := newSecret(t)
+	guestPort := freeTCPPort(t)
+	fa := newFakeAgent(t, []listenerInfo{{Proto: "tcp", Port: guestPort, Addr: "0.0.0.0"}})
+	fa.setSecret(secret)
+	auth := macConfig(t, secret)
+	m := runClient(t, fa, auth)
+	waitFor(t, "the mirror", func() bool { return m.Mirrors("tcp", guestPort) })
+
+	// The squatter: accepts auth=0 and would serve whatever it likes.
+	fa.setSecret(nil)
+	if err := os.Remove(auth.SecretFile); err != nil {
+		t.Fatal(err)
+	}
+
+	// A client of the mirror triggers the 'S' dial; it must get nothing.
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", guestPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if n, err := c.Read(make([]byte, 1)); err == nil {
+		t.Fatalf("mirror client got %d bytes through with no secret", n)
+	}
+	waitLogContains(t, sink, "transport secret is unusable")
+
+	// Each dial site directly, so the assertion does not hang on loop timing.
+	if _, err := m.dialStream(6, guestPort); !secretUnreadable(err) {
+		t.Fatalf("dialStream after deletion: %v, want a %s refusal", err, transportauth.CauseSecretUnreadable)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := m.session(ctx); !secretUnreadable(err) {
+		t.Fatalf("session after deletion: %v, want a %s refusal", err, transportauth.CauseSecretUnreadable)
+	}
+	if err := m.reserveSession(ctx); !secretUnreadable(err) {
+		t.Fatalf("reserveSession after deletion: %v, want a %s refusal", err, transportauth.CauseSecretUnreadable)
+	}
+
+	// Rotation: a new secret on both sides heals the next dial.
+	rotated := newSecret(t)
+	if err := os.WriteFile(auth.SecretFile, []byte(rotated.Format()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fa.setSecret(rotated)
+	up, err := m.dialStream(6, guestPort)
+	if err != nil {
+		t.Fatalf("dialStream after rotation: %v", err)
+	}
+	up.Close()
+
+	for drained := false; !drained; {
+		select {
+		case f := <-fa.frames:
+			if f[1] == transportauth.AuthNone {
+				t.Fatalf("the client sent an auth=0 '%c' frame after its secret was configured", f[0])
+			}
+		default:
+			drained = true
+		}
+	}
+}
+
+func secretUnreadable(err error) bool {
+	c, ok := transportauth.CauseOf(err)
+	return ok && c == transportauth.CauseSecretUnreadable
+}

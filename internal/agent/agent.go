@@ -44,9 +44,11 @@ type Agent struct {
 	foreignNrOnce sync.Once    // one log line for non-bind notifications (notify.go)
 
 	// SecretFile is the transport secret's path (docs/transport-auth.md §5).
-	// Empty, or a path with no file, means unauthenticated mode: today's
-	// wire, and a loud startup line. Re-read per accepted conn so rotation
-	// heals live.
+	// Empty, or a path that has never held a file in this process's life,
+	// means unauthenticated mode: today's wire, and a loud startup line.
+	// Re-read per accepted conn so rotation heals live; once a file has been
+	// seen there, even a malformed one (or -secret-file was explicit),
+	// absence refuses every conn instead (transportauth.LoadLatched).
 	SecretFile string
 
 	authMu   sync.Mutex

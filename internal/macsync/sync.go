@@ -210,7 +210,7 @@ func (s *Syncer) noteEmptied(had int) {
 // this cannot spam.
 func (s *Syncer) noteEmptySession() {
 	line := "session established advertising no Mac listeners — the enumeration returned zero LISTEN sockets, which a Mac never legitimately has; " +
-		"a terminal-launched daemon on macOS 27.0b4 gets a per-responsible-app-filtered pcblist (local-network-permission.md finding 5) — `sudo drawbridge install` runs exempt"
+		"a terminal-launched daemon on macOS 27.0b4 gets a per-responsible-app-filtered pcblist (local-network-permission.md finding 5) — `sudo drawbridge install -vm <vm>` runs exempt"
 	s.log("drawbridged: macsync: %s", line)
 	s.Refusals.Record(introspect.IDAdvertisedNone, line)
 }
@@ -336,7 +336,10 @@ var (
 // normalize maps a raw Mac listener to what we sync, or reports false.
 // Phase 3 scope is the v4 path: dual-stack :: binds accept v4 (the Mac-side
 // backend dial is 127.0.0.1) and become v4-any keys, so guest v6 connects
-// keep native semantics; ::1-only and LAN-scoped binds are skipped.
+// keep native semantics; ::1-only, v6-only ::, and LAN-scoped binds are
+// skipped. A v6-only :: never answers the 127.0.0.1 reverse dial, so
+// syncing it would turn a native refusal in the guest into connect-then-EOF
+// (audit L23).
 func (s *Syncer) normalize(l Listener) (Listener, bool) {
 	if l.Proto != "tcp" || l.Port == 0 {
 		return l, false
@@ -344,10 +347,14 @@ func (s *Syncer) normalize(l Listener) (Listener, bool) {
 	switch l.Addr {
 	case v4Loopback, v4Any:
 	case v6Any:
+		if l.V6Only {
+			return l, false
+		}
 		l.Addr = v4Any
 	default:
 		return l, false
 	}
+	l.V6Only = false // a synced key is a v4 key; never let the flag split one
 	if s.Exclude != nil && s.Exclude(l) {
 		return l, false
 	}

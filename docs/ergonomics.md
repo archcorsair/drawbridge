@@ -61,7 +61,7 @@ The whole first-run experience becomes three commands and one sudo prompt:
 ```sh
 brew install archcorsair/drawbridge/drawbridge
 drawbridge up                 # finds your colima/lima VM, provisions the agent
-sudo drawbridge install       # root daemon: :80 mirrors + TN3179-exempt transport
+sudo drawbridge install -vm <vm>   # the VM `up` printed; root daemon: :80 mirrors + TN3179-exempt transport
 # or, unprivileged: drawbridged   (foreground, ports ≥1024)
 ```
 
@@ -343,7 +343,7 @@ tables). The knowledge encoded, with its provenance:
 | 3 | Agent: unit active, `/run/drawbridge-agent.version` vs CLI version, transport listening (`ss` via provider shell) | §6 |
 | 4 | Endpoint resolution: run `limaaddr.Resolve`, print `Endpoint`/`Source`/`Note` verbatim — the probe classification (EHOSTUNREACH→Local Network denial, ECONNREFUSED→agent not listening, no-guest-IP) already is the diagnosis text | transport.md §2.2 |
 | 5 | vzNAT route: `192.168.64.0/24` route present + ARP entry; missing → the Tailscale/Little Snitch route-deletion pathology and the exact `sudo route -n add -net 192.168.64.0/24 192.168.64.1` remediation | local-network-permission.md finding 1 |
-| 6 | Local Network permission: unprivileged probe failed but root path viable → explain TN3179 exemption ("`sudo drawbridge install` sidesteps this") + Settings path + subnet-exemption `defaults write` fallback | local-network-permission.md findings 2/4 |
+| 6 | Local Network permission: unprivileged probe failed but root path viable → explain TN3179 exemption ("`sudo drawbridge install -vm <vm>` sidesteps this") + Settings path + subnet-exemption `defaults write` fallback | local-network-permission.md findings 2/4 |
 | 7 | DPI middlebox, passive: `systemextensionsctl list` for content-filter NE extensions; when present, warn that Little Snitch-class filters stall ambiguous first payloads (vendor-confirmed intended DPI, 2026-08-12 — drawbridge's 4-byte frame is immune) and break TCP half-close **even when "disabled"** (disable stops rule enforcement, not DPI; the half-close kill follows the DPI port-exclusion list — >49152 is exempt), and that bench numbers are invalid while active | local-network-permission.md findings 3/4 (2026-08-12 addenda) |
 | 8 | Half-close probe, active (opt-in `-probe`): against the resolved endpoint, run the `TestForwarderHalfClose`-shaped exchange; a stall/EOF anomaly names the forwarder or an NE filter | transport.md Phase 4 |
 | 9 | Daemon: `install` state via `install.Query()`, version match CLI↔installed `drawbridged` (`/usr/local/libexec/drawbridged -version`), log tail | privileged-daemon.md §3.2 |
@@ -375,7 +375,11 @@ First release creates the first CLI↔agent skew surface. Policy:
   daemon `-version` (§2.4), compared by `doctor` (fail) and by `up`
   (auto-heals the guest side by re-pushing). `status` gains the daemon
   version line. Brew's caveats text says: after upgrade, run
-  `drawbridge up && sudo drawbridge install`.
+  `drawbridge up <vm> && sudo drawbridge install` (amended 2026-10-28,
+  audit H3: install now keeps every flag left out from the installed
+  plist, `-vm` and pins included, and prints what it kept; before that,
+  this bare command re-targeted a colima or podman daemon at
+  `lima:drawbridge`). Doctor and the TUI print it with `-vm <vm>` filled in.
 - **The wire stays exactly as shipped.** The conn-type frame's three
   reserved zero bytes, the `'S'`/`'D'` activation headers, and the frozen
   v1 UDP frame are not touched; their existing strict-zero validation *is*
@@ -413,7 +417,8 @@ Mechanism:
   A port removed from the default list simply mirrors/syncs normally —
   no allow-flag needed, replacing the list *is* the override.
 - **Install passthrough:** `drawbridge install -skip …` renders into the
-  plist like `-udp` does.
+  plist like `-udp` does, and a re-install that leaves `-skip` out keeps
+  the installed list (amended 2026-10-28, decision E3).
 - **Default list content: `22` and `323`.** The agent transport port is
   already excluded structurally (both of the ports it can be named by:
   the endpoint the Mac dials and `transport.DefaultAgentPort` inside the

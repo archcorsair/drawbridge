@@ -13,4 +13,13 @@ type Listener struct {
 	Proto string     `json:"proto"` // "tcp" (UDP sync is future work)
 	Port  uint16     `json:"port"`
 	Addr  netip.Addr `json:"addr"` // bind address, unmapped
+
+	// V6Only marks an IPv6 socket that does not also accept IPv4: its pcb's
+	// inp_vflag lacks INP_IPV4. A dual-stack `::` (V6Only false) answers
+	// 127.0.0.1 connects; a v6-only `::` does not, so it is neither synced
+	// as v4-any (L23) nor counted as a holder of 127.0.0.1 (H1). Always
+	// false for a v4 address. Never on the wire: normalize resolves it
+	// before a listener is synced, so the 'M' payload is unchanged and a
+	// synced key always carries false.
+	V6Only bool `json:"-"`
 }

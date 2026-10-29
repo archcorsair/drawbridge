@@ -40,6 +40,11 @@ func (s Secret) String() string { return "transportauth.Secret(redacted)" }
 var (
 	ErrAbsent    = errors.New("no transport secret file")
 	ErrMalformed = errors.New("malformed transport secret")
+	// ErrConfiguredMissing is absence after the secret was configured for
+	// this process (Require, or a successful LoadLatched). It deliberately
+	// does NOT wrap ErrAbsent: every ErrAbsent check in the tree means
+	// "unauthenticated mode", and this state must never read as that.
+	ErrConfiguredMissing = errors.New("configured transport secret is missing")
 )
 
 // Generate returns a fresh secret from crypto/rand.
@@ -92,9 +97,13 @@ func Load(path string) (Secret, error) {
 	return s, nil
 }
 
-// LoadOptional is Load with absent folded into (nil, nil): the shape both
-// sides want, because "no file" is a mode (§6), not an error. An empty path
-// means "not configured" too, so a zero-valued SecretFile field is legal.
+// LoadOptional is Load with absent folded into (nil, nil), statelessly: "no
+// file" is a mode (§6), not an error. An empty path means "not configured"
+// too, so a zero-valued SecretFile field is legal.
+//
+// It has no memory, so it cannot tell "never had a secret" from "had one and
+// it was deleted". Anything that re-reads the file while running, or decides
+// a process's mode, uses LoadLatched instead (§5).
 func LoadOptional(path string) (*Secret, error) {
 	if path == "" {
 		return nil, nil

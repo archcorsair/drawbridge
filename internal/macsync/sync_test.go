@@ -279,6 +279,8 @@ func TestNormalizationAndFiltering(t *testing.T) {
 		tl(8080, "::"),          // dual-stack → synced as 0.0.0.0
 		tl(9999, "::1"),         // v6-only loopback → skipped (Phase 3 is v4)
 		tl(9998, "192.168.1.5"), // LAN-scoped → skipped
+		// v6-only :: never answers the 127.0.0.1 reverse dial (L23) → skipped
+		Listener{Proto: "tcp", Port: 9997, Addr: netip.MustParseAddr("::"), V6Only: true},
 	)
 	startSyncer(t, f, &Syncer{Poll: p.poll, PoolSize: 1})
 

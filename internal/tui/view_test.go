@@ -211,6 +211,7 @@ func TestViewGoldens(t *testing.T) {
 		{"overflow_120x16", testModel(120, 16, manyEntries())},
 		{"overflow_scrolled_120x16", scrolled(testModel(120, 16, manyEntries()), 3)},
 		{"skew_chip_120x40", skewChipModel(120, 40)},
+		{"skew_chip_podman_120x40", skewChipRefModel("podman:podman-machine-default")(120, 40)},
 		{"note_120x40", noteModel(120, 40)},
 		// T2: the refusals pane, the switcher overlay, and the D8 banner in
 		// both the view it warns about and the overlay that makes it visible.
@@ -383,6 +384,16 @@ func skewChipModel(w, h int) Model {
 	return testModel(w, h, s)
 }
 
+// skewChipRefModel is skewChipModel for a daemon whose VM ref is ref.
+func skewChipRefModel(ref string) func(w, h int) Model {
+	return func(w, h int) Model {
+		s := healthySnap()
+		s.State.Version = "v0.0.9"
+		s.State.VM.Ref = ref
+		return testModel(w, h, s)
+	}
+}
+
 // flashModel is skewChipModel mid-flash: the frame where the compact
 // identity line drops the chip for the pulse's duration.
 func flashModel(w, h int) Model {
@@ -463,6 +474,7 @@ func TestNoLineOverrunsWidth(t *testing.T) {
 		"nodaemon":          func(w, h int) Model { return testModel(w, h) },
 		"stopped":           stoppedModel,
 		"skew":              skewModel,
+		"skew_chip":         skewChipRefModel("podman:podman-machine-default"),
 		"note":              noteModel,
 		"overflow":          func(w, h int) Model { return testModel(w, h, manyEntries()) },
 		"help":              func(w, h int) Model { return helpModel(testModel(w, h, healthySnap())) },
@@ -572,6 +584,25 @@ func TestWideGridRuleAndDockedSkip(t *testing.T) {
 	// table for it to divide.
 	if strings.Contains(testModel(99, 40, healthySnap()).View(), "│") {
 		t.Error("the compact layout drew a table rule")
+	}
+}
+
+// The skew remedy has its own body line so that no VM ref can be clipped by a
+// title that has to fit: the whole command must render at the 120-column wide
+// layout, whatever the ref's length, and the title keeps its uptime.
+func TestSkewRemedyIsNeverClipped(t *testing.T) {
+	for _, ref := range []string{"colima:colima", "lima:drawbridge", "podman:podman-machine-default"} {
+		v := skewChipRefModel(ref)(120, 40).View()
+		want := "sudo drawbridge install -vm " + ref
+		if !strings.Contains(v, want) {
+			t.Errorf("%s: the upgrade line is missing %q:\n%s", ref, want, v)
+		}
+		if !strings.Contains(v, "daemon v0.0.9 ≠ CLI v0.1.0") {
+			t.Errorf("%s: the title chip is missing:\n%s", ref, v)
+		}
+		if title := strings.SplitN(v, "\n", 3)[1]; !strings.Contains(title, " · up ") {
+			t.Errorf("%s: the title lost its uptime: %q", ref, title)
+		}
 	}
 }
 

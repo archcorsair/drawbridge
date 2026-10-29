@@ -22,8 +22,9 @@ import (
 // socket, and its failure posture is to exec crun untouched, which means
 // containerized bind arbitration silently does not happen. Chowning widens
 // the socket to exactly one named local user, not to the world (0666, the
-// notify socket's mode, would let any process in the guest feed the
-// supervisor notify fds), and it is one chown to reverse.
+// probe socket's mode under -notify-sock-unprivileged, would let any
+// process in the guest feed the supervisor notify fds), and it is one
+// chown to reverse.
 //
 // A configured-but-unresolvable user is an error, never a warning: the
 // agent that continued would look healthy and arbitrate nothing, which is

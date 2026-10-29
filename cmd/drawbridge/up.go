@@ -3,7 +3,8 @@ package main
 // `drawbridge up` — attach a container VM (docs/ergonomics.md §4.1).
 //
 // Six steps: discover, preflight, push the agent, install the unit,
-// optionally provision the OCI wrapper, verify and hand off. The ordering is
+// provision the OCI wrapper (`--oci`) or refresh one an earlier `--oci`
+// installed (a plain re-run), verify and hand off. The ordering is
 // the failure posture (§4.2): every mutating step is preceded by the
 // preflight that would have caught it, and the unit install is the last
 // mutation before verification, so a failure anywhere leaves the guest in
@@ -43,7 +44,7 @@ func runUp(args []string) int {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
 	oci := fs.Bool("oci", false, "also install the OCI runtime wrapper and register it with the guest's engine: Docker Engine's daemon.json, or podman's containers.conf.d (default off: on docker it edits a file you own and changes the default container runtime)")
 	agentBin := fs.String("agent-bin", "", "guest agent binary to push instead of the bundled one; the dev loop's escape hatch and the way to use a standalone release artifact")
-	runcBin := fs.String("runc-bin", "", "OCI runtime wrapper binary to push instead of the bundled one (--oci only); one binary for both engines, installed under the name of the runtime it stands in for")
+	runcBin := fs.String("runc-bin", "", "OCI runtime wrapper binary to push instead of the bundled one, with --oci or when a plain re-run refreshes the wrapper an earlier --oci installed; one binary for both engines, installed under the name of the runtime it stands in for")
 	instance, err := parsePositional(fs, args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "drawbridge up: %v\n", err)
@@ -106,9 +107,29 @@ func up(g *guest, sel selection, o upOptions) error {
 		return err
 	}
 	var runc []byte
+	var refresh []string // wrappers a plain re-run replaces in place (step 5)
 	if o.oci {
 		if runc, err = loadGuestBinary(guestbin.NameRunc, arch, o.runcBin); err != nil {
 			return err
+		}
+	} else {
+		if refresh, err = installedWrappers(g); err != nil {
+			return err
+		}
+		if len(refresh) > 0 {
+			runc, err = loadGuestBinary(guestbin.NameRunc, arch, o.runcBin)
+			switch {
+			case errors.Is(err, guestbin.ErrNotBundled):
+				// Only a dev build gets here (a release always bundles the
+				// wrapper next to the agent), and the dev loop's plain `up
+				// -agent-bin` must keep working. Said, not silent: the
+				// wrapper in the guest is now older than this CLI.
+				fmt.Fprintf(g.out, "drawbridge: warning: not refreshing %s: %v\n"+
+					"  pass -runc-bin to refresh it from this dev build\n", strings.Join(refresh, ", "), err)
+				refresh = nil
+			case err != nil:
+				return err
+			}
 		}
 	}
 	// The agent's command line. Lima and Colima render the bare binary path,
@@ -164,10 +185,95 @@ func up(g *guest, sel selection, o upOptions) error {
 		return err
 	}
 
-	// --- step 5: --oci -----------------------------------------------------
+	// --- step 5: --oci, or the wrapper refresh a plain re-run owes ---------
 	if o.oci {
-		if err := provisionOCI(g, runc, pf, sockOwner, otherPodmanMachines(sel)); err != nil {
+		return provisionOCI(g, runc, pf, sockOwner, otherPodmanMachines(sel))
+	}
+	return refreshWrappers(g, runc, refresh)
+}
+
+// installedWrappers names the OCI wrappers a plain `up` refreshes: the ones
+// an earlier `--oci` (or the dev flow's `just vm-docker`) already installed.
+//
+// The upgrade every doc prescribes is a plain `drawbridge up <vm>`, so a
+// wrapper only `--oci` could replace would stay at whatever version first
+// installed it, security fixes included (audit 2026-10-28 M13). The refresh
+// is binary-only by construction: it never registers a runtime, never
+// touches daemon.json, the podman drop-in or provision.json, and never
+// restarts an engine.
+//
+// Which wrapper comes from the state file when there is one: version 1 is
+// docker's, version 2 is podman's. A newer version is a newer drawbridge's
+// guest, and this build leaves its wrapper alone rather than downgrade it,
+// the same "not this build's business" readPodmanState applies to plain
+// `up`. No state file (the dev flow writes none) or a version no build
+// wrote means the wrapper's own presence decides.
+//
+// Present means present: a wrapper that is missing is not reinstalled here.
+// Installing one where none was is `--oci`'s job, and on podman it would
+// change which runtime an already-running API service resolved, which only
+// `--oci`'s restart handles.
+func installedWrappers(g *guest) ([]string, error) {
+	candidates := []string{guestbin.WrapperPath(guestbin.EngineDocker), guestbin.WrapperPath(guestbin.EnginePodman)}
+	recorded := false
+	blob, have, err := g.readFile(guestbin.ProvisionPath)
+	if err != nil {
+		return nil, err
+	}
+	if have {
+		v, perr := guestbin.PeekStateVersion(blob)
+		switch {
+		case perr != nil:
+			fmt.Fprintf(g.out, "drawbridge: warning: %s is not valid JSON; refreshing whichever OCI wrapper is installed\n", guestbin.ProvisionPath)
+		case v > guestbin.MaxStateVersion:
+			fmt.Fprintf(g.out, "drawbridge: note: %s was written by a newer drawbridge (state version %d, this build understands %d); leaving its OCI wrapper alone\n",
+				guestbin.ProvisionPath, v, guestbin.MaxStateVersion)
+			return nil, nil
+		case v == guestbin.StateVersionDocker:
+			candidates, recorded = []string{guestbin.WrapperPath(guestbin.EngineDocker)}, true
+		case v == guestbin.StateVersionPodman:
+			candidates, recorded = []string{guestbin.WrapperPath(guestbin.EnginePodman)}, true
+		}
+	}
+	var out []string
+	for _, p := range candidates {
+		sum, err := g.sha256(p)
+		if err != nil {
+			return nil, err
+		}
+		if sum != "" {
+			out = append(out, p)
+		}
+	}
+	if recorded && len(out) == 0 {
+		fmt.Fprintf(g.out, "drawbridge: warning: %s records an --oci provisioning but %s is not installed;\n"+
+			"  `drawbridge up --oci` reinstalls it, `drawbridge down` removes the registration\n",
+			guestbin.ProvisionPath, candidates[0])
+	}
+	return out, nil
+}
+
+// refreshWrappers replaces each installed wrapper whose digest differs from
+// this build's, with the same install-beside-then-rename `--oci` uses (the
+// provisioning script's `install` + `mv -f` on docker, installFile on
+// podman), so a container starting mid-refresh execs either the old file or
+// the new one, never a truncated one.
+//
+// No engine restart, deliberately: neither engine holds the wrapper's bytes.
+// Docker's containerd shim execs the registered path for every runtime
+// operation, and podman (CLI and API service alike) caches at most the
+// resolved *path*, which a rename over the same name leaves valid. The next
+// container execs the new inode.
+func refreshWrappers(g *guest, wrapper []byte, paths []string) error {
+	for _, p := range paths {
+		changed, err := g.pushBinary(wrapper, p)
+		if err != nil {
 			return err
+		}
+		if changed {
+			fmt.Fprintf(g.out, "drawbridge: refreshed %s (the --oci runtime wrapper; the engine execs it per container, so nothing restarts)\n", p)
+		} else {
+			fmt.Fprintf(g.out, "drawbridge: %s already current\n", p)
 		}
 	}
 	return nil
@@ -720,6 +826,7 @@ func resolveEndpoint(sel selection) limaaddr.Resolution {
 	if sel.Ref.Provider != vmprovider.ProviderPodman {
 		return limaaddr.ResolveTarget(limaaddr.Target{
 			VM:        sel.Ref.Instance,
+			Provider:  sel.Ref.Provider,
 			LeaseName: sel.Ref.LeaseName,
 			LimaHome:  sel.Ref.LimaHome,
 		}, controlPort)
@@ -749,6 +856,16 @@ func sourceNote(sel selection, r limaaddr.Resolution) string {
 	return r.Source + "; the guest agent re-publishes it on every machine start"
 }
 
+// nextStep is the closing hint of `up`: how to keep this VM attached once the
+// command returns. Ref.Spec is the round-tripping spelling (see echoSpelling).
+// Both commands re-parse it with vmprovider.ParseRef, so it has to name this
+// VM and not whichever Lima instance a bare word would mean.
+func nextStep(ref vmprovider.Ref) string {
+	return fmt.Sprintf("\nNext: sudo drawbridge install -vm %s\n"+
+		"      (or, unprivileged and foreground, ports >= 1024 only: drawbridged -vm %s)\n",
+		ref.Spec, ref.Spec)
+}
+
 func handoff(g *guest, sel selection, out io.Writer) {
 	ready, _ := g.sh(readyScript)
 	if strings.TrimSpace(ready) == "timeout" {
@@ -767,7 +884,13 @@ func handoff(g *guest, sel selection, out io.Writer) {
 	}
 
 	r := resolveEndpoint(sel)
-	fmt.Fprintf(out, "drawbridge: transport %s (source %s)\n", r.Endpoint, sourceNote(sel, r))
+	// A colima VM that is up but not answering resolves to no endpoint (no
+	// loopback fallback, audit NEW-X1); say "none" rather than print a blank.
+	endpoint := r.Endpoint
+	if endpoint == "" {
+		endpoint = "none"
+	}
+	fmt.Fprintf(out, "drawbridge: transport %s (source %s)\n", endpoint, sourceNote(sel, r))
 	if r.Note != "" {
 		fmt.Fprintf(out, "drawbridge: %s\n", r.Note)
 	}
@@ -796,9 +919,7 @@ func handoff(g *guest, sel selection, out io.Writer) {
 		}
 	}
 
-	fmt.Fprintf(out, "\nNext: sudo drawbridge install -vm %s\n"+
-		"      (or, unprivileged and foreground, ports >= 1024 only: drawbridged -vm %s)\n",
-		sel.Ref.Spec, sel.Ref.Spec)
+	fmt.Fprint(out, nextStep(sel.Ref))
 }
 
 // parsePositional pulls the optional instance argument out of an argv where

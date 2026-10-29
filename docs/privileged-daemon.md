@@ -45,7 +45,7 @@ entitlement games.
 |---|---|---|
 | Privilege model | whole drawbridged runs as root | privilege-separated split (§7); the seam is designed now, built later |
 | launchd unit | LaunchDaemon, `RunAtLoad` + `KeepAlive` | SMAppService/SMJobBless signed helper (needs an app bundle + signing) |
-| Install flow | `sudo drawbridge install` (CLI writes plist, copies binary, `launchctl bootstrap`) | package installer / brew formula |
+| Install flow | `sudo drawbridge install -vm <vm>` (CLI writes plist, copies binary, `launchctl bootstrap`); a re-run with flags left out keeps the installed values | package installer / brew formula |
 | Root endpoint discovery | `/var/db/dhcpd_leases` parsing as a new resolver source (§4) | install-time pinned endpoint; user-side LaunchAgent handoff |
 | Logs | launchd `StandardOutPath`/`StandardErrorPath` → `/Library/Logs/drawbridge/drawbridged.log` + a `newsyslog.d` rotation entry | os_log adoption |
 | Guest side | untouched — `just agent-up` remains the guest story | install-managed persistent guest systemd unit |
@@ -65,7 +65,7 @@ Two additions only:
   daemon binding wildcard would be a real regression, so as root there is no
   override flag at all.
 - `logBindError`'s <1024 message gains the actionable hint: "run
-  `sudo drawbridge install`".
+  `sudo drawbridge install -vm <vm>`".
 
 `internal/mirror/mirror.go` bind paths are otherwise **unchanged**: as root,
 `net.Listen` on `:80` simply succeeds, `logBindError` stops firing for
@@ -85,8 +85,32 @@ euid checks — plist rendering and path policy unit-testable without root),
 driven by three new verbs in `cmd/drawbridge/main.go` (currently a Phase 1
 stub, so this is greenfield):
 
-- **`drawbridge install [-vm drawbridge] [-udp ports]`** (requires `sudo`;
-  refuses with instructions otherwise). Steps, idempotent on re-run:
+- **`drawbridge install [INSTANCE] [-vm NAME] [-vm-mac MAC] [-vm-subnet CIDR]
+  [-udp ports] [-skip ports] [-secret-file PATH] [-bin PATH] [-print]`**
+  (requires `sudo` except under `-print`; refuses with instructions
+  otherwise). The VM may be given as `-vm` or as the one positional
+  argument, the grammar `up` and `down` take; a second positional, or both
+  forms at once, is a usage error, never a silently ignored tail.
+  **Re-running it is the upgrade path, so it inherits** (amendment
+  2026-10-28, audit H3/M15, decision E3): every flag not given explicitly
+  (`flag.Visit`) defaults from the installed plist's ProgramArguments, and
+  each kept value is printed before anything is installed (`keeping -vm
+  colima:default from the installed daemon`). An explicit flag wins,
+  including an explicit `""`: `-vm-mac ""`, `-vm-subnet ""` and `-udp ""`
+  drop the installed value, `-skip ""` installs skip-nothing, and
+  `-secret-file ""` re-derives the per-VM path. `-vm-subnet`, `-udp` and
+  `-skip` are Mac-wide and survive a change of VM. `-vm-mac`, `-secret-file`
+  and the podman `-agent` pin belong to one VM: when the target VM differs
+  (compared as canonical refs, so `colima:default` and `colima:colima` are
+  the same VM) they are not carried over, they are derived for the new VM as
+  a fresh install would, and the command says so. The `-agent` pin is never
+  a flag and never inherited even for the same VM: a podman install re-reads
+  the record `up` wrote (the source of truth, checked against the machine),
+  and a changed pin is printed. With no installed plist every default is the
+  fresh-install default (`-vm drawbridge`). `-print` shows the merged
+  result. Before this, a bare `sudo drawbridge install` (the documented
+  upgrade) re-targeted a colima or podman daemon at `lima:drawbridge` and
+  dropped its pins. Steps, idempotent on re-run:
   1. `launchctl bootout system/com.archcorsair.drawbridged` if already
      loaded (refresh path).
   2. Copy the `drawbridged` binary from beside the invoking `drawbridge`
@@ -187,19 +211,40 @@ SourceVZNATLeases = "vznat-leases"
 ```
 
 Resolution order becomes: `limactl` path (works when run as the VM-owning
-user; fails fast as root) → leases parse for `name=lima-<vm>` candidates,
-newest lease first, each candidate probed with the existing 800 ms dial
-probe → SSH-forwarded loopback `127.0.0.1:4777` (the user-session `lima`
-forward is a plain loopback listener; root can dial it like anyone).
+user; fails fast as root) → leases parse for `name=<lease name>` candidates
+(`lima-<vm>` for Lima, the bare instance name for colima), newest lease
+first, each candidate probed with the existing 800 ms dial probe →
+**Lima targets only:** SSH-forwarded loopback `127.0.0.1:4777` (the
+user-session `lima` forward is a plain loopback listener; root can dial it
+like anyone).
 Stale-lease ambiguity (recreated VM leaves old records) is resolved by the
 probe, same as today's reachability classification. The parser is a pure
 function over the file's text — unit-tested against a fixture, no root
 needed.
 
-What breaks if Apple changes the leases format: the source degrades to the
-forwarder with a resolver `Note` saying so in words (transport.md's
-diagnosis discipline), and option 1 becomes the stopgap. The format has
-been stable for many years and is widely depended on.
+**The loopback fallback belongs to Lima alone (audit NEW-X1, decision E5).**
+`127.0.0.1:4777` is the SSH forward of a Lima instance. A colima instance
+has no such forward, so for a colima target it is some other VM's port: with
+colima stopped, the installed `colima:default` daemon used to dial the Lima
+dev VM's agent and was stopped only by the secret mismatch. The resolver
+takes the provider from `Target.Provider` (`Ref.Provider`, which `ParseRef`
+derives without exec, so root has it) and, for anything but Lima, returns an
+empty `Endpoint` with `Source` `unresolved` and a `Note` that names the
+cause and says the loopback port was not tried. Consumers treat that as
+"nothing to dial yet": `drawbridged` starts (or keeps running) with no
+endpoint instead of exiting, the `'E'` and `'M'` loops and the dial pool back
+off at 1 s without opening a socket, and the shared re-resolve hook (3 s
+minimum interval) ends the state as soon as a lease answers. The introspection
+snapshot reports the empty endpoint and the note, and `doctor` check 4
+reports a `fail`. Podman never reaches the lease resolver (it dials the
+endpoint `install` pinned), and an explicit `-agent host:port` is parsed, not
+resolved, so both are unchanged.
+
+What breaks if Apple changes the leases format: a Lima target degrades to
+the forwarder, and a colima target to no endpoint, each with a resolver
+`Note` saying so in words (transport.md's diagnosis discipline), and option 1
+becomes the stopgap. The format has been stable for many years and is widely
+depended on.
 
 ## 5. What does NOT change
 
@@ -335,7 +380,7 @@ Verify:
 
 ```sh
 just build
-sudo ./bin/drawbridge install                # copy binary, plist, bootstrap
+sudo ./bin/drawbridge install -vm drawbridge   # copy binary, plist, bootstrap (-vm: a re-run keeps the installed VM)
 ./bin/drawbridge status                      # state=running, pid, "agent … (source=…)" log line
 # inbound <1024 leg:
 limactl shell drawbridge -- docker run -d --rm --name db-nginx --network host nginx
@@ -353,7 +398,7 @@ sudo ./bin/drawbridge uninstall
 ./bin/drawbridge status                      # not installed
 ```
 
-- Reboot survival (once, optional): `sudo ./bin/drawbridge install`,
+- Reboot survival (once, optional): `sudo ./bin/drawbridge install -vm drawbridge`,
   reboot, `limactl start drawbridge` + `just agent-up`, re-run the curl leg
   with no daemon intervention.
 - **Verification caveats on this machine:** (a) the Local Network

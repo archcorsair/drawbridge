@@ -584,6 +584,70 @@ func TestPinnedAgentEndpointIsLoopbackOnly(t *testing.T) {
 	}
 }
 
+// ArgsFromPlist is what `drawbridge install` inherits from (decision E3), so
+// every value Args renders must read back exactly, presence included: an
+// installed `-skip ""` (skip nothing) is not an absent -skip (the default).
+func TestArgsFromPlistRoundTrip(t *testing.T) {
+	full := Config{
+		VM:         "colima:default",
+		UDP:        []uint16{53, 123},
+		MAC:        "52:55:55:a5:de:d2",
+		Subnet:     "192.168.105.0/24",
+		Agent:      "tcp://127.0.0.1:4778",
+		SecretFile: "/Users/u/Library/Application Support/drawbridge/transport-secret-colima-colima",
+	}
+	if err := full.SetSkip("22,8080"); err != nil {
+		t.Fatal(err)
+	}
+	plist, err := RenderPlist(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := ArgsFromPlist(plist)
+	want := map[string]string{
+		"-agent": "tcp://127.0.0.1:4778", "-vm": "colima:default", "-udp": "53,123", "-skip": "22,8080",
+		"-vm-mac": "52:55:55:a5:de:d2", "-vm-subnet": "192.168.105.0/24", "-secret-file": full.SecretFile,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ArgsFromPlist = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if g, ok := got.Get(k); !ok || g != v {
+			t.Fatalf("%s = %q (present %v), want %q", k, g, ok, v)
+		}
+	}
+
+	none := Config{VM: "lima:dev"}
+	if err := none.SetSkip(""); err != nil {
+		t.Fatal(err)
+	}
+	plist, err = RenderPlist(none)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := ArgsFromPlist(plist).Get("-skip"); !ok || v != "" {
+		t.Fatalf(`-skip "" read back as %q (present %v)`, v, ok)
+	}
+	plist, err = RenderPlist(Config{VM: "lima:dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := ArgsFromPlist(plist)
+	if _, ok := args.Get("-skip"); ok {
+		t.Fatal("a default -skip read back as present")
+	}
+	// Only ProgramArguments is read: the Label and log paths are <string>s
+	// too, and none of them may surface as a flag.
+	for k := range args {
+		if !strings.HasPrefix(k, "-") || k == "-"+Label {
+			t.Fatalf("non-flag key %q", k)
+		}
+	}
+	if len(args) != 2 { // -agent auto, -vm lima:dev
+		t.Fatalf("args = %v, want -agent and -vm only", args)
+	}
+}
+
 // One LaunchDaemon label exists, so `install -vm X` on a Mac whose daemon is
 // installed for Y replaces Y and stops its sessions. Reading the installed
 // -vm back out of the plist is what lets the command say so; during the 7.1

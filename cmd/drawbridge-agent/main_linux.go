@@ -76,7 +76,7 @@ func main() {
 			fs := flag.NewFlagSet("bindprobe", flag.ExitOnError)
 			network := fs.String("network", "tcp4", "listen network")
 			addr := fs.String("addr", "", "listen address, e.g. 127.0.0.1:8080")
-			nsock := fs.String("notify-sock", "/run/drawbridge-notify.sock", "agent notify socket")
+			nsock := fs.String("notify-sock", "/run/drawbridge-notify.sock", "agent notify socket (root-only unless the agent runs with -notify-sock-unprivileged)")
 			hold := fs.Duration("hold", 2*time.Second, "keep a successful listener open this long")
 			offThread := fs.Bool("off-thread", false, "bind from a non-leader thread (the notification then carries a TID, not the PID)")
 			fs.Parse(os.Args[2:])
@@ -100,7 +100,10 @@ func main() {
 			"The publish is re-established on every agent start, which is what brings the forward back after `podman machine stop`")
 	gvproxyGateway := flag.String("gvproxy-gateway", agent.DefaultGvproxyGateway,
 		"gvproxy's in-guest forwarding API base URL, used by -gvproxy-publish")
-	notifySock := flag.String("notify-sock", "/run/drawbridge-notify.sock", "seccomp notify-fd handoff socket (Phase 4)")
+	notifySock := flag.String("notify-sock", "/run/drawbridge-notify.sock", "seccomp notify-fd handoff socket for bindprobe (Phase 4), mode 0600 root-only")
+	notifySockUnprivileged := flag.Bool("notify-sock-unprivileged", false,
+		"make the notify socket 0666 so unprivileged processes can hand over notify fds. For tests and smoke legs only; "+
+			"`drawbridge up` never sets it. Container runtimes use -oci-sock and are unaffected")
 	ociSock := flag.String("oci-sock", "/run/drawbridge-oci.sock", "OCI seccomp-agent listenerPath socket (runc/crun handoffs)")
 	ociSockOwner := flag.String("oci-sock-owner", "",
 		"local user to give the OCI socket to, mode unchanged at 0600 (empty: root only). "+
@@ -118,13 +121,28 @@ func main() {
 	// Transport auth mode, decided from our own file and never from the wire
 	// (docs/transport-auth.md §6). Malformed is fatal at boot: a configured
 	// secret that cannot be read must never degrade into trusting everyone.
-	secret, err := transportauth.LoadOptional(*secretFile)
-	if err != nil {
-		log.Fatalf("drawbridge-agent: %v — the transport secret must be 64 hex characters, mode 0600; re-run `drawbridge up <vm>` to reprovision", err)
+	// The boot read latches (transportauth.LoadLatched): a secret present
+	// now keeps this agent authenticated for life, so a file deleted under
+	// it (down's best-effort agent stop failing before `rm -rf StateDir`)
+	// refuses conns instead of accepting auth=0. An explicit -secret-file
+	// latches before the read: it states intent, like drawbridged's.
+	explicitSecret := false
+	flag.Visit(func(f *flag.Flag) { explicitSecret = explicitSecret || f.Name == "secret-file" })
+	if explicitSecret {
+		transportauth.Require(*secretFile)
 	}
-	if secret != nil {
+	secret, err := transportauth.LoadLatched(*secretFile)
+	switch {
+	case errors.Is(err, transportauth.ErrConfiguredMissing):
+		// Not fatal: the default path is absent-tolerant at boot, and an
+		// explicit one only changes what absence means. Every conn is
+		// refused until `up` writes the file, then the next conn heals.
+		log.Printf("drawbridge-agent: transport auth: required by -secret-file %s, but no file is there yet — every conn is refused until `drawbridge up <vm>` writes one", *secretFile)
+	case err != nil:
+		log.Fatalf("drawbridge-agent: %v — the transport secret must be 64 hex characters, mode 0600; re-run `drawbridge up <vm>` to reprovision", err)
+	case secret != nil:
 		log.Printf("drawbridge-agent: transport auth: enabled (%s)", *secretFile)
-	} else {
+	default:
 		log.Printf("drawbridge-agent: transport auth: no secret configured (looked for %s) — transport is UNAUTHENTICATED; any process that reaches it is trusted. Run `drawbridge up` to provision one", *secretFile)
 	}
 
@@ -176,13 +194,15 @@ func main() {
 	}
 	defer tset.Close()
 
-	os.Remove(*notifySock)
-	nln, err := net.ListenUnix("unix", &net.UnixAddr{Name: *notifySock, Net: "unix"})
+	nln, err := listenNotify(*notifySock, *notifySockUnprivileged)
 	if err != nil {
 		log.Fatalf("drawbridge-agent: notify socket: %v", err)
 	}
 	defer os.Remove(*notifySock)
-	os.Chmod(*notifySock, 0o666) // hooked container processes are not root
+	if *notifySockUnprivileged {
+		log.Printf("drawbridge-agent: %s is mode %o (-notify-sock-unprivileged): any guest process can hand over notify fds; tests and smoke legs only",
+			*notifySock, notifySockModeUnprivileged)
+	}
 	go a.ServeNotify(nln)
 
 	os.Remove(*ociSock)

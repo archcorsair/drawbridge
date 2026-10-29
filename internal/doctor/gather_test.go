@@ -183,13 +183,17 @@ func TestSelectTargetColimaSpellings(t *testing.T) {
 }
 
 // The euid-0 selection cannot consult an instance list (limactl refuses
-// root), so it mirrors the root daemon: -vm or the daemon's default, and the
-// lease db does the rest. The skip string scopes the guest-shell checks only
-// — resolution and the root probe run against the ref, which is the whole
-// point of `sudo drawbridge doctor`.
+// root), so it mirrors the root daemon: -vm, else the installed daemon's -vm,
+// else drawbridged's default, and the lease db does the rest. The skip
+// string scopes the guest-shell checks only — resolution and the root probe
+// run against the ref, which is the whole point of `sudo drawbridge doctor`.
+//
+// The installed VM is passed in (Gather reads it from install.Query), so
+// none of this depends on whether the machine running the test has a real
+// daemon installed.
 func TestRootTarget(t *testing.T) {
-	t.Run("default is the daemon's default VM", func(t *testing.T) {
-		got, skip := rootTarget("")
+	t.Run("nothing installed: the daemon's default VM", func(t *testing.T) {
+		got, skip := rootTarget("", "")
 		if got.Ref.Provider != "lima" || got.Ref.Instance != "drawbridge" {
 			t.Fatalf("ref = %s:%s, want lima:drawbridge", got.Ref.Provider, got.Ref.Instance)
 		}
@@ -199,14 +203,33 @@ func TestRootTarget(t *testing.T) {
 		if !strings.Contains(skip, "-vm overrides") {
 			t.Fatalf("skip does not say how to point at another VM: %q", skip)
 		}
+		if !strings.Contains(skip, "no installed daemon names one") {
+			t.Fatalf("skip does not say why the default was used: %q", skip)
+		}
 	})
-	t.Run("explicit -vm wins", func(t *testing.T) {
-		got, _ := rootTarget("colima:colima")
+	// M22: a colima user's root doctor used to probe lima:drawbridge.
+	t.Run("installed daemon's VM is the default", func(t *testing.T) {
+		got, skip := rootTarget("", "colima:default")
 		if got.Ref.Provider != "colima" || got.Ref.Instance != "colima" {
 			t.Fatalf("ref = %s:%s, want colima:colima", got.Ref.Provider, got.Ref.Instance)
 		}
 		if got.Ref.LeaseName != "colima" {
 			t.Fatalf("lease name = %q, want the bare colima name", got.Ref.LeaseName)
+		}
+		if !strings.Contains(skip, "the installed daemon's VM") {
+			t.Fatalf("skip does not say the target is the installed daemon's: %q", skip)
+		}
+	})
+	t.Run("explicit -vm wins over the installed VM", func(t *testing.T) {
+		got, _ := rootTarget("podman:spike", "colima:default")
+		if got.Ref.Provider != "podman" || got.Ref.Instance != "spike" {
+			t.Fatalf("ref = %s:%s, want podman:spike", got.Ref.Provider, got.Ref.Instance)
+		}
+	})
+	t.Run("an unparsable installed VM falls back to the default", func(t *testing.T) {
+		got, _ := rootTarget("", "lima:has/slash")
+		if got.Ref.Provider != "lima" || got.Ref.Instance != "drawbridge" {
+			t.Fatalf("ref = %s:%s, want lima:drawbridge", got.Ref.Provider, got.Ref.Instance)
 		}
 	})
 }

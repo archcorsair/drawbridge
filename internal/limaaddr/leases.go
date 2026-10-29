@@ -296,8 +296,11 @@ func usableGuestIPv4(s string) bool {
 // not even be read" — the shape the root path degrades into if Apple ever
 // changes the file's location or permissions. Said in words, per the
 // diagnosis discipline in docs/transport.md.
-func classifyNoLeases(path string, err error) string {
-	return fmt.Sprintf("no vzNAT candidates: limactl did not answer (running as root?) and the DHCP lease db %s is unreadable (%v) — falling back to the SSH forwarder (slower, shared tunnel).", path, err)
+func classifyNoLeases(path string, err error) string { return diagnoseNoLeases(path, err).note }
+
+func diagnoseNoLeases(path string, err error) diagnosis {
+	cause := fmt.Sprintf("no vzNAT candidates: limactl did not answer (running as root?) and the DHCP lease db %s is unreadable (%v)", path, err)
+	return diagnosis{cause + ".", cause + " — falling back to the SSH forwarder (slower, shared tunnel)."}
 }
 
 // noteOffSubnet explains a lease record dropped for sitting outside the

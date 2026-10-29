@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -30,7 +31,7 @@ import (
 )
 
 func main() {
-	agentFlag := flag.String("agent", "auto", "guest agent transport endpoint (auto: for lima and colima the vzNAT IP if reachable, else 127.0.0.1:4777; for podman the loopback port `drawbridge up` recorded; accepts tcp://host:port, unix:///path, or bare host:port)")
+	agentFlag := flag.String("agent", "auto", "guest agent transport endpoint (auto: for lima the vzNAT IP if reachable, else 127.0.0.1:4777; for colima the vzNAT IP, else no endpoint until one answers (127.0.0.1:4777 is a Lima VM's forward); for podman the loopback port `drawbridge up` recorded; accepts tcp://host:port, unix:///path, or bare host:port)")
 	vmName := flag.String("vm", install.DefaultVM, "VM to resolve, used by -agent auto: a bare name is a Lima instance; `provider:name` selects one explicitly (lima:myvm, colima:default, podman:spike)")
 	vmMAC := flag.String("vm-mac", "", "guest's expected hardware address (e.g. 52:55:55:a5:de:d2); DHCP lease records that do not match it are ignored. Unset matches lease records by the guest-chosen name alone")
 	vmSubnet := flag.String("vm-subnet", "", "vmnet subnet a DHCP lease address must fall inside (default "+limaaddr.DefaultSubnet+"); only needed when this Mac's vmnet is configured elsewhere")
@@ -106,17 +107,23 @@ func main() {
 		Throttle:   transportauth.NewThrottle(transportauth.RefusalLogEvery),
 		Refusals:   ring,
 	}
-	secret, err := transportauth.LoadOptional(secretPath)
-	if err != nil {
-		log.Fatalf("drawbridged: %v — the transport secret must be 64 hex characters, mode 0600; re-run `drawbridge up %s` to reprovision", err, ref.Spec)
+	// The boot read latches (transportauth.LoadLatched): from the first
+	// secret this daemon loads, a vanished file is a refusal on every dial,
+	// never a fall back to an unauthenticated transport (§5). An explicit
+	// flag latches before the read, so it is configured even if absent.
+	if explicitSecret {
+		transportauth.Require(secretPath)
 	}
+	secret, err := transportauth.LoadLatched(secretPath)
 	switch {
-	case secret != nil:
-		log.Printf("drawbridged: transport auth: enabled (%s)", secretPath)
-	case explicitSecret:
+	case errors.Is(err, transportauth.ErrConfiguredMissing):
 		// An explicit flag states intent; degrading to unauthenticated
 		// silently would be the forbidden weakening (§5).
 		log.Fatalf("drawbridged: -secret-file %s: no such file — pass a path that exists, or omit the flag to use the per-VM default; `drawbridge up %s` writes it", secretPath, ref.Spec)
+	case err != nil:
+		log.Fatalf("drawbridged: %v — the transport secret must be 64 hex characters, mode 0600; re-run `drawbridge up %s` to reprovision", err, ref.Spec)
+	case secret != nil:
+		log.Printf("drawbridged: transport auth: enabled (%s)", secretPath)
 	default:
 		lookedFor := secretPath
 		if lookedFor == "" {
@@ -128,7 +135,7 @@ func main() {
 	// A malformed -vm-mac or -vm-subnet is fatal rather than ignored: both
 	// are trust narrowing, and silently dropping one would leave an operator
 	// believing the daemon is pinned when it is not.
-	target := limaaddr.Target{VM: ref.Instance, LeaseName: ref.LeaseName, LimaHome: ref.LimaHome}
+	target := limaaddr.Target{VM: ref.Instance, Provider: ref.Provider, LeaseName: ref.LeaseName, LimaHome: ref.LimaHome}
 	if ref.Spec != ref.Instance {
 		// Only when the spelling and the instance differ, i.e. a provider ref
 		// was given. The mapping (colima:default → the Lima instance `colima`
@@ -168,18 +175,28 @@ func main() {
 		if r.Note != "" {
 			log.Printf("drawbridged: warning: %s", r.Note)
 		}
-		if addr == "" {
-			// Only podman's resolver can refuse outright: with no record
-			// there is no endpoint to dial and no lease db to fall back to.
+		if addr == "" && !leaseResolvable(ref) {
+			// Podman's resolver can refuse outright: with no record there
+			// is no endpoint to dial, and nothing here will ever produce
+			// one (no re-resolve hook), so a daemon that went on would be
+			// healthy-looking and idle.
 			log.Fatalf("drawbridged: -agent auto: no endpoint for %s", ref.Spec)
 		}
 	}
-	ep, err := transport.Parse(addr)
+	if addr == "" && *agentFlag != "auto" {
+		log.Fatalf("drawbridged: -agent: empty endpoint (pass host:port, or omit the flag for auto)")
+	}
+	// A lease-resolvable ref (colima) can resolve to nothing under auto: only
+	// a Lima instance may fall back to the loopback forward (audit NEW-X1),
+	// so a stopped colima VM has no endpoint at all. That is not fatal. The
+	// re-resolve hook below is the retry, the reconnect loops dial nothing
+	// until it produces an address, and exiting would only hand the retry to
+	// launchd's throttled respawn. The auto port is the one the resolver was
+	// asked about.
+	agentAddr, agentPort, err := parseAgent(addr)
 	if err != nil {
 		log.Fatalf("drawbridged: -agent: %v", err)
 	}
-	agentAddr := ep.String()
-	agentPort := ep.Port()
 
 	// Re-resolve hook (docs/transport.md §2.2): when -agent auto fell back to
 	// the forwarder, a session reconnect re-runs Resolve so a permission
@@ -217,6 +234,11 @@ func main() {
 	m.Skip = skip
 	m.Auth = auth
 	m.Refusals = ring
+	// H1 backstop: a fresh Mac listener read before every reservation and
+	// async mirror open, so a native wildcard holder of a port is never
+	// shadowed by a mirror bind that SO_REUSEADDR lets succeed. An empty
+	// (filtered) enumeration is "unknown" and leaves the bind to decide.
+	m.MacHolder = macsync.HolderCheck(*mirrorIP, nil)
 	s := &macsync.Syncer{
 		AgentAddr: agentAddr,
 		ReResolve: reResolve,
@@ -246,9 +268,26 @@ func main() {
 		defer srv.Close()
 	}
 
-	log.Printf("drawbridged: agent %s (source=%s); mirroring guest listeners onto %s; syncing Mac listeners into the guest", agentAddr, source, *mirrorIP)
+	log.Printf("drawbridged: agent %s (source=%s); mirroring guest listeners onto %s; syncing Mac listeners into the guest", orNone(agentAddr), source, *mirrorIP)
 	go m.Run(ctx)
 	s.Run(ctx)
+}
+
+// parseAgent canonicalizes the agent endpoint and returns its port. An empty
+// addr is not an error: it is the "resolved to nothing" state of a
+// lease-resolvable ref (see the call site), with the default agent port so
+// the skip-list exclusion and the re-resolve hook still know which port the
+// transport will live on. Callers that do not accept that state refuse the
+// empty string before getting here.
+func parseAgent(addr string) (string, uint16, error) {
+	if addr == "" {
+		return "", transport.DefaultAgentPort, nil
+	}
+	ep, err := transport.Parse(addr)
+	if err != nil {
+		return "", 0, err
+	}
+	return ep.String(), ep.Port(), nil
 }
 
 // leaseResolvable reports whether this VM's endpoint is discoverable from the
@@ -323,9 +362,16 @@ func serveIntrospection(ctx context.Context, flagValue string, ref vmprovider.Re
 // every per-conn read, so a rotation or a broken file shows up without a
 // restart. Bytes, proofs, and digests never enter the payload — doctor
 // compares digests itself, directly against the files.
+//
+// It reads through the same latch as the dials, so a secret that vanished
+// after this daemon loaded it reports the mode still in force
+// (static-hmac-v1: every dial refuses) with the file absent, not "none":
+// the daemon is not unauthenticated, it is refusing.
 func authState(path string) introspect.Auth {
 	a := introspect.Auth{Mode: introspect.AuthModeNone, SecretPath: path, SecretState: introspect.SecretAbsent}
-	switch sec, err := transportauth.LoadOptional(path); {
+	switch sec, err := transportauth.LoadLatched(path); {
+	case errors.Is(err, transportauth.ErrConfiguredMissing):
+		a.Mode = introspect.AuthModeStaticHMACv1
 	case err != nil:
 		a.Mode, a.SecretState = introspect.AuthModeStaticHMACv1, introspect.SecretMalformed
 	case sec != nil:
@@ -466,12 +512,25 @@ func (r *resolver) refresh() string {
 	}
 	r.last = time.Now()
 	res := limaaddr.ResolveTarget(r.target, r.port)
+	if res.Endpoint == "" && res.Source == limaaddr.SourceUnresolved {
+		// A target with no loopback forward of its own found nothing to dial
+		// (e.g. colima stopped). Publish that as the resolution, note
+		// included, instead of leaving the last good endpoint on the status
+		// page: the Mac-side loops ignore an empty return and keep the
+		// address they have, which the next successful resolve replaces.
+		if r.source != res.Source {
+			log.Printf("drawbridged: agent transport %s (source=%s) → none (source=%s)", orNone(r.cur), r.source, res.Source)
+			log.Printf("drawbridged: warning: %s", res.Note)
+		}
+		r.cur, r.source, r.note, r.at = "", res.Source, res.Note, r.last
+		return ""
+	}
 	ep, err := transport.Parse(res.Endpoint)
 	if err != nil {
 		return r.cur // keep what works rather than act on a malformed probe
 	}
 	if res.Source != r.source {
-		log.Printf("drawbridged: agent transport %s (source=%s) → %s (source=%s)", r.cur, r.source, ep.String(), res.Source)
+		log.Printf("drawbridged: agent transport %s (source=%s) → %s (source=%s)", orNone(r.cur), r.source, ep.String(), res.Source)
 		if res.Note != "" {
 			log.Printf("drawbridged: warning: %s", res.Note)
 		}
@@ -479,4 +538,12 @@ func (r *resolver) refresh() string {
 	}
 	r.cur, r.note, r.at = ep.String(), res.Note, r.last
 	return r.cur
+}
+
+// orNone names the empty endpoint in a log line.
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }

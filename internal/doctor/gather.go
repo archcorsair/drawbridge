@@ -239,11 +239,12 @@ func Gather(ctx context.Context, o Options) (Inputs, error) {
 	)
 	if euid0 {
 		// limactl refuses euid 0, so there is no instance list to select
-		// from. Mirror the root daemon instead: -vm (or its default) through
+		// from. Mirror the root daemon instead: -vm (else the installed
+		// daemon's -vm, else drawbridged's default) through
 		// ParseRef — the one vmprovider symbol root may touch — and let the
 		// lease db resolve it. Without this, `sudo drawbridge doctor` skips
 		// the very probe it exists to run.
-		tgt, skip = rootTarget(o.VM)
+		tgt, skip = rootTarget(o.VM, st0.VM)
 		in.VM = tgt.Ref.Provider + ":" + tgt.Ref.Instance
 	} else {
 		var err error
@@ -369,6 +370,8 @@ func Gather(ctx context.Context, o Options) (Inputs, error) {
 		AgentListening: in.Bind.Reachable(),
 		RunningVMs:     running,
 		Skip:           resSkip,
+		GuestUp:        skip == "",
+		GuestUnknown:   euid0,
 	}
 
 	// --- 4. the vzNAT candidate, and everything that needs it --------------
@@ -463,6 +466,7 @@ func resolveTarget(ref vmprovider.Ref, o Options, euid0 bool) limaaddr.Resolutio
 	if ref.Provider != vmprovider.ProviderPodman {
 		return limaaddr.ResolveTarget(limaaddr.Target{
 			VM:        ref.Instance,
+			Provider:  ref.Provider,
 			LeaseName: ref.LeaseName,
 			LimaHome:  ref.LimaHome,
 			Subnet:    o.Subnet,
@@ -583,21 +587,37 @@ func providerTag(p vmprovider.Provider) string {
 
 // rootTarget is the euid-0 half of target selection. There is no instance
 // list to consult — limactl is user-scoped — so root doctor names its target
-// the way the root daemon does: an explicit -vm, else the daemon's own
-// default, resolved later from the lease db. ParseRef cannot fail here: an
-// explicit -vm was validated before any probe ran, and the default is a
-// constant. The skip string is the guest-shell checks' reason; resolution
-// and the root probe still run against the ref.
-func rootTarget(arg string) (target, string) {
+// the way the root daemon does: an explicit -vm, else the installed daemon's
+// own -vm (installedVM, read from the root-owned 0644 plist; Query already
+// parsed it), else drawbridged's built-in default, resolved later from the
+// lease db. Defaulting to the installed VM is what makes the root run mirror
+// the daemon it exists to stand in for: before, a colima user's
+// `sudo drawbridge doctor` probed lima:drawbridge (audit 2026-10-28 M22).
+//
+// ParseRef cannot fail on an explicit -vm (validated before any probe ran)
+// or on the constant. An installed value that does not parse (a hand edit)
+// falls through to the default and says so. The skip string is the
+// guest-shell checks' reason; resolution and the root probe still run
+// against the ref.
+func rootTarget(arg, installedVM string) (target, string) {
 	arg = strings.TrimSpace(arg)
+	whose := ""
 	if arg == "" {
+		if r, err := vmprovider.ParseRef(installedVM); err == nil && strings.TrimSpace(installedVM) != "" {
+			return target{Ref: r}, rootSkip(r, ", the installed daemon's VM")
+		}
 		arg = install.DefaultVM
+		whose = ", drawbridged's default VM (no installed daemon names one)"
 	}
 	ref, _ := vmprovider.ParseRef(arg)
-	return target{Ref: ref}, fmt.Sprintf(
+	return target{Ref: ref}, rootSkip(ref, whose)
+}
+
+func rootSkip(ref vmprovider.Ref, whose string) string {
+	return fmt.Sprintf(
 		"limactl is user-scoped and refuses euid 0, so the provider and guest halves run only as your own user — "+
-			"this run carries the root half of the discriminator against %s:%s (-vm overrides)",
-		ref.Provider, ref.Instance)
+			"this run carries the root half of the discriminator against %s:%s%s (-vm overrides)",
+		ref.Provider, ref.Instance, whose)
 }
 
 // selectTarget mirrors `up`'s step 1: an explicit `provider:name` wins, else
@@ -683,6 +703,7 @@ func localNetworkInput(ctx context.Context, candidate string, res limaaddr.Resol
 		AgentListening:  in.Bind.Reachable(),
 		Root:            RootEvidence{Kind: "unknown"},
 		Skip:            skip,
+		VM:              in.VM,
 	}
 	for _, e := range in.NEExtensions {
 		out.NEFilterNames = append(out.NEFilterNames, e.BundleID)

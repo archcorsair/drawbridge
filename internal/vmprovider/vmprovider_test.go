@@ -69,6 +69,68 @@ func TestParseRef(t *testing.T) {
 	}
 }
 
+// The invariant behind H2 (2026-10-28 review): whatever text a Ref carries as
+// its Spec is re-parsed by `drawbridge install -vm` and `drawbridged -vm`, so
+// it must name the same VM it came from. A bare word is always a Lima
+// instance, so a colima or podman ref may only be spelled with its provider.
+func TestRefSpecRoundTrips(t *testing.T) {
+	same := func(t *testing.T, what, spec string, want Ref) {
+		t.Helper()
+		got, err := ParseRef(spec)
+		if err != nil {
+			t.Fatalf("%s: ParseRef(%q) = %v", what, spec, err)
+		}
+		if got.Provider != want.Provider || got.Instance != want.Instance {
+			t.Fatalf("%s: ParseRef(%q) = %s:%s, want %s:%s", what, spec,
+				got.Provider, got.Instance, want.Provider, want.Instance)
+		}
+		if got.LeaseName != want.LeaseName {
+			t.Fatalf("%s: ParseRef(%q).LeaseName = %q, want %q", what, spec, got.LeaseName, want.LeaseName)
+		}
+	}
+
+	for _, in := range []string{
+		"drawbridge", "lima:drawbridge",
+		"default", "lima:default", // a Lima instance literally called default
+		"colima", "lima:colima", // a Lima instance literally called colima
+		"colima:default", "colima:colima", "colima:work", "colima:colima-work", // the default profile's lease name is "colima"
+		"podman:spike", "podman:podman-machine-default",
+	} {
+		r, err := ParseRef(in)
+		if err != nil {
+			t.Fatalf("ParseRef(%q) = %v", in, err)
+		}
+		// The Spec ParseRef gives a ref is the input, and re-parses to it.
+		same(t, "Spec of "+in, r.Spec, r)
+
+		// The canonical spelling built from the resolved pair, which is what
+		// the CLI echoes when the user's own text would not round-trip,
+		// reaches the same VM: ColimaInstance is idempotent on its output.
+		same(t, "canonical of "+in, r.Provider+":"+r.Instance, r)
+	}
+
+	// The failure this pins: the bare spelling of a non-Lima ref is a
+	// different VM, with a different lease name and secret path.
+	for _, tc := range []struct{ typed, provider, instance string }{
+		{"colima", ProviderColima, "colima"},
+		{"default", ProviderColima, "colima"},
+		{"spike", ProviderPodman, "spike"},
+	} {
+		want, err := ParseRef(tc.provider + ":" + tc.instance)
+		if err != nil {
+			t.Fatal(err)
+		}
+		bare, err := ParseRef(tc.typed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bare.Provider == want.Provider && bare.Instance == want.Instance {
+			t.Fatalf("bare %q parses as %s:%s: the grammar changed, and every non-Lima echo can drop its prefix again",
+				tc.typed, bare.Provider, bare.Instance)
+		}
+	}
+}
+
 // The value reaches root's ProgramArguments through the install plist, so
 // the parser is an allowlist and rejects rather than escapes.
 func TestParseRefRejects(t *testing.T) {

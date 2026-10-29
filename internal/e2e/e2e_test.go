@@ -611,7 +611,9 @@ func TestGuestBindGetsSynchronousEADDRINUSE(t *testing.T) {
 // guestBindProbe runs the agent's `bindprobe` in the guest and parses its
 // JSON verdict — a seccomp-supervised bind whose errno crosses the VM
 // boundary as a number from the guest kernel. Shared with the privileged-port
-// legs in privileged_test.go.
+// legs in privileged_test.go. guest() runs it as root, which the agent's
+// probe socket requires: it is 0600 unless the agent runs with
+// -notify-sock-unprivileged.
 func guestBindProbe(t *testing.T, port int) (seccompProbeResult, error) {
 	t.Helper()
 	return guestBindProbeOpts(t, port, false)

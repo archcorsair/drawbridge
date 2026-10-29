@@ -437,12 +437,74 @@ func samePorts(a, b []uint16) bool {
 //
 // No root needed: the plist is 0644 by design.
 func InstalledVM() (string, bool) {
-	blob, err := os.ReadFile(PlistPath)
-	if err != nil {
+	a, ok := ReadInstalledArgs()
+	if !ok {
 		return "", false
 	}
-	vm := vmFromPlist(string(blob))
+	vm, _ := a.Get("-vm")
 	return vm, vm != ""
+}
+
+// InstalledArgs is the installed daemon's ProgramArguments read back as
+// flag → value, for every flag Config.Args renders (-agent, -vm, -udp, -skip,
+// -vm-mac, -vm-subnet, -secret-file). Presence is distinct from emptiness:
+// `-skip ""` is in the map with an empty value and means "skip nothing",
+// while an absent -skip means the daemon's own default.
+//
+// It exists so `drawbridge install` can default every flag the user did not
+// give from the daemon already installed: there is one LaunchDaemon, and a
+// re-install for an upgrade must not silently re-target it or drop its pins
+// (docs/privileged-daemon.md §2).
+type InstalledArgs map[string]string
+
+// Get reports a flag's installed value and whether the plist carries it.
+func (a InstalledArgs) Get(flag string) (string, bool) {
+	v, ok := a[flag]
+	return v, ok
+}
+
+// ReadInstalledArgs parses PlistPath; false when there is no install to read
+// (or the file is unreadable, which install treats the same way: nothing to
+// inherit). No root needed: the plist is 0644 by design.
+func ReadInstalledArgs() (InstalledArgs, bool) {
+	blob, err := os.ReadFile(PlistPath)
+	if err != nil {
+		return nil, false
+	}
+	return ArgsFromPlist(string(blob)), true
+}
+
+// ArgsFromPlist is ReadInstalledArgs' pure half.
+//
+// Only the ProgramArguments array is read when the document has one, so a
+// <string> elsewhere in the dict (Label, log paths) can never be mistaken
+// for a flag value; a fragment with no such key is read whole, which is how
+// the tests and a hand-trimmed plist read. Every flag install renders takes
+// exactly one value, so the rule is "a token starting with - names the flag,
+// the next token is its value", which survives any argument order. Values
+// are returned verbatim (no XML unescaping): Validate forbids every character
+// that would have needed an entity, so an entity here is a hand edit, and
+// passing it through lets Validate reject it by name instead of this reader
+// guessing.
+func ArgsFromPlist(plist string) InstalledArgs {
+	if i := strings.Index(plist, "<key>ProgramArguments</key>"); i >= 0 {
+		rest := plist[i:]
+		if j := strings.Index(rest, "</array>"); j >= 0 {
+			rest = rest[:j]
+		}
+		plist = rest
+	}
+	m := plistStringRE.FindAllStringSubmatch(plist, -1)
+	out := InstalledArgs{}
+	for i := 0; i < len(m); i++ {
+		tok := m[i][1]
+		if !strings.HasPrefix(tok, "-") || i+1 >= len(m) {
+			continue
+		}
+		out[tok] = strings.TrimSpace(m[i+1][1])
+		i++
+	}
+	return out
 }
 
 // plistStringRE matches one <string> element of the plist, which is all the
@@ -467,21 +529,16 @@ func vmFromPlist(plist string) string { return argFromPlist(plist, "-vm") }
 // has to open it, and reporting the pin is how the root run says what the
 // daemon is actually dialing without reaching across that line.
 func InstalledAgent() (string, bool) {
-	blob, err := os.ReadFile(PlistPath)
-	if err != nil {
+	a, ok := ReadInstalledArgs()
+	if !ok {
 		return "", false
 	}
-	v := argFromPlist(string(blob), "-agent")
+	v, _ := a.Get("-agent")
 	return v, v != ""
 }
 
 // argFromPlist returns the element following a flag in ProgramArguments.
 func argFromPlist(plist, flag string) string {
-	m := plistStringRE.FindAllStringSubmatch(plist, -1)
-	for i, g := range m {
-		if g[1] == flag && i+1 < len(m) {
-			return strings.TrimSpace(m[i+1][1])
-		}
-	}
-	return ""
+	v, _ := ArgsFromPlist(plist).Get(flag)
+	return v
 }

@@ -236,6 +236,14 @@ func (m Model) summaryBox(lo layout, s *introspect.Snapshot) []string {
 	if stale {
 		body = append(body, styleWarn.Render(truncEnd(m.stoppedText(s)+" ("+s.Path+")", iw)))
 	}
+	if m.versionSkew(st) {
+		// The remedy lives in the body, not the title: a title is truncated to
+		// fit, and a remedy cut short is worse than none. It names the daemon's
+		// own VM: a bare install used to re-target the root daemon at
+		// lima:drawbridge (audit 2026-10-28 H3).
+		body = append(body, field(pal, "upgrade",
+			pal.warn.Render("sudo drawbridge install -vm "+orPlaceholder(st.VM.Ref))))
+	}
 	body = append(body,
 		field(pal, "endpoint", joinFields(orUnknown(st.Resolution.Endpoint),
 			pal.label.Render("source ")+orUnknown(st.Resolution.Source),
@@ -315,14 +323,18 @@ func field(pal palette, label, value string) string {
 // joinFields is the box's four-space column gap.
 func joinFields(parts ...string) string { return strings.Join(parts, "    ") }
 
-// versionChip is §3.1's skew chip: when the daemon's version differs from this
-// CLI's, the box title carries the remedy rather than a bare mismatch — same
-// wording as doctor check 9.
+// versionSkew reports a daemon whose version is known and differs from this CLI's.
+func (m Model) versionSkew(st introspect.State) bool {
+	return st.Version != "" && st.Version != m.version
+}
+
+// versionChip is §3.1's skew chip: the short mismatch in the box title. The
+// remedy is the body's `upgrade` line, which is never truncated.
 func (m Model) versionChip(pal palette, st introspect.State) string {
-	if st.Version == "" || st.Version == m.version {
+	if !m.versionSkew(st) {
 		return "daemon " + orUnknown(st.Version)
 	}
-	return pal.warn.Render(fmt.Sprintf("daemon %s ≠ CLI %s — sudo drawbridge install", st.Version, m.version))
+	return pal.warn.Render(fmt.Sprintf("daemon %s ≠ CLI %s", st.Version, m.version))
 }
 
 func (m Model) versionChipCompact(pal palette, st introspect.State) string {
@@ -789,8 +801,8 @@ func (m Model) noDaemonCard(lo layout) []string {
 		"  " + m.userRunDir,
 		"",
 		styleDim.Render("start one"),
-		"  drawbridged                  foreground; mirrors ports ≥1024",
-		"  sudo drawbridge install      the root LaunchDaemon, for ports <1024",
+		"  drawbridged -vm <vm>              foreground, ports ≥1024",
+		"  sudo drawbridge install -vm <vm>  root LaunchDaemon, ports <1024",
 		"",
 		styleDim.Render("re-checking every second — this screen heals itself"),
 	}
@@ -1155,6 +1167,15 @@ func flavor(path string) string {
 func orUnknown(s string) string {
 	if s == "" {
 		return "unknown"
+	}
+	return oneLine(s)
+}
+
+// orPlaceholder is a -vm value for a printed command: the daemon's own
+// spelling, or <vm> when it reports none, never a silently empty flag.
+func orPlaceholder(s string) string {
+	if s == "" {
+		return "<vm>"
 	}
 	return oneLine(s)
 }

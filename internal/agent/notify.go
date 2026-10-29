@@ -8,6 +8,9 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"os"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -22,6 +25,14 @@ import (
 // reports the port taken, CONTINUE otherwise. Every uncertain path answers
 // CONTINUE: degradation is async mirroring, never a broken bind.
 
+// probeHandoffTimeout bounds how long a probe-socket connection may sit
+// before it delivers its fd (2026-10-28 L14). A sender writes as soon as
+// it has connected (RunBindProbe installs its filter in between, which
+// takes microseconds), so anything slower is an idle or stalled conn that
+// would otherwise hold an agent fd and goroutine for as long as it likes.
+// A var for tests.
+var probeHandoffTimeout = 2 * time.Second
+
 // ServeNotify accepts notify-fd handoffs until the listener closes.
 func (a *Agent) ServeNotify(ln *net.UnixListener) {
 	acceptloop.Serve(ln.AcceptUnix, func(c *net.UnixConn) { go a.recvNotifyFd(c) }, notifyLogf)
@@ -31,11 +42,16 @@ func notifyLogf(format string, args ...any) { log.Printf("notify: "+format, args
 
 func (a *Agent) recvNotifyFd(c *net.UnixConn) {
 	defer c.Close()
+	c.SetReadDeadline(time.Now().Add(probeHandoffTimeout))
 	buf := make([]byte, 1)
 	oob := make([]byte, 1024)
 	_, oobn, _, _, err := c.ReadMsgUnix(buf, oob)
 	if err != nil {
-		log.Printf("notify: read fd message: %v", err)
+		// Throttled like a refusal: idle conns timing out are exactly
+		// what a sender flooding the socket produces.
+		if from := peerOf(c); a.refusals.allow(from.uid, time.Now()) {
+			log.Printf("notify: read fd message from %s: %v", from, err)
+		}
 		return
 	}
 	// Every control message, every fd: the first is the handoff, the rest
@@ -50,7 +66,7 @@ func (a *Agent) recvNotifyFd(c *net.UnixConn) {
 	}
 	// The sender blocks in bind() as soon as it has handed the fd over, so
 	// supervision must outlive this connection.
-	a.acceptNotifyFd(fds[0], peerOf(c), "probe socket")
+	a.acceptProbeFd(fds[0], peerOf(c))
 }
 
 // peerCred identifies a handoff's sender for refusal logs and their
@@ -84,50 +100,122 @@ func peerOf(c *net.UnixConn) peerCred {
 // refusalLogEvery throttles refusal lines per sender uid.
 const refusalLogEvery = 10 * time.Second
 
-// acceptNotifyFd takes ownership of fd: a real seccomp listener goes under
-// supervision (and into the fd store); anything else is closed. The socket
-// is 0666 and a pipe read end parked in a blocking poll would pin an OS
-// thread forever, so the gate is "prove it is a listener" rather than
-// "trust the framing", and the cap bounds the thread count whatever the
-// sender does (audit finding 4). Refusals are logged once per sender per
+// refuse closes a handoff's fd and logs why, once per sender uid per
 // refusalLogEvery.
-func (a *Agent) acceptNotifyFd(fd int, from peerCred, via string) bool {
-	refuse := func(why string) {
-		unix.Close(fd)
-		if a.refusals.allow(from.uid, time.Now()) {
-			log.Printf("notify: refused fd from %s via %s: %s", from, via, why)
-		}
+func (a *Agent) refuse(fd int, from peerCred, via, why string) {
+	unix.Close(fd)
+	if a.refusals.allow(from.uid, time.Now()) {
+		log.Printf("notify: refused fd from %s via %s: %s", from, via, why)
 	}
+}
+
+// acceptProbeFd takes ownership of a probe-socket fd: a seccomp listener
+// that is not already supervised goes under supervision (and into the fd
+// store) while a capped slot is free; anything else is closed. A pipe read
+// end parked in a blocking poll would pin an OS thread forever, so the
+// gate is "prove it is a listener" rather than "trust the framing" (audit
+// finding 4). Closing here never costs a container its listener: the
+// sender keeps its own reference, and a duplicate's original stays
+// supervised.
+func (a *Agent) acceptProbeFd(fd int, from peerCred) bool {
+	const via = "probe socket"
 	if !seccomp.IsListener(fd) {
-		refuse("not a seccomp notify listener")
+		a.refuse(fd, from, via, "not a seccomp notify listener")
 		return false
 	}
-	if !a.cap.acquire() {
-		refuse(fmt.Sprintf("%d fds already under supervision", maxSupervisedNotifyFds))
+	switch a.cap.admitProbe(fd, sameOpenFile) {
+	case admitDuplicate:
+		a.refuse(fd, from, via, "that listener is already under supervision (same open file)")
+		return false
+	case admitFull:
+		a.refuse(fd, from, via, fmt.Sprintf("%d probe-socket fds already under supervision", maxSupervisedNotifyFds))
 		return false
 	}
-	go a.superviseNotify(fd)
+	go a.superviseNew(fd, a.cap.release)
 	return true
 }
 
-// superviseNotify parks fd in the fd store (when there is one) and
-// supervises it until its filter dies. Takes ownership of fd and of the
-// cap slot the caller acquired.
-func (a *Agent) superviseNotify(fd int) {
-	a.superviseStored(fd, a.store.add(fd))
+// acceptOCIFd takes ownership of an OCI-socket fd. A non-listener is
+// closed: the socket is 0600, but the gate costs nothing and a parked pipe
+// would pin a thread. A listener is always supervised. It is the
+// container's only reference, so refusing it for capacity would turn the
+// container's bind() into ENOSYS for life (2026-10-28 M3, decision E2).
+// Returns the trusted bucket's count, 0 when the fd was refused.
+func (a *Agent) acceptOCIFd(fd int, from peerCred, via string) int64 {
+	if !seccomp.IsListener(fd) {
+		a.refuse(fd, from, via, "not a seccomp notify listener")
+		return 0
+	}
+	n := a.cap.admitTrusted(fd)
+	go a.superviseNew(fd, a.cap.releaseTrusted)
+	return n
 }
 
-// superviseStored supervises an fd already stored under name ("" when it
-// is not stored), drops it from the store when supervision ends, and
-// returns the caller's cap slot.
+// superviseNew parks a freshly handed-over fd in the fd store (when there
+// is one) and supervises it. Takes ownership of fd and of the slot.
+func (a *Agent) superviseNew(fd int, release func()) {
+	a.supervise(fd, a.store.add(fd), release)
+}
+
+// superviseStored supervises an fd re-adopted from the fd store under
+// name. AdoptStoredFds took a capped slot for it; adopted fds are this
+// agent's own and any of them may be a container's only listener, so the
+// slot is traded for a trusted one before supervision starts.
 func (a *Agent) superviseStored(fd int, name string) {
-	defer a.cap.release()
+	a.cap.release()
+	a.cap.admitTrusted(fd)
+	a.supervise(fd, name, a.cap.releaseTrusted)
+}
+
+// supervise runs fd's supervisor until its filter dies, then untracks and
+// closes fd, drops it from the store (name is "" when it is not stored),
+// and gives back the caller's slot through release. Takes ownership of fd
+// and of the slot; fd must already be tracked.
+func (a *Agent) supervise(fd int, name string, release func()) {
+	defer release()
 	defer a.store.remove(name)
+	defer func() {
+		a.cap.untrack(fd) // before the close: see untrack
+		unix.Close(fd)
+	}()
 	a.runSupervision(fd)
 }
 
+// kcmpFile is KCMP_FILE from linux/kcmp.h; x/sys/unix does not export it.
+const kcmpFile = 0
+
+var (
+	kcmpUnavailable     atomic.Bool
+	kcmpUnavailableOnce sync.Once
+)
+
+// sameOpenFile reports whether fds a and b of this process refer to the
+// same open file description, by kcmp(2) with KCMP_FILE. It needs
+// CONFIG_KCMP, which Ubuntu's kernels ship. Where kcmp is missing or
+// forbidden (ENOSYS, EPERM) the duplicate check is off for the life of the
+// process, logged once, and the cap alone bounds the probe socket: a
+// degrade, never a refused handoff.
+func sameOpenFile(a, b int) bool {
+	if kcmpUnavailable.Load() {
+		return false
+	}
+	pid := uintptr(os.Getpid())
+	r, _, errno := unix.Syscall6(unix.SYS_KCMP, pid, pid, kcmpFile, uintptr(a), uintptr(b), 0)
+	if errno != 0 {
+		if errno == unix.ENOSYS || errno == unix.EPERM {
+			kcmpUnavailable.Store(true)
+			kcmpUnavailableOnce.Do(func() {
+				log.Printf("notify: kcmp(KCMP_FILE): %v; probe-socket duplicate check disabled, the cap alone bounds it", errno)
+			})
+		}
+		return false
+	}
+	return r == 0
+}
+
+// runSupervision answers fd's notifications until its filter dies. The
+// caller closes fd.
 func (a *Agent) runSupervision(fd int) {
-	defer unix.Close(fd)
 	// Poll-first, never bare Recv: NOTIF_RECV blocks forever once the
 	// filter's last task exits (kernel gives no error — pinned by
 	// TestNotifyFilterExitSemantics), so recv-looping would leak an OS

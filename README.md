@@ -144,7 +144,9 @@ drawbridge up podman:mymachine --oci # a Podman machine, the same three commands
 
 No sudo on the Mac — the privileged half happens inside the guest. `up`
 installs the agent as a systemd unit and writes a per-VM transport secret on
-both sides. It is idempotent: re-run it to upgrade. `drawbridge down`
+both sides. It is idempotent: re-run it to upgrade. A plain re-run also
+refreshes the runtime wrapper an earlier `--oci` installed, and leaves the
+engine's registration and the engine itself alone. `drawbridge down`
 reverses exactly what it did.
 
 `--oci` is opt-in because it registers a wrapper runtime with your container
@@ -186,6 +188,13 @@ Ports <1024, survives reboot, and exempt from the macOS Local Network gate and
 the pcblist filtering that bite terminal-launched processes. Add `-vm-mac
 <addr>` to pin which VM the root daemon will trust (`-print` previews
 everything and tells you the exact command to read the address).
+
+Re-running `sudo drawbridge install` upgrades in place: every flag you leave
+out keeps the installed daemon's value (`-vm`, `-vm-mac`, `-vm-subnet`,
+`-udp`, `-skip`, `-secret-file`), and each kept value is printed first. An
+explicit flag wins, `""` included (`-vm-mac ""` drops the pin). Naming a
+different `-vm` replaces the daemon, and the old VM's `-vm-mac` and secret
+are not carried over to the new one.
 
 ```sh
 drawbridged -vm colima:default               # foreground, no sudo
@@ -271,10 +280,10 @@ Every row ends in doctor or a one-liner. Doctor's output is the long version.
 
 | Symptom | What it is | Fix |
 |---|---|---|
-| `sync: … 0 advertised` from a terminal-launched `drawbridged` | macOS 27 betas filter `net.inet.tcp.pcblist_n` per *responsible app* — a process launched from a terminal sees an empty listener list, no error. Mirroring still works; only Mac→guest goes dark. | `sudo drawbridge install` — a launchd daemon is exempt. |
-| Guest unreachable; dials time out with no error | Either the vmnet route was deleted out from under you (Tailscale and Little Snitch are the observed suspects), or the Local Network permission is denying this binary. | `drawbridge doctor` checks 5 and 6; the route fix is bouncing the bridge address (doctor prints it — a `route -n add` static is a crutch that dies on the next flap), the permission fix is `sudo drawbridge install`. |
+| `sync: … 0 advertised` from a terminal-launched `drawbridged` | macOS 27 betas filter `net.inet.tcp.pcblist_n` per *responsible app* — a process launched from a terminal sees an empty listener list, no error. Mirroring still works; only Mac→guest goes dark. | `sudo drawbridge install -vm <vm>` — a launchd daemon is exempt. |
+| Guest unreachable; dials time out with no error | Either the vmnet route was deleted out from under you (Tailscale and Little Snitch are the observed suspects), or the Local Network permission is denying this binary. | `drawbridge doctor` checks 5 and 6; the route fix is bouncing the bridge address (doctor prints it — a `route -n add` static is a crutch that dies on the next flap), the permission fix is `sudo drawbridge install -vm <vm>`. |
 | Connections stall ~2s, or a half-closed read never returns | A network-extension content filter (Little Snitch-class) doing first-payload DPI. Note that "disable filter" does *not* stop it — only deactivating the extension does. | `drawbridge doctor` check 7, and `-probe` for check 8. |
-| Everything worked, then a rebuild broke it | Version skew between the CLI, the installed daemon and the guest agent. They are meant to move in lockstep. | `drawbridge up && sudo drawbridge install` |
+| Everything worked, then a rebuild broke it | Version skew between the CLI, the installed daemon and the guest agent. They are meant to move in lockstep. | `drawbridge up <vm> && sudo drawbridge install` (install keeps the installed `-vm` and pins; doctor prints the command with your VM filled in) |
 | Guest `:22` never appears on the Mac | Deliberate: the VM's sshd is on the default skip list. | `-skip ""` (or your own list) on `drawbridged` / `drawbridge install`. |
 | `just e2e` fails for contributors | An installed `drawbridged` holds the agent sessions the harness needs. | `sudo launchctl bootout system/com.archcorsair.drawbridged` first. |
 | A `--network host` container's `bind()` fails with `ENOSYS` (`Function not implemented`) | The guest agent was fully *stopped* (not restarted) while the container was running; its seccomp notify listener died with the agent. Restarts and crashes are covered by systemd's fd store; a `systemctl stop` or `drawbridge down` is not. | Restart the affected containers. Background: [docs/oci-hook.md](docs/oci-hook.md#agent-restarts-and-running-containers). |

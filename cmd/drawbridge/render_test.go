@@ -31,7 +31,7 @@ func TestRenderStatus(t *testing.T) {
 	renderStatus(&b, sty, install.Status{})
 	// Pinned bytes, not merely contains: the no-daemon case must gain no new
 	// noise, ever — scripts read this.
-	if got, want := b.String(), "drawbridged: not installed\n  install with: sudo drawbridge install\n"; got != want {
+	if got, want := b.String(), "drawbridged: not installed\n  install with: sudo drawbridge install -vm <vm>\n"; got != want {
 		t.Fatalf("empty status = %q, want %q", got, want)
 	}
 
@@ -55,6 +55,13 @@ func TestRenderStatus(t *testing.T) {
 	renderStatus(&b, sty, install.Status{PlistInstalled: true, BinaryInstalled: true})
 	if !strings.Contains(b.String(), "not loaded") {
 		t.Fatalf("report does not flag the not-loaded state:\n%s", b.String())
+	}
+	// The re-bootstrap remedy names the installed VM: a bare install used to
+	// re-target the daemon at lima:drawbridge (audit 2026-10-28 H3).
+	var vb bytes.Buffer
+	renderStatus(&vb, sty, install.Status{PlistInstalled: true, BinaryInstalled: true, VM: "colima:default"})
+	if !strings.Contains(vb.String(), "`sudo drawbridge install -vm colima:default` to (re)bootstrap") {
+		t.Fatalf("not-loaded remedy does not name the installed VM:\n%s", vb.String())
 	}
 	if strings.Contains(b.String(), "not resolved yet") {
 		t.Fatalf("a stopped daemon must not be told to watch for resolution:\n%s", b.String())

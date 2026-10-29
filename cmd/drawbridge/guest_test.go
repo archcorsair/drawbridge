@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/archcorsair/drawbridge/internal/transportauth"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
 )
 
@@ -182,6 +183,81 @@ func TestPickInstanceKeepsUserSpelling(t *testing.T) {
 	}
 	if sel.Ref.Instance != "colima" {
 		t.Fatalf("Ref.Instance = %q, want the mapped Lima instance", sel.Ref.Instance)
+	}
+}
+
+// H2 (2026-10-28 review): `up` resolves a bare name across providers, but
+// `install -vm` and `drawbridged -vm` re-parse the echoed text with ParseRef,
+// where a bare name is always Lima. The line `up` prints has to land on the
+// VM `up` selected — and on the transport-secret file `up` wrote for it.
+func TestPickInstanceEchoRoundTrips(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	all := []vmprovider.Instance{limaDev, colimaDef, podmanSpike}
+
+	for _, tc := range []struct {
+		arg      string
+		wantSpec string // what the echoed -vm must be
+		provider string
+		instance string
+	}{
+		// Lima keeps the spelling the user typed, bare or qualified.
+		{"drawbridge", "drawbridge", vmprovider.ProviderLima, "drawbridge"},
+		{"lima:drawbridge", "lima:drawbridge", vmprovider.ProviderLima, "drawbridge"},
+		// A bare name that is not a Lima instance is spelled with its provider.
+		{"colima", "colima:colima", vmprovider.ProviderColima, "colima"},
+		{"default", "colima:colima", vmprovider.ProviderColima, "colima"},
+		{"spike", "podman:spike", vmprovider.ProviderPodman, "spike"},
+		// A qualified spelling that already round-trips stays as typed.
+		{"colima:default", "colima:default", vmprovider.ProviderColima, "colima"},
+		{"colima:colima", "colima:colima", vmprovider.ProviderColima, "colima"},
+		{"podman:spike", "podman:spike", vmprovider.ProviderPodman, "spike"},
+	} {
+		t.Run(tc.arg, func(t *testing.T) {
+			sel, err := pickInstance(tc.arg, all)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sel.Ref.Provider != tc.provider || sel.Ref.Instance != tc.instance {
+				t.Fatalf("selected %s:%s, want %s:%s", sel.Ref.Provider, sel.Ref.Instance, tc.provider, tc.instance)
+			}
+			if sel.Ref.Spec != tc.wantSpec {
+				t.Fatalf("Ref.Spec = %q, want %q", sel.Ref.Spec, tc.wantSpec)
+			}
+
+			// Read the spelling back out of the printed lines, as a user
+			// pasting them would, and parse it the way the commands do.
+			out := nextStep(sel.Ref)
+			var installVM, daemonVM string
+			for _, l := range strings.Split(out, "\n") {
+				if _, after, ok := strings.Cut(l, "sudo drawbridge install -vm "); ok {
+					installVM = strings.TrimSpace(after)
+				}
+				if _, after, ok := strings.Cut(l, "drawbridged -vm "); ok {
+					daemonVM = strings.TrimSuffix(strings.TrimSpace(after), ")")
+				}
+			}
+			if installVM == "" || daemonVM == "" {
+				t.Fatalf("next-step lines missing the -vm spelling:\n%s", out)
+			}
+			wantSecret, err := transportauth.PathForRef(sel.Ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for what, spelling := range map[string]string{"install": installVM, "drawbridged": daemonVM} {
+				back, err := vmprovider.ParseRef(spelling)
+				if err != nil {
+					t.Fatalf("%s: ParseRef(%q) = %v", what, spelling, err)
+				}
+				if back.Provider != sel.Ref.Provider || back.Instance != sel.Ref.Instance {
+					t.Fatalf("%s: %q parses as %s:%s, but `up` selected %s:%s",
+						what, spelling, back.Provider, back.Instance, sel.Ref.Provider, sel.Ref.Instance)
+				}
+				// The file the daemon will insist on is the file `up` writes.
+				if got, err := transportauth.PathForRef(back); err != nil || got != wantSecret {
+					t.Fatalf("%s: %q reads the secret at %q (%v), but `up` writes %q", what, spelling, got, err, wantSecret)
+				}
+			}
+		})
 	}
 }
 

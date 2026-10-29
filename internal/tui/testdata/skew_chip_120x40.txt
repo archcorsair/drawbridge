@@ -1,5 +1,6 @@
  drawbridge tui · CLI v0.1.0                                                 ● daemon 1/1 · refreshed <1s ago ·  ? help
- ┌ colima:colima ─ user socket · pid 71234 · daemon v0.0.9 ≠ CLI v0.1.0 — sudo drawbridge install · up 2h14m ─────────┐
+ ┌ colima:colima ─ user socket · pid 71234 · daemon v0.0.9 ≠ CLI v0.1.0 · up 2h14m ───────────────────────────────────┐
+ │ upgrade    sudo drawbridge install -vm colima:colima                                                               │
  │ endpoint   tcp://192.168.64.5:4777    source vznat-direct    resolved 2h14m ago                                    │
  │ auth       static-hmac-v1 ok   ·   mirror ● up · event 12s ago   ·   sync ● up · pool 4 parked                     │
  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -10,7 +11,6 @@
     tcp    8080   ● bound       2m                          │ udp    5353
     udp    5353   ● bound       1m                          │
     tcp    22     · skipped     2h                          │
-
 
 
 

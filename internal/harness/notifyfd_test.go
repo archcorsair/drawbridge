@@ -16,8 +16,9 @@ import (
 	"github.com/archcorsair/drawbridge/internal/agent"
 )
 
-// Audit finding 4: the notify socket is 0666 and used to park whatever fd
-// arrived in a blocking poll. A pipe read end never reports POLLIN or
+// Audit finding 4: the notify socket was 0666 (root-only since the
+// 2026-10-28 review, 0666 only behind -notify-sock-unprivileged) and used
+// to park whatever fd arrived in a blocking poll. A pipe read end never reports POLLIN or
 // POLLHUP, so each handoff pinned an OS thread for the life of the agent.
 // Both handoff paths must now close anything that is not a seccomp
 // listener and keep serving real ones.
