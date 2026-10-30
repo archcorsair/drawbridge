@@ -16,6 +16,7 @@ import (
 	"github.com/archcorsair/drawbridge/internal/agent"
 	"github.com/archcorsair/drawbridge/internal/benchtool"
 	"github.com/archcorsair/drawbridge/internal/buildinfo"
+	"github.com/archcorsair/drawbridge/internal/kernelfeat"
 	"github.com/archcorsair/drawbridge/internal/seccomp"
 	"github.com/archcorsair/drawbridge/internal/transportauth"
 )
@@ -27,7 +28,8 @@ const versionFile = "/run/drawbridge-agent.version"
 
 func main() {
 	// Helper subcommands (no BPF, no root): bench tools and the Phase 4
-	// bind probe (stand-in for a container process under the OCI hook).
+	// bind probe (stand-in for a container process under the OCI hook), and
+	// the kernel feature probe.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "benchserve":
@@ -82,6 +84,17 @@ func main() {
 			fs.Parse(os.Args[2:])
 			if err := seccomp.RunBindProbe(*network, *addr, *nsock, *hold, *offThread, os.Stdout); err != nil {
 				log.Fatalf("bindprobe: %v", err)
+			}
+			return
+		case kernelfeat.Subcommand:
+			// The kernel feature probe (`up` preflight, doctor check 2).
+			// Takes no flags; a stray argument is a caller bug, said loudly
+			// rather than ignored.
+			if len(os.Args) > 2 {
+				log.Fatalf("%s: takes no arguments, got %q", kernelfeat.Subcommand, os.Args[2:])
+			}
+			if err := runFeatures(os.Stdout); err != nil {
+				log.Fatalf("%s: %v", kernelfeat.Subcommand, err)
 			}
 			return
 		}

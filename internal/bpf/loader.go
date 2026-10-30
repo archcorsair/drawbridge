@@ -30,7 +30,7 @@ func LoadAndAttach(cgroupPath string) (*Gateway, error) {
 	// netns (same rule as the tracker's host_netns_inum). The cookie is
 	// mandatory — a gateway attached without it would rewrite
 	// intra-container loopback connects to a dead 127.0.0.2.
-	cookie, err := netnsCookie()
+	cookie, err := NetnsCookie()
 	if err != nil {
 		return nil, fmt.Errorf("read netns cookie: %w", err)
 	}
@@ -78,11 +78,13 @@ func LoadAndAttach(cgroupPath string) (*Gateway, error) {
 	return g, nil
 }
 
-// netnsCookie returns the caller's network-namespace cookie — the value
+// NetnsCookie returns the caller's network-namespace cookie — the value
 // bpf_get_netns_cookie() reports for sockets in this netns. Read through
 // SO_NETNS_COOKIE (kernel 5.14+) on a throwaway socket; the kernel never
 // hands out 0, so a zero is treated as a failed read rather than a scope.
-func netnsCookie() (uint64, error) {
+// Exported for `drawbridge-agent features`, so the preflight probe makes
+// exactly the read this loader refuses to start without.
+func NetnsCookie() (uint64, error) {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return 0, fmt.Errorf("socket: %w", err)

@@ -109,9 +109,16 @@ Nothing is signed or notarized.
 - A **running** VM drawbridge can reach: a Lima or Colima instance with
   `vmType: vz`, or a Podman machine on `libkrun` (podman 6's default) or
   `applehv`. drawbridge attaches to a VM you already have and never creates
-  one. The guest needs a BTF kernel (≥ 5.7), cgroup v2 and systemd; Ubuntu
-  24.04 (the Colima default) and Fedora CoreOS (the podman machine image) are
-  both fine.
+  one. The guest needs cgroup v2, systemd and a BTF kernel with
+  `SO_NETNS_COOKIE` and ftrace direct calls
+  (`CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS`, for the agent's fentry/fexit
+  hooks). In practice: on arm64 guests (every Apple silicon VM), Linux 6.4 or
+  later; on x86_64, Linux 5.14 or later, or a 5.12/5.13 stable kernel that
+  carries the `SO_NETNS_COOKIE` backport. Ubuntu 24.04 (the Colima default)
+  and Fedora CoreOS (the podman machine image) are fine. Ubuntu 22.04's GA
+  5.15 kernel is not enough on arm64; its HWE kernel
+  (`linux-generic-hwe-22.04`) is. `drawbridge up` asks the guest directly and
+  refuses with that explanation when the answer is no.
 
 **Homebrew**
 

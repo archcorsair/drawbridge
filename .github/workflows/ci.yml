@@ -1,16 +1,10 @@
 name: CI
 
-# Triggers are deliberately narrow while the repo is private during
-# development (Actions bills there, macOS at 10x): main pushes and manual
-# dispatch only. workflow_dispatch preserves the scratch-branch
-# verification protocol — run it on the branch under test, eyes open about
-# the cost — and `pull_request` on main covers fork PRs, which produce no
-# push event here. When the repo goes public for release (Phase 6), widen
-# push back to ['**'] so every branch verifies for free.
-# Public-repo triggers (free minutes): every branch push, PRs into main,
-# and manual dispatch — docs/ergonomics.md §8 Phase 1. While the repo was
-# private this was dispatch-only; if it ever goes private again, narrow it
-# back before the first push.
+# Public-repo triggers (free minutes): every branch push, PRs into main
+# (fork PRs produce no push event here), and manual dispatch
+# (docs/ergonomics.md §8 Phase 1). If the repo ever goes private again,
+# narrow these before the first push: private Actions minutes are billed,
+# macOS at 10x.
 on:
   push:
     branches: ['**']
@@ -103,3 +97,77 @@ jobs:
         run: |
           sudo -E env "PATH=$PATH" \
             go test -count=1 -v -timeout 10m ./internal/harness/ ./internal/agent/
+
+  # Reachable stdlib and module advisories, on the exact toolchain releases
+  # build with (release.yml and mise.toml pin the same patch; bump all three
+  # together) and at an exact govulncheck. Source mode, once per shipped
+  # GOOS: build tags select different code on each side (the Mac CLI and
+  # daemon versus the guest agent and runc wrapper), so one pass cannot see
+  # both. GOARCH is arm64 for both (Apple silicon, the arm64 dev VM); an
+  # advisory confined to amd64-only code would go unseen, an accepted gap
+  # since stdlib advisories are almost always arch-neutral. Default exit
+  # behavior: any reachable finding fails the job. The linux pass runs even
+  # when darwin fails, so one run reports both.
+  govulncheck:
+    name: govulncheck (go 1.26.10)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.26.10'
+          cache-dependency-path: go.sum
+
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+
+      - name: govulncheck (darwin/arm64)
+        run: GOOS=darwin GOARCH=arm64 "$(go env GOPATH)/bin/govulncheck" ./...
+
+      - name: govulncheck (linux/arm64)
+        if: ${{ !cancelled() }}
+        run: GOOS=linux GOARCH=arm64 "$(go env GOPATH)/bin/govulncheck" ./...
+
+  # The committed bpf2go output must be what the committed C compiles to
+  # (audit #11). This job, and only this one, regenerates it: the linux job
+  # above deliberately builds from the committed objects with no clang.
+  # The toolchain matches the dev VM that produced them (Ubuntu 24.04:
+  # clang/llvm 18.1.3 from the `clang`/`llvm` packages, libbpf-dev 1.3.0,
+  # linux-libc-dev for <linux/*.h> and the multiarch <asm/types.h>).
+  # Regeneration there is byte-identical from any checkout path: bpf2go
+  # passes -fdebug-prefix-map and -fno-ident, and the objects carry only
+  # relative source paths. A diff here means the C changed without `just
+  # gen`, or the toolchain drifted; never paper over it by loosening the
+  # check.
+  bpf-regen:
+    name: BPF regeneration
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: '1.26.10'
+          cache-dependency-path: go.sum
+
+      # The runner image carries several clangs; name the major explicitly
+      # so bpf2go cannot pick up another one through an unversioned link
+      # (it derives llvm-strip-18 from BPF2GO_CC).
+      - name: Install the BPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 llvm-18 libbpf-dev linux-libc-dev
+          clang-18 --version
+          dpkg-query -W clang-18 llvm-18 libbpf-dev linux-libc-dev
+
+      - name: Regenerate
+        env:
+          BPF2GO_CC: clang-18
+          BPF2GO_STRIP: llvm-strip-18
+        run: go generate ./internal/bpf/
+
+      - name: Diff against the committed output
+        run: |
+          git status --porcelain -- internal/bpf/
+          sha256sum internal/bpf/*_bpfel.*
+          git diff --exit-code --stat -- internal/bpf/
+          test -z "$(git status --porcelain -- internal/bpf/)"

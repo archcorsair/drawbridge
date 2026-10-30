@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/archcorsair/drawbridge/internal/kernelfeat"
 	"github.com/archcorsair/drawbridge/internal/vmprovider"
 )
 
@@ -63,6 +64,19 @@ type fakeGuest struct {
 	// dockerBroken is an engine that will not come up whatever we do (bad
 	// config elsewhere, no disk). reset-failed does not help.
 	dockerBroken bool
+
+	// The kernel feature probe (kernelfeat.Script). A binary in files is
+	// asked only when its content carries the marker, which is what the
+	// real script's grep does, so the plain "agent-bytes" fixtures model an
+	// agent from before the probe. noCookie is the kernel's answer when it
+	// is asked; directCalls is the kernel config's
+	// CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS as the script reports it ("" is
+	// y, the 6.x answer); probed records every path the probe ran against,
+	// and probedAsRoot whether any probe arrived through sudo.
+	noCookie     bool
+	directCalls  string
+	probed       []string
+	probedAsRoot bool
 
 	// calls is every script executed, in order, for sequence assertions.
 	calls []string
@@ -174,7 +188,8 @@ func (f *fakeGuest) Shell(_ string, stdin io.Reader, argv ...string) ([]byte, er
 			f.t.Fatalf("fakeGuest: argv element %q contains whitespace; `limactl shell` joins argv unquoted, so it would be re-split in the guest", a)
 		}
 	}
-	if len(argv) > 0 && argv[0] == "sudo" {
+	asRoot := len(argv) > 0 && argv[0] == "sudo"
+	if asRoot {
 		argv = argv[1:]
 		for len(argv) > 0 && strings.HasPrefix(argv[0], "-") {
 			argv = argv[1:]
@@ -197,10 +212,44 @@ func (f *fakeGuest) Shell(_ string, stdin io.Reader, argv ...string) ([]byte, er
 			return nil, err
 		}
 		f.calls = append(f.calls, string(script))
+		if strings.Contains(string(script), kernelfeat.Marker) {
+			f.probedAsRoot = f.probedAsRoot || asRoot
+			return f.execFeatures(string(script))
+		}
 		return f.exec(string(script))
 	}
 	f.t.Fatalf("fakeGuest: unmodelled invocation %q", strings.Join(argv, " "))
 	return nil, nil
+}
+
+var reFeatBin = regexp.MustCompile(`db_feat_bin='([^']*)'`)
+
+// execFeatures answers kernelfeat.Script the way the real one does: the
+// arch and the kernel config's direct-call option, then absent, predates (no
+// marker in the binary), or the agent's JSON report.
+func (f *fakeGuest) execFeatures(script string) ([]byte, error) {
+	m := reFeatBin.FindStringSubmatch(script)
+	if m == nil {
+		f.t.Fatalf("fakeGuest: feature probe without a binary path:\n%s", script)
+	}
+	path := m[1]
+	f.probed = append(f.probed, path)
+	cfg := f.directCalls
+	if cfg == "" {
+		cfg = kernelfeat.ConfigYes
+	}
+	head := kernelfeat.KeyArch + "=aarch64\n" + kernelfeat.KeyDirectCalls + "=" + cfg + "\n"
+	body, ok := f.files[path]
+	switch {
+	case !ok:
+		return []byte(head + kernelfeat.Key + "=" + kernelfeat.Absent + "\n"), nil
+	case !strings.Contains(body, kernelfeat.Marker):
+		return []byte(head + kernelfeat.Key + "=" + kernelfeat.Predates + "\n"), nil
+	case f.noCookie:
+		return []byte(head + kernelfeat.Key + `={"probe":"` + kernelfeat.Marker +
+			`","so_netns_cookie":false,"so_netns_cookie_error":"getsockopt(SO_NETNS_COOKIE): protocol not available"}` + "\n"), nil
+	}
+	return []byte(head + kernelfeat.Key + `={"probe":"` + kernelfeat.Marker + `","so_netns_cookie":true}` + "\n"), nil
 }
 
 // exec runs one snippet. `&&` chains stop at the first failure, exactly as

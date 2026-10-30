@@ -320,23 +320,60 @@ the vz switch line (`colima start --vm-type vz` / lima `vmType: vz` — §3.1
 matrix verdict "rejected with doctor message"). Running vz → `ok`, listed
 with MAC (the pin candidates).
 
-**2. `guest-prereqs` — BTF, cgroup v2, systemd, kernel ≥ 5.7, runtime
-versions.** Inputs: one stdin script emitting `key=value` lines (`btf=`,
-`cgroup2=`, `systemd=`, `kernel=`, `runc=`, `oci=` from
+**2. `guest-prereqs` — BTF, cgroup v2, systemd, `SO_NETNS_COOKIE`, ftrace
+direct calls, runtime versions.** Inputs: one stdin script emitting
+`key=value` lines (`btf=`, `cgroup2=`, `systemd=`, `kernel=`, `features=`,
+`features-arch=`, `features-ftrace-direct-calls=`, `runc=`, `oci=` from
 `/etc/drawbridge/provision.json` presence); parser + classifier pure.
-Kernel compare is a parsed semver-ish check, not a string compare. runc/crun
-lines only classified when the guest was provisioned `--oci`. Alpine/OpenRC
-(no systemd) → `fail` with the §3.1 rejection message. VM not running →
-`skip` with the start hint.
+Alpine/OpenRC (no systemd) → `fail` with the §3.1 rejection message. VM not
+running → `skip` with the start hint.
+
+The agent's kernel floor is `getsockopt(SO_NETNS_COOKIE)`: the loopback
+gateway scopes its hooks to the guest's own netns by that cookie and will
+not start without it. It landed in Linux 5.14 and was backported to some
+5.12.y and 5.13.y stable kernels, so the check asks the kernel rather than
+reading its version (audit 2026-10-28 L5). `features=` is the installed
+agent's `drawbridge-agent features` subcommand, run as the login user (one
+socket, one getsockopt, no sudo), which prints one JSON line. The script runs
+it only when the binary carries the probe's marker string: an agent from
+before the subcommand would ignore the argument and start as the daemon.
+The probe's answer wins in both directions: yes → `ok` whatever the
+version, no → `fail` naming the kernel's error. Only when it cannot run (no
+agent installed yet, or one that predates the probe) does the check fall
+back to the version, numerically: ≥ 5.14 `ok`; 5.12 or 5.13 `warn` ("cannot
+confirm"), with the remedy to re-run `drawbridge up`, which asks the kernel
+itself; below 5.12 `fail`. The 5.8 floor the agent has had since the tracker
+landed (ring buffer events, cgroup `getpeername` hooks) is implied.
+
+The agent's second kernel floor is ftrace direct calls: the listener
+tracker attaches fentry/fexit programs to kernel functions, which needs
+`CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS`. x86_64 has had them since 5.5,
+below the cookie's floor; arm64 got the BPF trampoline in 6.0 and direct
+calls only in 6.4. On Ubuntu 22.04's GA arm64 kernel (5.15.0-185, verified
+live 2026-10-29) the cookie probe says yes and the gateway attaches, then
+the tracker's first fentry program fails to load with "operation not
+supported". `features-ftrace-direct-calls=` is that option read from the
+kernel config (`/boot/config-<release>`, else
+`/lib/modules/<release>/config`, else `/proc/config.gz`; no privilege):
+`y` → `ok`, `n` → `fail`. With no readable config the check falls back to
+the arch (`features-arch=`, `uname -m`): arm64 ≥ 6.4 `ok`, older `fail`;
+x86_64 `ok`. The remedy is shared with `up`: on arm64, a kernel ≥ 6.4
+(Ubuntu 24.04, Ubuntu 22.04's HWE kernel, Fedora CoreOS).
+
+The OCI wrapper's own floor, kernel ≥ 5.7 for the seccomp `listenerPath`
+contract, is then a `warn`, reachable only on a kernel the probe passed
+despite an older version (a distro backport). runc/crun lines are only
+classified when the guest was provisioned `--oci`.
 
 **3. `agent` — unit active, version, transport listening.** Inputs: guest
 script — `systemctl is-active` on both unit names (persistent from `up`,
 transient from `agent-up`), `cat /run/drawbridge-agent.version`, `ss -ltn`
 filtered to :4777 (pure parse: loopback bind, vzNAT bind, or both).
 Classification: no unit active → `fail` ("run `drawbridge up <vm>`");
-version ≠ `buildinfo.Version` → `fail`, remedy "`drawbridge up` re-pushes the
-embedded agent" (§6 skew policy — `up` auto-heals this side); listening on
-loopback but not the vzNAT address → `warn` (agent predates scoped bind or
+version ≠ `buildinfo.Version` → `fail`, remedy "`drawbridge up <vm>`
+re-pushes the embedded agent (and any `--oci` runtime wrapper)" (§6 skew
+policy — `up` auto-heals this side); listening on loopback but not the
+vzNAT address → `warn` (agent predates scoped bind or
 `-transport` overridden; vznat-direct impossible, name it). **The `ss`
 result is retained as cross-evidence for checks 4/6:** an agent listening
 in-guest refutes `NoteAgentNotListening` when the Mac-side probe still fails.

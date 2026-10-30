@@ -1,8 +1,10 @@
 name: Release
 
-# DORMANT: GitHub Actions are disabled repo-wide while drawbridge is private.
-# This workflow does nothing until the user re-enables Actions and pushes a
-# vX.Y.Z tag (docs/ergonomics.md §8 Phase 6).
+# Live: every pushed v* tag builds and publishes a GitHub release in this
+# repo and pushes the cask to archcorsair/homebrew-drawbridge. A prerelease
+# tag (vX.Y.Z-rc1) still publishes the GitHub release, but the cask's
+# `skip_upload: auto` keeps it out of the tap. The repo has been public, with
+# Actions enabled, since 2026-08-02 (v0.0.1).
 #
 # There is no test job here on purpose — CI is ci.yml's job, and the release
 # protocol is that the user runs the full suite (`just test-guest`, `just
@@ -37,9 +39,17 @@ jobs:
         with:
           fetch-depth: 0
 
+      # An exact Go patch, never go-version-file. setup-go reads go.mod's
+      # `go 1.25.0` as the exact version 1.25.0, a stdlib with none of its
+      # patch releases (audit M28: 35 to 36 reachable govulncheck advisories
+      # in the release binaries, the root daemon and root guest agent
+      # included). A `toolchain` directive does not help: this setup-go reads
+      # only the `go` line. go.mod keeps 1.25.0 as the downstream minimum,
+      # which ci.yml's matrix tests on purpose. This pin matches mise.toml
+      # and ci.yml's govulncheck job; bump all three together.
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
-          go-version-file: go.mod
+          go-version: '1.26.10'
           cache-dependency-path: go.sum
 
       # Hand-written release notes, when the tag has them. goreleaser's

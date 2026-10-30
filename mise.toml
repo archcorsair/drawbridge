@@ -1,5 +1,8 @@
 [tools]
-go = "1.26.5"
+# Exact patch, and the same one release.yml builds with and ci.yml's
+# govulncheck job scans (audit M28/NEW-T1). go.mod's `go 1.25.0` is the
+# downstream minimum, not this. Bump all three together.
+go = "1.26.10"
 just = "1.57.0"
 lima = "2.2.0"
 # Release engineering (docs/ergonomics.md §2, §8 Phase 6). Pinned exactly so a

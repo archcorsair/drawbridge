@@ -68,19 +68,31 @@ func startDrawbridged(t *testing.T) *mirror.Client {
 	go m.Run(ctx)
 	go s.Run(ctx)
 
-	free, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	freePort := free.Addr().(*net.TCPAddr).Port
-	free.Close()
+	// A fresh Mac-free port per attempt: Mac-free is not guest-free (the
+	// guest's ephemeral range overlaps the Mac's), so one port picked up
+	// front can fail every retry (see waitBindArbitrationLive).
+	var (
+		attempts int
+		lastPort int
+		lastRes  seccompProbeResult
+		lastErr  error
+	)
 	deadline := time.Now().Add(45 * time.Second)
 	for {
 		if time.Now().After(deadline) {
-			t.Fatalf("container bind on free :%d never succeeded — wrapper chain broken?", freePort)
+			t.Fatalf("container bind on a Mac-free port never succeeded after %d attempts — wrapper chain broken? last attempt :%d: probe err=%v errno=%d error=%q",
+				attempts, lastPort, lastErr, lastRes.Errno, lastRes.Error)
 		}
-		r, err := containerBind(t, "--network host", fmt.Sprintf("127.0.0.1:%d", freePort), 0)
-		if err == nil && r.Errno == 0 {
+		free, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		lastPort = free.Addr().(*net.TCPAddr).Port
+		free.Close()
+
+		attempts++
+		lastRes, lastErr = containerBind(t, "--network host", fmt.Sprintf("127.0.0.1:%d", lastPort), 0)
+		if lastErr == nil && lastRes.Errno == 0 {
 			return m
 		}
 		time.Sleep(500 * time.Millisecond)

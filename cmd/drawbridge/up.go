@@ -157,10 +157,25 @@ func up(g *guest, sel selection, o upOptions) error {
 	}
 
 	// --- step 3: push the agent -------------------------------------------
+	// Staged, asked about the kernel, then installed: the probe needs the
+	// binary in the guest, and the failure posture needs a refusal to leave
+	// the installed agent untouched (§4.2), so it runs on the staged copy.
 	agentPath := guestbin.GuestPath(guestbin.NameAgent)
-	agentChanged, err := g.pushBinary(agent, agentPath)
+	staged, err := g.stageIfChanged(agent, agentPath)
 	if err != nil {
 		return err
+	}
+	if staged != "" {
+		defer g.try("rm -f " + shquote(staged))
+	}
+	if err := g.checkKernelFeatures(staged, agentPath, pf.Kernel); err != nil {
+		return err
+	}
+	agentChanged := staged != ""
+	if agentChanged {
+		if err := g.installFile(staged, agentPath, "0755"); err != nil {
+			return err
+		}
 	}
 	if agentChanged {
 		fmt.Fprintf(g.out, "drawbridge: installed %s (%s)\n", agentPath, buildinfo.Version)
